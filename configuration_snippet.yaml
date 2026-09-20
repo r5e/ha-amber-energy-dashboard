@@ -1,0 +1,97 @@
+# ============================================================================
+# Amber Electric -> Home Assistant Energy Dashboard kit
+# configuration.yaml snippet
+#
+# Merge these blocks into your existing configuration.yaml. If you already
+# have top-level `rest:`, `input_number:`, or `template:` keys, add these
+# entries into your existing blocks rather than creating duplicate keys --
+# YAML does not allow the same top-level key twice.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Daily Amber usage pull (polls Amber's API for "yesterday's" totals).
+#    Runs a REST call, refreshed on demand by the automation each morning.
+#    Replace YOUR_SITE_ID below with your Amber site ID -- find it by
+#    calling GET https://api.amber.com.au/v1/sites with your API key.
+# ----------------------------------------------------------------------------
+rest:
+  - resource_template: >-
+      https://api.amber.com.au/v1/sites/YOUR_SITE_ID/usage?startDate={{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}&endDate={{ (now() - timedelta(days=1)).strftime('%Y-%m-%d') }}
+    method: GET
+    headers:
+      Authorization: !secret amber_api_key
+    scan_interval: 86400  # effectively "manual" -- the automation triggers real refreshes
+    sensor:
+      - name: "Amber Daily Grid Import"
+        unique_id: amber_daily_grid_import
+        value_template: >-
+          {{ (value_json | selectattr('channelType','equalto','general') | map(attribute='kwh') | sum) | round(3) }}
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total
+      - name: "Amber Daily Grid Export"
+        unique_id: amber_daily_grid_export
+        value_template: >-
+          {{ (value_json | selectattr('channelType','equalto','feedIn') | map(attribute='kwh') | sum) | round(3) }}
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total
+
+# ----------------------------------------------------------------------------
+# 2. Private running-total memory for the daily automation.
+#    IMPORTANT: these are plain input_numbers with NO state_class. That is
+#    deliberate -- it is what keeps them invisible to Home Assistant's
+#    automatic long-term-statistics compiler. Do not add a state_class,
+#    a unit_of_measurement device_class pairing, or otherwise "upgrade"
+#    these into sensors. See the README's "Why this design" section.
+# ----------------------------------------------------------------------------
+input_number:
+  amber_energy_import_running_total:
+    name: Amber Energy Import Running Total (internal -- not for dashboards)
+    min: 0
+    max: 999999
+    step: 0.001
+  amber_energy_export_running_total:
+    name: Amber Energy Export Running Total (internal -- not for dashboards)
+    min: 0
+    max: 999999
+    step: 0.001
+
+# ----------------------------------------------------------------------------
+# 3. The actual Energy-dashboard-facing sensors.
+#    These are permanently frozen at "0" and NEVER change state. All real
+#    data reaches them exclusively through import_statistics.import_from_json
+#    calls (in the backfill script and the daily automation), which write
+#    directly into long-term statistics without ever touching live state.
+#    This is the core of the design -- see the README before changing it.
+# ----------------------------------------------------------------------------
+template:
+  - sensor:
+      - name: "Amber Energy Import"
+        unique_id: amber_energy_import
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: "0"
+      - name: "Amber Energy Export"
+        unique_id: amber_energy_export
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: "0"
+
+# ----------------------------------------------------------------------------
+# 4. CRITICAL: exclude the two sensors above from the recorder's state
+#    tracking. Without this, Home Assistant's automatic long-term-statistics
+#    compiler will -- on its own schedule, independent of anything imported --
+#    eventually see these sensors' real (frozen) state and record it as a
+#    genuine reading, corrupting the imported history with a false "meter
+#    reset" to zero. This is not hypothetical -- it happened during testing,
+#    hours after an otherwise-clean import. See the README's "Why this
+#    design" section before changing or removing this block.
+# ----------------------------------------------------------------------------
+recorder:
+  exclude:
+    entities:
+      - sensor.amber_energy_import
+      - sensor.amber_energy_export

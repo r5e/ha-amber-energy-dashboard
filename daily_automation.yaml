@@ -1,0 +1,80 @@
+# ============================================================================
+# Amber Electric -> Home Assistant Energy Dashboard kit
+# Daily automation
+#
+# PREREQUISITE: sensor.amber_energy_import and sensor.amber_energy_export
+# MUST be excluded from the recorder (see configuration_snippet.yaml's
+# `recorder: exclude:` block) before this automation is relied upon for
+# real data. Without that exclusion, Home Assistant's automatic statistics
+# compiler can silently reset the history this automation builds -- see
+# the README's "Why the recorder: exclude block is not optional" section.
+#
+# Import this via Settings > Automations > Create > Edit in YAML, replacing
+# the default template with this file's contents.
+#
+# What it does each morning:
+#   1. Force-refreshes the daily Amber usage sensors (see configuration_snippet.yaml)
+#   2. Adds yesterday's kWh onto the private running-total input_numbers
+#   3. Writes the new cumulative totals directly into long-term statistics
+#      via import_statistics.import_from_json (called directly -- this
+#      automation runs inside Home Assistant, so no HTTP round-trip or
+#      second access token is needed)
+#   4. Updates the input_number helpers to match, ready for tomorrow
+#
+# The dashboard-facing sensors (sensor.amber_energy_import/export) never
+# have their live state changed by any of this -- that is the whole point.
+# ============================================================================
+alias: "Amber usage - daily statistics import"
+description: >
+  Fetches yesterday's Amber usage and writes it directly into long-term
+  statistics. Does not change any live entity's state, so it cannot
+  conflict with Home Assistant's automatic statistics compiler.
+triggers:
+  - trigger: time
+    at: "06:00:00"
+action:
+  - service: homeassistant.update_entity
+    target:
+      entity_id:
+        - sensor.amber_daily_grid_import
+        - sensor.amber_daily_grid_export
+
+  - variables:
+      new_import_total: >-
+        {{ ((states('input_number.amber_energy_import_running_total') | float(0)) + (states('sensor.amber_daily_grid_import') | float(0))) | round(3) }}
+      new_export_total: >-
+        {{ ((states('input_number.amber_energy_export_running_total') | float(0)) + (states('sensor.amber_daily_grid_export') | float(0))) | round(3) }}
+      import_day: >-
+        {{ (now() - timedelta(days=1)).strftime('%d.%m.%Y 00:00') }}
+
+  - service: import_statistics.import_from_json
+    data:
+      timezone_identifier: "Australia/Sydney"
+      entities:
+        - id: "sensor.amber_energy_import"
+          unit: "kWh"
+          values:
+            - datetime: "{{ import_day }}"
+              sum: "{{ new_import_total }}"
+              state: "{{ new_import_total }}"
+        - id: "sensor.amber_energy_export"
+          unit: "kWh"
+          values:
+            - datetime: "{{ import_day }}"
+              sum: "{{ new_export_total }}"
+              state: "{{ new_export_total }}"
+
+  - service: input_number.set_value
+    target:
+      entity_id: input_number.amber_energy_import_running_total
+    data:
+      value: "{{ new_import_total }}"
+
+  - service: input_number.set_value
+    target:
+      entity_id: input_number.amber_energy_export_running_total
+    data:
+      value: "{{ new_export_total }}"
+
+mode: single
+max_exceeded: silent

@@ -344,3 +344,11 @@ restarting again did not.
 - **Not tested with a Controlled Load channel.** Only General and Feed In
   channels are handled. If your Amber account has a Controlled Load
   tariff, you'll need to extend the script's channel filtering yourself.
+
+## Also see
+
+If you're a former Solar Analytics customer whose monitoring device has
+stopped working, check out
+[Solar Analytics History Import](https://github.com/r5e/ha-solar-analytics-history-import) —
+a companion project for recovering years of historical data using the
+same statistics-import approach as this tool.

@@ -84,18 +84,36 @@ included here excludes it and `secrets.yaml` by default.
 ## Setup
 
 1. **Merge `configuration_snippet.yaml`** into your `configuration.yaml`.
-   Fill in your Amber site ID in the `rest:` block. Add your API key to
-   `secrets.yaml`:
-   ```yaml
-   amber_api_key: "Bearer psk_your_key_here"
-   ```
-   Check Configuration, then restart Home Assistant.
+   Two values need filling in, in **two different places**:
+   - Your **Amber site ID** goes directly into the `rest:` block, replacing
+     `YOUR_SITE_ID` in the URL (the snippet has a comment marking exactly
+     where).
+   - Your **Amber API key** goes into `secrets.yaml` (a separate file, in
+     the same folder as `configuration.yaml`), not into the snippet itself:
+     ```yaml
+     amber_api_key: "Bearer psk_your_key_here"
+     ```
+
+   Pasting the whole snippet at the **end** of your existing
+   `configuration.yaml` is fine — order doesn't matter. The one thing to
+   check first: if you already have a top-level `rest:`, `input_number:`,
+   `template:`, or `recorder:` key anywhere else in the file, merge this
+   snippet's entries into your existing one instead of pasting a second
+   copy — YAML doesn't allow the same top-level key twice, and Home
+   Assistant will only use one of them.
+
+   Then **Settings > Developer Tools > YAML > Check Configuration**, and
+   once that passes, **Settings > System > Restart > Restart Home
+   Assistant** — a full restart, not a quick reload. New entities like the
+   ones this snippet creates don't reliably appear after a partial/quick
+   reload; only a full restart is guaranteed to pick them up.
 
 2. **Confirm the entities exist.** Developer Tools > States, search
    "amber" — you should see `sensor.amber_energy_import`,
    `sensor.amber_energy_export` (both reading `0`), and
    `input_number.amber_energy_import_running_total` /
-   `..._export_running_total` (both reading `0`).
+   `..._export_running_total` (both reading `0`). If they're not there,
+   go back and confirm you did a full restart, not just a config check.
 
 3. **Edit `amber_backfill.py`** — fill in your API key, site ID, HA base
    URL (**with the correct scheme, see troubleshooting**), HA token, and
@@ -117,7 +135,9 @@ included here excludes it and `secrets.yaml` by default.
    goes — safe to re-run if interrupted (e.g. by an Amber rate limit); it
    will skip days already fetched, and retries rate limits automatically.
 
-5. **Verify before trusting it.** Developer Tools > Actions:
+5. **Verify before trusting it.** Developer Tools > Actions. Search for
+   `import_statistics: export_statistics`, then switch to YAML mode (a
+   small toggle in the top-right corner of the action card) and paste:
    ```yaml
    action: import_statistics.export_statistics
    data:
@@ -139,9 +159,11 @@ included here excludes it and `secrets.yaml` by default.
    with current price" / "current rate" and select the Amber integration's
    General Price / Feed In Price sensors.
 
-7. **Install the daily automation.** Settings > Automations > Create >
-   Edit in YAML, paste in `daily_automation.yaml`. Test it once manually
-   (the automation's "Run" option) rather than waiting for 6am, then
+7. **Install the daily automation.** Settings > Automations & Scenes >
+   Create Automation > Create new automation > three-dot menu (top right)
+   > Edit in YAML, then replace the placeholder content with everything
+   in `daily_automation.yaml` and save. Test it once manually before
+   waiting for 6am: open the saved automation, three-dot menu > Run, then
    re-run the verification step above to confirm a new day landed cleanly.
 
 ## Why this design (read this before changing anything)
@@ -294,6 +316,17 @@ sufficient proof the fix is working. To confirm properly:
   configuration (check for typos in the entity names, and confirm you
   restarted after adding it) and you should resolve that before relying
   on this for real data.
+
+**Config Check passes and the file looks right, but the new entities
+still don't show up after restarting.**
+Occasionally Home Assistant's YAML parsing seems to get into a state
+where a genuinely correct file doesn't take effect. If a full restart
+(not a partial reload) still doesn't produce the entities, try: delete
+the pasted snippet from `configuration.yaml` entirely, save, Check
+Configuration, restart — then paste the snippet back in fresh, save,
+Check Configuration, restart again. This "clear it out and re-add it"
+sequence has resolved this for at least one tester when simply
+restarting again did not.
 
 ## Known limitations
 

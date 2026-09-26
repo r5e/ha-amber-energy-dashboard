@@ -355,9 +355,11 @@ earliest changed day.
   `own_fallback` option (default on) allows it; when off, such days are recorded as
   `skipped_no_short_term`. A day without even hourly sensor statistics is recorded as
   `skipped_sensor_data`.
-- **Start and continuation:** a new mapping backfills from the later of the sensor's first
-  complete day of statistics and the retention boundary; each run then extends it as new
-  days are imported. A mapping re-added later continues its existing statistic after the
+- **Start and continuation:** a new mapping backfills from the later of the sensor's
+  history start and the retention boundary. The history starts in the hour after the
+  sensor's first statistic (the first row is only a starting reading). On that first,
+  possibly partial, day the hours before the sensor existed count as zero energy. Each run
+  then extends the mapping as new days are imported. A mapping re-added later continues its existing statistic after the
   last written day (a gap in between).
 - Price history depth (section 4, item 2) does not limit this in practice; the sensor's own
   statistics and Amber's usage retention do.

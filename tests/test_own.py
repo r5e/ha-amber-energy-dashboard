@@ -1122,3 +1122,52 @@ async def test_own_baseline_missing_is_refused(
     records = await mgr._async_records_for(YESTERDAY, YESTERDAY)
     with pytest.raises(importer.ImportRefusedError, match="no row at the end of"):
         await mgr._async_chain_write(chain, YESTERDAY, records, rewriting=False)
+
+
+async def test_new_sensor_partial_first_day_counts_from_its_start(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A sensor whose history starts mid-day is priced from its start (zero before it)."""
+    _preload_store(hass_storage, retention_days=3)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    energies = _energy_like(YESTERDAY, "E1")
+    start_bucket = 150  # the sensor appeared at 12:30 NEM
+    hass.states.async_set(
+        SENSOR,
+        "0",
+        {"device_class": "energy", "state_class": "total_increasing", "unit_of_measurement": "kWh"},
+    )
+    meta = {
+        "has_sum": True,
+        "mean_type": StatisticMeanType.NONE,
+        "name": None,
+        "source": "recorder",
+        "statistic_id": SENSOR,
+        "unit_class": "energy",
+        "unit_of_measurement": "kWh",
+    }
+    day_start = importer.nem_day_start(YESTERDAY)
+    total, rows = 0.0, []
+    for i in range(start_bucket, 288):
+        total += energies[i] if i > start_bucket else 0.0
+        rows.append({"start": day_start + i * FIVE, "state": total, "sum": total})
+    hourly = [
+        {"start": day_start + (i // 12) * HOUR, "state": r["sum"], "sum": r["sum"]}
+        for i, r in zip(range(start_bucket, 288), rows, strict=True)
+        if i % 12 == 11
+    ]
+    get_instance(hass).async_import_statistics(meta, rows, StatisticsShortTerm)
+    get_instance(hass).async_import_statistics(meta, hourly, Statistics)
+    await async_wait_recording_done(hass)
+    await _setup_entry(hass, aioclient_mock, fake, subentries=[_sub(SENSOR, "E1")])
+
+    result = await _run(hass)
+
+    assert result["chains"]["own:sub_house"]["written"] == [YESTERDAY.isoformat()]
+    own = await _own_rows(hass)
+    measured = [0.0] * 288
+    for i in range(start_bucket + 1, 288):
+        measured[i] = energies[i]
+    expected = _expected_own(YESTERDAY, "E1", measured)
+    assert [r["state"] for r in own] == pytest.approx(expected, abs=1e-6)
+    assert sum(1 for h in expected[:12] if h) == 0

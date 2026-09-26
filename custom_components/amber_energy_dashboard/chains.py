@@ -75,12 +75,14 @@ def price_rows(
 
 
 async def async_sensor_energy(
-    hass: HomeAssistant, entity_id: str, day: date
+    hass: HomeAssistant, entity_id: str, day: date, *, first_day: bool = False
 ) -> tuple[list[float] | None, list[float] | None]:
     """Return (288 five-minute energies, 24 hourly energies) in kWh for NEM day ``day``.
 
     Each list is None when its statistics are incomplete. Energy in a bucket is the
-    change of the statistic's ``sum`` over it, which handles meter resets.
+    change of the statistic's ``sum`` over it, which handles meter resets. On the
+    sensor's ``first_day`` (its history starts that day), buckets before its first
+    statistic count as zero: the sensor did not exist yet, so it measured nothing.
     """
     start = nem_day_start(day)
     end = start + DAY_HOURS * HOUR
@@ -100,22 +102,32 @@ async def async_sensor_energy(
         statistics_during_period, hass, start - HOUR, end, {entity_id}, "hour", units, {"sum"}
     )
     return (
-        _deltas(short.get(entity_id, []), start - FIVE_MINUTES, FIVE_MINUTES, BUCKETS_PER_DAY),
-        _deltas(hourly.get(entity_id, []), start - HOUR, HOUR, DAY_HOURS),
+        _deltas(
+            short.get(entity_id, []), start - FIVE_MINUTES, FIVE_MINUTES, BUCKETS_PER_DAY, first_day
+        ),
+        _deltas(hourly.get(entity_id, []), start - HOUR, HOUR, DAY_HOURS, first_day),
     )
 
 
 def _deltas(
-    rows: Sequence[Mapping[str, Any]], first: Any, step: timedelta, count: int
+    rows: Sequence[Mapping[str, Any]],
+    first: Any,
+    step: timedelta,
+    count: int,
+    leading_gap: bool = False,
 ) -> list[float] | None:
     by_start = {round(r["start"]): r.get("sum") for r in rows}
-    sums = []
-    for i in range(count + 1):
-        value = by_start.get(round((first + i * step).timestamp()))
-        if value is None:
+    sums: list[Any] = [
+        by_start.get(round((first + i * step).timestamp())) for i in range(count + 1)
+    ]
+    if leading_gap:
+        known = [i for i, v in enumerate(sums) if v is not None]
+        if not known:
             return None
-        sums.append(float(value))
-    return [sums[i + 1] - sums[i] for i in range(count)]
+        sums = [sums[known[0]] if i < known[0] else v for i, v in enumerate(sums)]
+    if any(v is None for v in sums):
+        return None
+    return [float(sums[i + 1]) - float(sums[i]) for i in range(count)]
 
 
 def own_cost_day(

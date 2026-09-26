@@ -1176,7 +1176,7 @@ class AmberManager:
         raise MarkerMismatchError("marker_mismatch", details)
 
     async def _async_chain_start(self, chain: _Chain, boundary: date) -> date | None:
-        """First day for a new chain: the boundary, or the sensor's first complete day."""
+        """First day for a new chain: the boundary, or the day the sensor's history starts."""
         if chain.sensor is None:
             return boundary
         first = await self._async_sensor_first_day(chain.sensor.entity_id, boundary)
@@ -1190,11 +1190,9 @@ class AmberManager:
         found = rows.get(entity_id, [])
         if not found:
             return None
-        first_hour = datetime.fromtimestamp(found[0]["start"], UTC)
-        day = importer.nem_date(first_hour)
-        if nem_day_start(day) - HOUR < first_hour:
-            day += timedelta(days=1)  # the first day needs the hour before it as a baseline
-        return day
+        # The first row is only a starting reading: energy is measurable from the hour
+        # after it. That hour's day is where the history starts (possibly part-way).
+        return importer.nem_date(datetime.fromtimestamp(found[0]["start"], UTC) + HOUR)
 
     async def _async_chain_walk(self, chain: _Chain) -> dict[str, Any]:
         """Extend one secondary chain from its marker to yesterday."""
@@ -1311,7 +1309,10 @@ class AmberManager:
                 day, day, STATUS_SKIPPED_SENSOR, f"channel {sensor.channel.identifier} not active"
             )
             return STATUS_SKIPPED_SENSOR
-        five, hourly = await chains.async_sensor_energy(self.hass, sensor.entity_id, day)
+        first_day = state.marker is None and state.last_written is None
+        five, hourly = await chains.async_sensor_energy(
+            self.hass, sensor.entity_id, day, first_day=first_day
+        )
         try:
             priced = chains.own_cost_day(
                 channel_records,

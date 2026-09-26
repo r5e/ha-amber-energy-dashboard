@@ -1,0 +1,22 @@
+[
+  {
+    "id": "01FAKESITE0000000000000000",
+    "nmi": "FAKENMI000",
+    "channels": [
+      {
+        "identifier": "E9",
+        "type": "general",
+        "tariff": "N71"
+      },
+      {
+        "identifier": "B9",
+        "type": "feedIn",
+        "tariff": "N61"
+      }
+    ],
+    "network": "Example Network",
+    "status": "active",
+    "activeFrom": "2025-01-01",
+    "intervalLength": 5
+  }
+]

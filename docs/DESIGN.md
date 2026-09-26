@@ -88,7 +88,11 @@ Out of scope:
   timestamps only. Short-term (5-minute) statistics cannot be imported at all.
 - An empty response (HTTP 200, `[]`) means both "not published yet" and "outside
   retention". There is no distinguishing signal.
-- Rolling usage retention was measured at 86 days. It rolls forward daily.
+- Usage retention: on 2026-09-26 the earliest date with usage data was **2026-06-29,
+  89 days back** (2026-06-28 and earlier return `[]`; the boundary day was complete).
+  The earlier figure of 86 days was the YAML kit's configured value, not Amber's
+  boundary. Whether and how the boundary rolls forward is still being observed, so it
+  is discovered and re-verified at runtime (section 8).
 - Rate limit: 50 calls per 300 seconds, in **fixed** windows, reported in IETF
   `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds to window end) and
   `RateLimit-Policy: 50;w=300` headers. There are **two independent counters**: one for
@@ -210,10 +214,14 @@ rather than adding rows).
 
 ## 8. Guards 2 and revisions
 
-**Retention boundary.** A learned `retention_days` (initial 86, stored in Store). Days
-older than the boundary that return empty are marked `skipped_unavailable` and the
-marker advances past them. A lightweight probe re-verifies the boundary once a day and
-self-corrects in both directions.
+**Retention boundary.** A learned `retention_days`, stored in Store.
+- **At setup**, discover it by bisection with single-day usage requests: at most 8
+  calls. If discovery cannot finish (budget, errors), fall back to 89 days.
+- **Daily**, re-verify with 2 calls: the boundary day (expected to have data) and the
+  day before (expected empty). Self-correct in either direction: if the boundary day
+  is empty, the boundary moved forward; if the day before has data, it moved back.
+- Days older than the boundary that return empty are marked `skipped_unavailable`, and
+  the marker advances past them.
 
 **Patience.** Tracks the number of distinct calendar days on which a given date has
 returned empty. After `patience_days` (default 7), if any later day already has data
@@ -242,7 +250,7 @@ rewrite uses the same guarded per-day path, so it is covered by the same tests.
   implements this as a per-run budget (`RunBudget`).
 - On HTTP 429, back off using the response headers and resume on the next scheduled
   attempt.
-- A full 86-day recovery needs 13 usage calls and should complete within one run.
+- A full 89-day recovery needs 13 usage calls and should complete within one run.
 
 ## 10. Scheduling
 

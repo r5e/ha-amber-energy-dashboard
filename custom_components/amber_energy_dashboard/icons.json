@@ -2,6 +2,25 @@
   "services": {
     "import_day": {
       "service": "mdi:database-import"
+    },
+    "run_now": {
+      "service": "mdi:play-circle-outline"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "default": "mdi:database-sync"
+      },
+      "last_imported_date": {
+        "default": "mdi:calendar-check"
+      },
+      "days_behind": {
+        "default": "mdi:calendar-clock"
+      },
+      "next_run": {
+        "default": "mdi:clock-outline"
+      }
     }
   }
 }

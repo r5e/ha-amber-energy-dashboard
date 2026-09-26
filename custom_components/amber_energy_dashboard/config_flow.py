@@ -4,8 +4,9 @@ from collections.abc import Mapping
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_API_KEY
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -32,17 +33,50 @@ from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
     CONF_CHANNELS,
+    CONF_FIXED_TIMES,
     CONF_NMI,
+    CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
     DOMAIN,
+    SCHEDULE_AUTOMATIC,
+    SCHEDULE_FIXED,
     SUPPORTED_CHANNEL_TYPES,
 )
+from .schedule import format_times, parse_times
 
 _LOGGER = logging.getLogger(__name__)
 
 _KEY_SCHEMA = vol.Schema(
     {vol.Required(CONF_API_KEY): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))}
 )
+_SCHEDULE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_SCHEDULE_MODE): SelectSelector(
+            SelectSelectorConfig(
+                options=[SCHEDULE_AUTOMATIC, SCHEDULE_FIXED],
+                mode=SelectSelectorMode.LIST,
+                translation_key=CONF_SCHEDULE_MODE,
+            )
+        ),
+        vol.Optional(CONF_FIXED_TIMES): TextSelector(),
+    }
+)
+
+
+def _schedule_options(user_input: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Validate the schedule form. Returns (options, error key)."""
+    if user_input[CONF_SCHEDULE_MODE] != SCHEDULE_FIXED:
+        return {CONF_SCHEDULE_MODE: SCHEDULE_AUTOMATIC}, None
+    try:
+        times = parse_times(user_input.get(CONF_FIXED_TIMES, ""))
+    except ValueError:
+        return {}, "invalid_times"
+    return {
+        CONF_SCHEDULE_MODE: SCHEDULE_FIXED,
+        CONF_FIXED_TIMES: [t.strftime("%H:%M") for t in times],
+    }, None
+
+
 _CHANNEL_LABELS = {
     CHANNEL_GENERAL: "general",
     CHANNEL_CONTROLLED_LOAD: "controlled load",
@@ -127,18 +161,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         if unsupported or not site.channels:
             return self.async_abort(reason="unsupported_channels")
         if user_input is not None:
-            return self.async_create_entry(
-                title=f"Amber {site.nmi}",
-                data={
-                    CONF_API_KEY: self._api_key,
-                    CONF_SITE_ID: site.id,
-                    CONF_NMI: site.nmi,
-                    CONF_CHANNELS: [
-                        {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
-                        for c in site.channels
-                    ],
-                },
-            )
+            return await self.async_step_schedule()
         channel_list = "\n".join(
             f"- {c.identifier}: {_CHANNEL_LABELS[c.type]}"
             + (f" (tariff {c.tariff})" if c.tariff else "")
@@ -149,6 +172,45 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={"nmi": site.nmi, "channels": channel_list},
         )
+
+    async def async_step_schedule(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose automatic scheduling or fixed times."""
+        site = self._site
+        assert site is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            options, error = _schedule_options(user_input)
+            if error:
+                errors[CONF_FIXED_TIMES] = error
+            else:
+                return self.async_create_entry(
+                    title=f"Amber {site.nmi}",
+                    data={
+                        CONF_API_KEY: self._api_key,
+                        CONF_SITE_ID: site.id,
+                        CONF_NMI: site.nmi,
+                        CONF_CHANNELS: [
+                            {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
+                            for c in site.channels
+                        ],
+                    },
+                    options=options,
+                )
+        return self.async_show_form(
+            step_id="schedule",
+            data_schema=self.add_suggested_values_to_schema(
+                _SCHEDULE_SCHEMA, user_input or {CONF_SCHEDULE_MODE: SCHEDULE_AUTOMATIC}
+            ),
+            errors=errors,
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow (schedule)."""
+        return AmberOptionsFlow()
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """Start reauth after the key was rejected."""
@@ -176,4 +238,30 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=_KEY_SCHEMA,
             errors=errors,
             description_placeholders={"nmi": entry.data.get(CONF_NMI, "")},
+        )
+
+
+class AmberOptionsFlow(OptionsFlow):
+    """Change the schedule. Applied without a reload, so no API call is made."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Show and validate the schedule form."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            options, error = _schedule_options(user_input)
+            if error:
+                errors[CONF_FIXED_TIMES] = error
+            else:
+                return self.async_create_entry(data=options)
+        current = dict(self.config_entry.options)
+        suggested = user_input or {
+            CONF_SCHEDULE_MODE: current.get(CONF_SCHEDULE_MODE, SCHEDULE_AUTOMATIC),
+            CONF_FIXED_TIMES: format_times(parse_times(current[CONF_FIXED_TIMES]))
+            if current.get(CONF_FIXED_TIMES)
+            else "",
+        }
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(_SCHEDULE_SCHEMA, suggested),
+            errors=errors,
         )

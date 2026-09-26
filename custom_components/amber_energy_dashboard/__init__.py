@@ -1,7 +1,7 @@
 """Amber Energy Dashboard (unofficial).
 
 Imports Amber Electric usage and cost history into Home Assistant external statistics.
-Milestone 2: config flow, statistics model and the ``import_day`` service.
+Milestone 3: Store, Guard 1, retention discovery, scheduled catch-up and display sensors.
 """
 
 import asyncio
@@ -10,13 +10,8 @@ from datetime import date
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import CONF_API_KEY
-from homeassistant.core import (
-    HomeAssistant,
-    ServiceCall,
-    ServiceResponse,
-    SupportsResponse,
-)
+from homeassistant.const import CONF_API_KEY, Platform
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
     ConfigEntryNotReady,
@@ -25,6 +20,7 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
 
@@ -41,12 +37,22 @@ from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DATE,
     CONF_CHANNELS,
+    CONF_FIXED_TIMES,
+    CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
     DOMAIN,
+    SCHEDULE_AUTOMATIC,
+    SCHEDULE_FIXED,
     SERVICE_IMPORT_DAY,
+    SERVICE_RUN_NOW,
 )
-from .importer import ImportContext, async_import_day
+from .importer import ImportContext
+from .manager import AmberManager
+from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs
+from .storage import AmberStore
+
+PLATFORMS = [Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -56,6 +62,7 @@ IMPORT_DAY_SCHEMA = vol.Schema(
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
 )
+RUN_NOW_SCHEMA = vol.Schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string})
 
 
 @dataclass(slots=True)
@@ -63,11 +70,19 @@ class AmberRuntimeData:
     """Per-entry runtime state."""
 
     context: ImportContext
+    manager: AmberManager
     last_import: dict[str, Any] | None = None
     last_error: dict[str, str] | None = None
 
 
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
+
+
+def schedule_from_options(options: dict[str, Any]) -> ScheduleConfig:
+    """Build the schedule from entry options (automatic when unset)."""
+    if options.get(CONF_SCHEDULE_MODE) == SCHEDULE_FIXED:
+        return ScheduleConfig(SCHEDULE_FIXED, parse_times(options.get(CONF_FIXED_TIMES, [])))
+    return ScheduleConfig(SCHEDULE_AUTOMATIC)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -78,7 +93,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         day: date = call.data[ATTR_DATE]
         runtime = entry.runtime_data
         try:
-            summary = await async_import_day(hass, runtime.context, day)
+            summary = await runtime.manager.async_import_day(day)
         except AmberAuthError as err:
             entry.async_start_reauth(hass)
             runtime.last_error = {"date": str(day), "reason": "auth"}
@@ -112,11 +127,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         runtime.last_error = None
         return summary if call.return_response else None
 
+    async def _run_now(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        summary = await entry.runtime_data.manager.async_run("run_now")
+        return summary if call.return_response else None
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_IMPORT_DAY,
         _import_day,
         schema=IMPORT_DAY_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RUN_NOW,
+        _run_now,
+        schema=RUN_NOW_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     return True
@@ -157,20 +184,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         raise ConfigEntryNotReady(f"Amber API unavailable: {err}") from err
     except AmberError as err:
         raise ConfigEntryNotReady(f"Unexpected response from Amber: {err}") from err
-    if site_id not in {site.id for site in sites}:
+    site = next((s for s in sites if s.id == site_id), None)
+    if site is None:
         raise ConfigEntryAuthFailed("The API key no longer has access to this site")
-    entry.runtime_data = AmberRuntimeData(
-        ImportContext(
-            client=client,
-            site_id=site_id,
-            channels=channels,
-            specs=tuple(build_specs(site_id, channels)),
-            lock=asyncio.Lock(),
-        )
+
+    store = AmberStore(hass, entry.entry_id)
+    await store.async_load()
+    ctx = ImportContext(
+        client=client,
+        site_id=site_id,
+        channels=channels,
+        specs=tuple(build_specs(site_id, channels)),
+        lock=asyncio.Lock(),
     )
+    manager = AmberManager(
+        hass,
+        entry,
+        ctx,
+        store,
+        schedule_from_options(dict(entry.options)),
+        active_from=site.active_from,
+    )
+    entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    manager.async_start()
+    entry.async_on_unload(manager.async_stop)
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
+    if manager.needs_startup_run:
+        # First setup (no marker yet), or the previous run was interrupted: run as soon
+        # as Home Assistant has started, rather than waiting for the next schedule slot.
+        trigger = "first_setup" if store.marker is None else "resume_after_interruption"
+
+        async def _start_run(_hass: HomeAssistant) -> None:
+            entry.async_create_background_task(
+                hass, manager.async_run(trigger), f"{DOMAIN} {trigger}"
+            )
+
+        entry.async_on_unload(async_at_started(hass, _start_run))
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
+    """Apply a schedule change without reloading (no API call needed)."""
+    entry.runtime_data.manager.async_update_schedule(schedule_from_options(dict(entry.options)))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
     """Unload a config entry."""
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
+    """Delete the entry's Store when the entry is removed (statistics are kept)."""
+    await AmberStore(hass, entry.entry_id).async_remove()

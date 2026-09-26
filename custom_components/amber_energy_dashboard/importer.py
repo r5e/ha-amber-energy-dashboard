@@ -1,10 +1,9 @@
-"""Import one NEM day of Amber usage into external statistics (DESIGN section 7).
+"""Write NEM days of Amber usage into external statistics (DESIGN section 7).
 
-Milestone 2 scope: fetch, Guard 3 (completeness), grouping, baseline, write, verify.
-There is no Store marker yet, so a strict append-only rule stands in for Guard 1: a day
-may only be imported if it is the day straight after the latest imported hour, or if it
-is the latest imported day itself (a re-import). Anything else is refused before any
-API call or write.
+This module holds the per-day path shared by the catch-up walk and the import_day
+service: Guard 3 (completeness), grouping, baseline, write and read-back verification,
+plus the append-only planner that import_day applies after Guard 1 (manager.py). Callers
+hold the entry's lock.
 
 Time handling: a NEM day D runs 00:00 to 24:00 UTC+10, which is always exactly 24 UTC
 hours (D-1 14:00Z to D 14:00Z). Records are bucketed by the UTC hour of their floored
@@ -44,6 +43,7 @@ VERIFY_INTERVAL: Final = 0.5
 _TOLERANCE: Final = 1e-9
 
 ImportMode = Literal["first", "append", "reimport"]
+"""Modes chosen by async_plan_day for the import_day service."""
 
 
 class ImportDayError(HomeAssistantError):
@@ -246,53 +246,88 @@ class ImportContext:
     lock: asyncio.Lock
 
 
-async def async_import_day(hass: HomeAssistant, ctx: ImportContext, day: date) -> dict[str, Any]:
-    """Import NEM day ``day`` for one site. Returns a summary; raises ImportDayError."""
-    async with ctx.lock:
-        mode, baselines = await _async_plan(hass, ctx, day)
+async def async_write_day(
+    hass: HomeAssistant,
+    ctx: ImportContext,
+    day: date,
+    records: Sequence[UsageRecord],
+    baselines: Mapping[str, float],
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    """Guard 3, group, write and verify one NEM day. Returns a summary.
 
-        ctx.client.start_run()
-        try:
-            records = await ctx.client.async_get_usage(ctx.site_id, day, day)
-        finally:
-            ctx.client.end_run()
+    The caller holds ``ctx.lock`` and has already decided that ``day`` may be written
+    and what each statistic's baseline is. Raises IncompleteDataError (nothing written)
+    or VerificationFailedError.
+    """
+    by_channel = check_completeness(records, day, ctx.channels)
+    amounts = hourly_amounts(by_channel, ctx.specs, day)
+    expected = {
+        spec.statistic_id: build_rows(day, amounts[spec.statistic_id], baselines[spec.statistic_id])
+        for spec in ctx.specs
+    }
+    for spec in ctx.specs:
+        async_add_external_statistics(hass, spec.metadata(), expected[spec.statistic_id])
 
-        by_channel = check_completeness(records, day, ctx.channels)
-        amounts = hourly_amounts(by_channel, ctx.specs, day)
-        expected = {
-            spec.statistic_id: build_rows(
-                day, amounts[spec.statistic_id], baselines[spec.statistic_id]
-            )
-            for spec in ctx.specs
-        }
-        for spec in ctx.specs:
-            async_add_external_statistics(hass, spec.metadata(), expected[spec.statistic_id])
+    await _async_verify(hass, day, expected)
 
-        await _async_verify(hass, day, expected)
+    estimated = sum(1 for r in records if r.quality == "estimated")
+    summary = {
+        "date": day.isoformat(),
+        "mode": mode,
+        "records": len(records),
+        "estimated_records": estimated,
+        "durations": sorted({r.duration for r in records}),
+        "statistics": {
+            sid: {
+                "day_total": round(math.fsum(amounts[sid]), ROUND_DIGITS),
+                "baseline": round(baselines[sid], ROUND_DIGITS),
+                "sum": rows[-1]["sum"],
+            }
+            for sid, rows in expected.items()
+        },
+    }
+    _LOGGER.info("Imported %s (%s): %d records, %d estimated", day, mode, len(records), estimated)
+    return summary
 
-        estimated = sum(1 for r in records if r.quality == "estimated")
-        summary = {
-            "date": day.isoformat(),
-            "mode": mode,
-            "records": len(records),
-            "estimated_records": estimated,
-            "durations": sorted({r.duration for r in records}),
-            "statistics": {
-                sid: {
-                    "day_total": round(math.fsum(amounts[sid]), ROUND_DIGITS),
-                    "baseline": round(baselines[sid], ROUND_DIGITS),
-                    "sum": rows[-1]["sum"],
-                }
-                for sid, rows in expected.items()
-            },
-        }
-        _LOGGER.info(
-            "Imported %s (%s): %d records, %d estimated", day, mode, len(records), estimated
+
+async def async_latest_hours(hass: HomeAssistant, ids: Iterable[str]) -> dict[str, datetime | None]:
+    """Return the start of the last stored hour for each statistic (None if none)."""
+    recorder = get_instance(hass)
+    latest: dict[str, datetime | None] = {}
+    for sid in ids:
+        result = await recorder.async_add_executor_job(
+            get_last_statistics, hass, 1, sid, False, {"sum"}
         )
-        return summary
+        latest[sid] = (
+            datetime.fromtimestamp(result[sid][0]["start"], UTC) if result.get(sid) else None
+        )
+    return latest
 
 
-async def _async_plan(
+async def async_baselines_before(
+    hass: HomeAssistant, ids: Sequence[str], day: date
+) -> dict[str, float]:
+    """Return each statistic's sum in the hour just before NEM day ``day``.
+
+    Raises ImportRefusedError if any statistic has no row there.
+    """
+    before = nem_day_start(day) - HOUR
+    rows = await _async_read_rows(hass, ids, before, before + HOUR)
+    baselines: dict[str, float] = {}
+    for sid in ids:
+        found = [r for r in rows.get(sid, []) if abs(r["start"] - before.timestamp()) < 0.5]
+        if not found:
+            raise ImportRefusedError(
+                "partial_history",
+                f"{sid} has no row for the hour before {day}; cannot continue the sums.",
+            )
+        baselines[sid] = float(found[0]["sum"])
+    return baselines
+
+
+async def async_plan_day(
     hass: HomeAssistant, ctx: ImportContext, day: date
 ) -> tuple[ImportMode, dict[str, float]]:
     """Apply the append-only rule and return the mode and baseline per statistic."""

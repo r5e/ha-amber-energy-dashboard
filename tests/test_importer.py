@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 import math
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import (
@@ -18,6 +18,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -54,6 +55,17 @@ CHANNELS = [
 
 
 OTHER_SITE = "01FAKESITE0000000000000009"
+
+
+@pytest.fixture(autouse=True)
+def _no_startup_run():
+    """These tests drive import_day directly; the first-setup catch-up is tested elsewhere."""
+    with patch(
+        "custom_components.amber_energy_dashboard.manager.AmberManager.needs_startup_run",
+        new_callable=PropertyMock,
+        return_value=False,
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -524,8 +536,10 @@ async def test_refuses_partial_history(
     for target in (D2, D3):
         with pytest.raises(importer.ImportRefusedError) as exc_info:
             await _import(hass, target)
-        assert exc_info.value.reason == "partial_history"
+        # Guard 1: no marker, yet statistics exist -> Repairs issue, never a guess.
+        assert exc_info.value.reason == "marker_mismatch"
     assert _usage_calls(aioclient_mock) == 0
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{entry.entry_id}")
 
 
 async def test_refuses_inconsistent_history(
@@ -537,7 +551,7 @@ async def test_refuses_inconsistent_history(
 
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, D3)
-    assert exc_info.value.reason == "inconsistent_history"
+    assert exc_info.value.reason == "marker_mismatch"
 
 
 async def test_refuses_mismatched_end_hours(
@@ -550,7 +564,7 @@ async def test_refuses_mismatched_end_hours(
 
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, D3)
-    assert exc_info.value.reason == "inconsistent_history"
+    assert exc_info.value.reason == "marker_mismatch"
 
 
 async def test_refuses_reimport_with_broken_continuity(
@@ -577,6 +591,7 @@ async def test_refuses_reimport_with_broken_continuity(
             [{"start": _hour_start(D2, 0), "state": 1.0, "sum": 999.0}],
         )
     await async_wait_recording_done(hass)
+    await entry.runtime_data.manager.store.async_mark_imported(D2, {})  # Guard 1 passes
 
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, D2)
@@ -785,6 +800,7 @@ async def test_refuses_reimport_when_latest_day_has_gaps(
     for sid in ALL_IDS:
         _external(hass, sid, sid, [_hour_start(D2, h) for h in range(12, 24)])
     await async_wait_recording_done(hass)
+    await entry.runtime_data.manager.store.async_mark_imported(D2, {})  # Guard 1 passes
 
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, D2)

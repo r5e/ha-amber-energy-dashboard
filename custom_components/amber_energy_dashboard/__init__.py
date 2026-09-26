@@ -38,8 +38,12 @@ from .const import (
     ATTR_DATE,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
+    CONF_PATIENCE_DAYS,
+    CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
+    DEFAULT_PATIENCE_DAYS,
+    DEFAULT_REVISION_DAYS,
     DOMAIN,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
@@ -76,6 +80,15 @@ class AmberRuntimeData:
 
 
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
+
+
+def settings_from_options(options: dict[str, Any]) -> tuple[ScheduleConfig, int, int]:
+    """Schedule, patience days and revision days from entry options."""
+    return (
+        schedule_from_options(options),
+        int(options.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS)),
+        int(options.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS)),
+    )
 
 
 def schedule_from_options(options: dict[str, Any]) -> ScheduleConfig:
@@ -197,13 +210,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         specs=tuple(build_specs(site_id, channels)),
         lock=asyncio.Lock(),
     )
+    schedule, patience_days, revision_days = settings_from_options(dict(entry.options))
     manager = AmberManager(
         hass,
         entry,
         ctx,
         store,
-        schedule_from_options(dict(entry.options)),
+        schedule,
         active_from=site.active_from,
+        patience_days=patience_days,
+        revision_days=revision_days,
     )
     entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
 
@@ -227,8 +243,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
-    """Apply a schedule change without reloading (no API call needed)."""
-    entry.runtime_data.manager.async_update_schedule(schedule_from_options(dict(entry.options)))
+    """Apply option changes without reloading (no API call needed)."""
+    entry.runtime_data.manager.async_update_settings(*settings_from_options(dict(entry.options)))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:

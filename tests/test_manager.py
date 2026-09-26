@@ -108,12 +108,16 @@ def _store_key() -> str:
 
 
 def _preload_store(hass_storage: dict, **data: Any) -> None:
+    if data.get("retention_days") and "retention" not in data:
+        # Treat retention as already verified today, so no re-verify calls are made.
+        data["retention"] = {"last_verified": TODAY.isoformat(), "method": "preset"}
     hass_storage[_store_key()] = {
         "version": STORAGE_VERSION,
         "minor_version": STORAGE_MINOR_VERSION,
         "key": _store_key(),
         "data": {
             "marker": None,
+            "last_written": None,
             "pending": None,
             "days": {},
             "retention_days": None,
@@ -409,7 +413,10 @@ async def test_guard1_mismatch_raises_repairs_and_writes_nothing(
     assert await _rows(hass) == before
     issue = ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{ENTRY_ID}")
     assert issue is not None and issue.translation_key == "marker_mismatch"
-    assert "statistics end at" in issue.translation_placeholders["details"]
+    details = issue.translation_placeholders["details"]
+    assert (
+        "before the last imported day" if marker_shift < 0 else "not recorded as skipped"
+    ) in details
     # import_day refuses too
     with pytest.raises(importer.ImportRefusedError, match="disagree"):
         await hass.services.async_call(
@@ -680,6 +687,11 @@ async def test_guard3_raises_repairs_issue_and_clears(
     assert store.pending is None
     assert store.day(bad)["status"] == "failed"
     found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{ENTRY_ID}")
+    if issue == "incomplete_data":
+        # Not the final attempt of the day: no issue yet (a later attempt may succeed).
+        assert found is None
+        await entry.runtime_data.manager.async_run("scheduled (final)", final=True)
+        found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{ENTRY_ID}")
     assert found is not None and found.translation_placeholders["day"] == bad.isoformat()
     _assert_contiguous(await _rows(hass), start, bad - timedelta(days=1))
 
@@ -998,7 +1010,8 @@ async def test_import_day_guard3_and_verification_in_service(
             DOMAIN, "import_day", {"date": start.isoformat()}, blocking=True
         )
     assert store.day(start)["status"] == "failed" and store.pending is None
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"incomplete_data_{ENTRY_ID}") is not None
+    # import_day is never a final scheduled attempt: no incomplete_data issue.
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"incomplete_data_{ENTRY_ID}") is None
 
     fake.mutate = None
     with (
@@ -1129,7 +1142,11 @@ async def test_store_edge_cases(
     assert len(store.as_dict()["days"]) == MAX_DAY_ENTRIES
 
     migrator = _VersionedStore(hass, 1, "x")
-    assert await migrator._async_migrate_func(1, 0, {"a": 1}) == {"a": 1}
+    assert await migrator._async_migrate_func(1, 1, {"marker": "2026-09-25"}) == {
+        "marker": "2026-09-25",
+        "last_written": "2026-09-25",
+    }
+    assert await migrator._async_migrate_func(1, 2, {"a": 1}) == {"a": 1}
     with pytest.raises(NotImplementedError):
         await migrator._async_migrate_func(2, 0, {})
 

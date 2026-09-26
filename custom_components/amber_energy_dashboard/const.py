@@ -47,3 +47,11 @@ RETENTION_BRACKET_DAYS: Final = 30
 
 FETCH_WINDOW_DAYS: Final = 7
 """Inclusive days per usage call (the API accepts 8; one day of slack)."""
+
+# Guard 2 and revisions (options)
+CONF_PATIENCE_DAYS: Final = "patience_days"
+CONF_REVISION_DAYS: Final = "revision_days"
+DEFAULT_PATIENCE_DAYS: Final = 7
+DEFAULT_REVISION_DAYS: Final = 14
+RETENTION_REVERIFY_BRACKET_DAYS: Final = 15
+"""Daily re-verify bracket: 2 check calls + 1 step + 1 bracket + 4 bisection = 8."""

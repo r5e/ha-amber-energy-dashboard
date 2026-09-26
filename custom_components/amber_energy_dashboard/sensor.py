@@ -55,7 +55,7 @@ STATUS_SENSORS = (
         key="last_imported_date",
         translation_key="last_imported_date",
         device_class=SensorDeviceClass.DATE,
-        value_fn=lambda d: d["marker"],
+        value_fn=lambda d: d["last_imported"],
     ),
     AmberSensorDescription(
         key="days_behind",

@@ -1,14 +1,19 @@
 """Config flow: API key, site selection, channel confirmation, and reauth."""
 
 from collections.abc import Mapping
+from datetime import timedelta
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_API_KEY
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -35,14 +40,19 @@ from .const import (
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
     CONF_NMI,
+    CONF_PATIENCE_DAYS,
+    CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
+    DEFAULT_PATIENCE_DAYS,
+    DEFAULT_REVISION_DAYS,
     DOMAIN,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
     SUPPORTED_CHANNEL_TYPES,
 )
 from .schedule import format_times, parse_times
+from .storage import AmberStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +69,18 @@ _SCHEDULE_SCHEMA = vol.Schema(
             )
         ),
         vol.Optional(CONF_FIXED_TIMES): TextSelector(),
+    }
+)
+
+
+_OPTIONS_SCHEMA = _SCHEDULE_SCHEMA.extend(
+    {
+        vol.Optional(CONF_PATIENCE_DAYS): NumberSelector(
+            NumberSelectorConfig(min=1, max=30, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Optional(CONF_REVISION_DAYS): NumberSelector(
+            NumberSelectorConfig(min=0, max=60, step=1, mode=NumberSelectorMode.BOX)
+        ),
     }
 )
 
@@ -212,6 +234,52 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return the options flow (schedule)."""
         return AmberOptionsFlow()
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Refresh the channel list from Amber (for example a new controlled load).
+
+        New channels get statistics from the next day to be imported; statistics of
+        channels that disappeared are kept but no longer written.
+        """
+        entry = self._get_reconfigure_entry()
+        sites, error = await self._async_fetch_sites(entry.data[CONF_API_KEY])
+        if error:
+            return self.async_abort(reason=error)
+        site = next((s for s in sites or [] if s.id == entry.unique_id), None)
+        if site is None:
+            return self.async_abort(reason="site_not_found")
+        if any(c.type not in SUPPORTED_CHANNEL_TYPES for c in site.channels) or not site.channels:
+            return self.async_abort(reason="unsupported_channels")
+        current = {c["identifier"] for c in entry.data[CONF_CHANNELS]}
+        found = {c.identifier for c in site.channels}
+        added = sorted(found - current)
+        removed = sorted(current - found)
+        if not added and not removed:
+            return self.async_abort(reason="channels_unchanged")
+        if user_input is not None:
+            if added:
+                await _async_record_new_channels(self.hass, entry, added)
+            ir.async_delete_issue(self.hass, DOMAIN, f"unexpected_channel_{entry.entry_id}")
+            return self.async_update_reload_and_abort(
+                entry,
+                data_updates={
+                    CONF_CHANNELS: [
+                        {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
+                        for c in site.channels
+                    ]
+                },
+            )
+        labels = {c.identifier: _CHANNEL_LABELS[c.type] for c in site.channels}
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "added": ", ".join(f"{i} ({labels[i]})" for i in added) or "none",
+                "removed": ", ".join(removed) or "none",
+            },
+        )
+
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """Start reauth after the key was rejected."""
         return await self.async_step_reauth_confirm()
@@ -241,6 +309,20 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
+async def _async_record_new_channels(
+    hass: HomeAssistant, entry: ConfigEntry, identifiers: list[str]
+) -> None:
+    """Record that new channels start at the next day to import (marker + 1)."""
+    runtime = getattr(entry, "runtime_data", None)
+    if runtime is not None:
+        await runtime.manager.async_add_channels(identifiers)
+        return
+    store = AmberStore(hass, entry.entry_id)
+    await store.async_load()
+    if store.marker is not None:
+        await store.async_set_channel_since(identifiers, store.marker + timedelta(days=1))
+
+
 class AmberOptionsFlow(OptionsFlow):
     """Change the schedule. Applied without a reload, so no API call is made."""
 
@@ -252,6 +334,17 @@ class AmberOptionsFlow(OptionsFlow):
             if error:
                 errors[CONF_FIXED_TIMES] = error
             else:
+                current = self.config_entry.options
+                options[CONF_PATIENCE_DAYS] = int(
+                    user_input.get(
+                        CONF_PATIENCE_DAYS, current.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS)
+                    )
+                )
+                options[CONF_REVISION_DAYS] = int(
+                    user_input.get(
+                        CONF_REVISION_DAYS, current.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS)
+                    )
+                )
                 return self.async_create_entry(data=options)
         current = dict(self.config_entry.options)
         suggested = user_input or {
@@ -259,9 +352,11 @@ class AmberOptionsFlow(OptionsFlow):
             CONF_FIXED_TIMES: format_times(parse_times(current[CONF_FIXED_TIMES]))
             if current.get(CONF_FIXED_TIMES)
             else "",
+            CONF_PATIENCE_DAYS: current.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS),
+            CONF_REVISION_DAYS: current.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS),
         }
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(_SCHEDULE_SCHEMA, suggested),
+            data_schema=self.add_suggested_values_to_schema(_OPTIONS_SCHEMA, suggested),
             errors=errors,
         )

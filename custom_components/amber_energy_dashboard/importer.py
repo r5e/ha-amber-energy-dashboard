@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+import hashlib
 import logging
 import math
 from typing import Any, Final, Literal
@@ -42,7 +43,7 @@ VERIFY_TIMEOUT: Final = 60.0
 VERIFY_INTERVAL: Final = 0.5
 _TOLERANCE: Final = 1e-9
 
-ImportMode = Literal["first", "append", "reimport"]
+ImportMode = Literal["reimport"]
 """Modes chosen by async_plan_day for the import_day service."""
 
 
@@ -254,12 +255,15 @@ async def async_write_day(
     baselines: Mapping[str, float],
     *,
     mode: str,
+    expect_latest: bool = True,
 ) -> dict[str, Any]:
     """Guard 3, group, write and verify one NEM day. Returns a summary.
 
     The caller holds ``ctx.lock`` and has already decided that ``day`` may be written
-    and what each statistic's baseline is. Raises IncompleteDataError (nothing written)
-    or VerificationFailedError.
+    and what each statistic's baseline is. With ``expect_latest`` (the default) the
+    read-back also checks that ``day`` is now the latest stored day; a tail rewrite of a
+    day in the middle of history passes False. Raises IncompleteDataError (nothing
+    written) or VerificationFailedError.
     """
     by_channel = check_completeness(records, day, ctx.channels)
     amounts = hourly_amounts(by_channel, ctx.specs, day)
@@ -270,7 +274,7 @@ async def async_write_day(
     for spec in ctx.specs:
         async_add_external_statistics(hass, spec.metadata(), expected[spec.statistic_id])
 
-    await _async_verify(hass, day, expected)
+    await _async_verify(hass, day, expected, expect_latest=expect_latest)
 
     estimated = sum(1 for r in records if r.quality == "estimated")
     summary = {
@@ -306,6 +310,32 @@ async def async_latest_hours(hass: HomeAssistant, ids: Iterable[str]) -> dict[st
     return latest
 
 
+async def async_sums_at(
+    hass: HomeAssistant, ids: Iterable[str], hour: datetime
+) -> dict[str, float | None]:
+    """Return each statistic's cumulative sum in the row starting at ``hour``."""
+    ids = list(ids)
+    rows = await _async_read_rows(hass, ids, hour, hour + HOUR)
+    sums: dict[str, float | None] = {}
+    for sid in ids:
+        found = [r for r in rows.get(sid, []) if abs(r["start"] - hour.timestamp()) < 0.5]
+        sums[sid] = float(found[0]["sum"]) if found else None
+    return sums
+
+
+def revision_fingerprint(records: Iterable[UsageRecord]) -> str:
+    """A hash of the values that determine the statistics for a day.
+
+    Channel, floored interval start, kWh and cost. Quality is left out: estimated data
+    that becomes billable with the same numbers changes nothing in the statistics.
+    """
+    items = sorted(
+        (r.channel_identifier, floor_minute(r.start_time).isoformat(), repr(r.kwh), repr(r.cost))
+        for r in records
+    )
+    return hashlib.sha256(repr(items).encode()).hexdigest()
+
+
 async def async_baselines_before(
     hass: HomeAssistant, ids: Sequence[str], day: date
 ) -> dict[str, float]:
@@ -330,7 +360,12 @@ async def async_baselines_before(
 async def async_plan_day(
     hass: HomeAssistant, ctx: ImportContext, day: date
 ) -> tuple[ImportMode, dict[str, float]]:
-    """Apply the append-only rule and return the mode and baseline per statistic."""
+    """Plan a re-import of the latest imported day: check the stored history and return
+    the mode ("reimport") and the baseline per statistic.
+
+    The manager handles appends itself (after Guard 1); this planner only accepts the
+    latest stored day, and refuses inconsistent or partial history on its own as well.
+    """
     ids = [spec.statistic_id for spec in ctx.specs]
     day_start = nem_day_start(day)
     day_last = day_start + (DAY_HOURS - 1) * HOUR
@@ -345,7 +380,9 @@ async def async_plan_day(
 
     present = {sid: row for sid, row in last.items() if row is not None}
     if not present:
-        return "first", dict.fromkeys(ids, 0.0)
+        raise ImportRefusedError(
+            "not_next_day", f"{day} has not been imported; nothing to re-import."
+        )
     if len(present) != len(ids):
         missing = sorted(set(ids) - set(present))
         raise ImportRefusedError(
@@ -372,8 +409,6 @@ async def async_plan_day(
         f"Only {latest_day + timedelta(days=1)} (the next day) or {latest_day} "
         "(re-import of the latest day) can be imported now."
     )
-    if latest == day_start - HOUR:
-        return "append", {sid: float(row["sum"]) for sid, row in present.items()}
     if latest != day_last:
         raise ImportRefusedError(
             "not_next_day",
@@ -416,7 +451,11 @@ async def _async_read_rows(
 
 
 async def _async_verify(
-    hass: HomeAssistant, day: date, expected: Mapping[str, Sequence[Mapping[str, Any]]]
+    hass: HomeAssistant,
+    day: date,
+    expected: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    expect_latest: bool = True,
 ) -> None:
     """Read the day back until it matches what was written, or time out."""
     day_start = nem_day_start(day)
@@ -425,7 +464,7 @@ async def _async_verify(
     while True:
         rows = await _async_read_rows(hass, expected, day_start, day_start + DAY_HOURS * HOUR)
         problem = _compare(expected, rows)
-        if problem is None:
+        if problem is None and expect_latest:
             problem = await _async_check_nothing_after(hass, expected)
         if problem is None:
             return

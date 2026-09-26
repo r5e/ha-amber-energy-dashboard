@@ -324,7 +324,12 @@ async def test_options_flow_changes_schedule_without_reload(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options == {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: ["07:15", "10:15"]}
+    assert entry.options == {
+        CONF_SCHEDULE_MODE: "fixed",
+        CONF_FIXED_TIMES: ["07:15", "10:15"],
+        "patience_days": 7,
+        "revision_days": 14,
+    }
     assert entry.runtime_data.manager is manager  # same instance: not reloaded
     assert manager.schedule.mode == "fixed"
     assert manager.next_run.astimezone(dt_util.get_time_zone(hass.config.time_zone)).strftime(
@@ -339,5 +344,9 @@ async def test_options_flow_changes_schedule_without_reload(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
     )
-    assert entry.options == {CONF_SCHEDULE_MODE: "automatic"}
+    assert entry.options == {
+        CONF_SCHEDULE_MODE: "automatic",
+        "patience_days": 7,
+        "revision_days": 14,
+    }
     assert manager.schedule.mode == "automatic"

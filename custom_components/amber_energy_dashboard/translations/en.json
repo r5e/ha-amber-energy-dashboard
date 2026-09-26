@@ -36,6 +36,10 @@
         "data": {
           "api_key": "API key"
         }
+      },
+      "reconfigure": {
+        "title": "Update channels",
+        "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
       }
     },
     "error": {
@@ -49,7 +53,13 @@
       "already_configured": "This site is already configured.",
       "no_active_sites": "This API key has no active sites.",
       "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "channels_unchanged": "The site's channels have not changed.",
+      "site_not_found": "The API key no longer has access to this site.",
+      "reconfigure_successful": "The channels were updated.",
+      "invalid_auth": "The API key was rejected. Re-authenticate first.",
+      "cannot_connect": "Could not reach the Amber API. Try again later.",
+      "unknown": "Unexpected response from the Amber API."
     }
   },
   "options": {
@@ -59,10 +69,14 @@
         "description": "Automatic picks a stable time each morning (between 06:30 and 08:30), with retries 3 and 6 hours later.",
         "data": {
           "schedule_mode": "Schedule",
-          "fixed_times": "Fixed times"
+          "fixed_times": "Fixed times",
+          "patience_days": "Patience days",
+          "revision_days": "Revision days"
         },
         "data_description": {
-          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15."
+          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15.",
+          "patience_days": "A day that stays empty on this many separate days, while later days have data, is skipped as a gap (default 7).",
+          "revision_days": "Days with estimated data are re-checked daily for this many days; if Amber revises them, history is rewritten from that day on (default 14, 0 turns it off)."
         }
       }
     },
@@ -121,7 +135,7 @@
     },
     "unexpected_channel": {
       "title": "Amber reports a new metering channel",
-      "description": "Usage for {day} on {entry} contains a channel that is not configured: {details}.\n\nThis usually means a new meter channel (for example controlled load) was added to your Amber account. Imports are paused so that no data is lost or mis-assigned. Reconfiguring the channels will be supported in a later version; until then, remove and re-add the integration."
+      "description": "Usage for {day} on {entry} contains a channel that is not configured: {details}.\n\nThis usually means a new meter channel (for example controlled load) was added to your Amber account. Imports are paused so that no data is lost or mis-assigned. Open the integration and choose **Reconfigure** to add the channel; imports then continue from {day}."
     },
     "incomplete_data": {
       "title": "Amber usage data is incomplete",
@@ -130,6 +144,10 @@
     "import_failed": {
       "title": "Amber import could not be verified",
       "description": "{day} was written for {entry} but reading it back did not match: {details}.\n\nThe import position was not advanced. The next attempt will rewrite the day."
+    },
+    "behind": {
+      "title": "Amber import is behind",
+      "description": "After the last scheduled attempt today, {entry} has only reached {last_date} ({days_behind} days behind yesterday). Last run: {status} {reason}\n\nThis clears by itself once the import catches up. If it persists for several days, check the status sensor and diagnostics."
     }
   },
   "services": {

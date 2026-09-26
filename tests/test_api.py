@@ -11,7 +11,10 @@ import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.amber_energy_dashboard.api import (
+    COUNTER_PRICES,
+    COUNTER_SITES_USAGE,
     AmberAuthError,
+    AmberBudgetExhaustedError,
     AmberClient,
     AmberConnectionError,
     AmberError,
@@ -21,6 +24,7 @@ from custom_components.amber_energy_dashboard.api import (
     AmberServerError,
     AmberTimeoutError,
     RateLimit,
+    RunBudget,
 )
 
 from .conftest import load_fixture, load_json_fixture
@@ -496,5 +500,175 @@ def test_error_hierarchy() -> None:
         AmberRequestError,
         AmberResponseError,
         AmberServerError,
+        AmberBudgetExhaustedError,
     ):
         assert issubclass(cls, AmberError)
+
+
+# --- run budget ----------------------------------------------------------------------
+
+
+def _limit_headers(remaining: int, reset: int = 200) -> dict[str, str]:
+    return {
+        **RATE_LIMIT_HEADERS,
+        "RateLimit-Remaining": str(remaining),
+        "RateLimit-Reset": str(reset),
+    }
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_no_budget_means_no_limit(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Without a run, a low Remaining does not block requests."""
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(1))
+
+    for _ in range(3):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    assert aioclient_mock.call_count == 3
+
+
+async def test_first_response_below_reserve_stops_run(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The run's first response is the start-of-run check: below reserve, stop."""
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(14))
+    budget = client.start_run(RunBudget(reserve=15))
+
+    assert await client.async_get_usage(SITE_ID, DAY, DAY) == []  # data still returned
+    with pytest.raises(AmberBudgetExhaustedError, match="14 remaining") as exc_info:
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    assert exc_info.value.counter == COUNTER_SITES_USAGE
+    assert aioclient_mock.call_count == 1  # the refused request was never sent
+    assert budget.calls == {COUNTER_SITES_USAGE: 1}
+    assert budget.remaining == {COUNTER_SITES_USAGE: 14}
+
+
+async def test_reserve_boundary_is_inclusive(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Remaining equal to the reserve still allows the next call."""
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(15))
+    client.start_run(RunBudget(reserve=15))
+
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    assert aioclient_mock.call_count == 2
+
+
+async def test_counters_are_independent(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A drained sites/usage counter does not block prices, and vice versa."""
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(3))
+    aioclient_mock.get(PRICES_URL, json=[], headers=_limit_headers(45))
+    aioclient_mock.get(SITES_URL, json=[])
+    budget = client.start_run()
+
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    await client.async_get_prices(SITE_ID, DAY, DAY)
+    await client.async_get_prices(SITE_ID, DAY, DAY)
+    with pytest.raises(AmberBudgetExhaustedError):
+        await client.async_get_sites()  # /sites shares the usage counter
+
+    assert budget.calls == {COUNTER_SITES_USAGE: 1, COUNTER_PRICES: 2}
+
+
+async def test_max_calls_per_counter(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The per-run call cap applies per counter even with plenty remaining."""
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(49))
+    aioclient_mock.get(PRICES_URL, json=[])
+    client.start_run(RunBudget(max_calls_per_counter=2))
+
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    with pytest.raises(AmberBudgetExhaustedError, match="2 calls on sites_usage"):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+    await client.async_get_prices(SITE_ID, DAY, DAY)
+
+    assert aioclient_mock.call_count == 3
+
+
+async def test_window_reset_clears_stale_remaining(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Once RateLimit-Reset has elapsed, a low Remaining from the old window is ignored."""
+    clock = _Clock()
+    aioclient_mock.get(USAGE_URL, json=[], headers=_limit_headers(5, reset=30))
+    client.start_run(RunBudget(clock=clock))
+
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    clock.now += 29
+    with pytest.raises(AmberBudgetExhaustedError):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+    clock.now += 1
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    assert aioclient_mock.call_count == 2
+
+
+async def test_failed_requests_count_against_budget(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A request that fails in transport still used a call."""
+    aioclient_mock.get(USAGE_URL, exc=aiohttp.ClientConnectionError())
+    budget = client.start_run()
+
+    with pytest.raises(AmberConnectionError):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    assert budget.calls == {COUNTER_SITES_USAGE: 1}
+
+
+async def test_rate_limited_response_updates_budget(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A 429 with Remaining 0 also blocks further calls on that counter in the run."""
+    aioclient_mock.get(USAGE_URL, status=429, headers=_limit_headers(0))
+    client.start_run()
+
+    with pytest.raises(AmberRateLimitError):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+    with pytest.raises(AmberBudgetExhaustedError):
+        await client.async_get_usage(SITE_ID, DAY, DAY)
+
+
+async def test_end_run_and_restart(
+    client: AmberClient, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """end_run removes the budget; start_run always begins with fresh counts."""
+    aioclient_mock.get(USAGE_URL, json=[])
+    first = client.start_run(RunBudget(max_calls_per_counter=1))
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+    client.end_run()
+    assert client.budget is None
+    await client.async_get_usage(SITE_ID, DAY, DAY)
+
+    second = client.start_run()
+
+    assert second is not first
+    assert second.calls == {}
+    assert second.max_calls_per_counter == 25
+    assert second.reserve == 15
+
+
+def test_budget_ignores_headers_without_remaining() -> None:
+    """A rate limit without Remaining leaves the budget state unchanged."""
+    budget = RunBudget()
+    budget.record_rate_limit(COUNTER_PRICES, RateLimit(50, None, 10.0, "50;w=300"))
+    assert budget.remaining == {}
+    budget.record_rate_limit(COUNTER_PRICES, RateLimit(50, 3, None, None))
+    with pytest.raises(AmberBudgetExhaustedError):
+        budget.check(COUNTER_PRICES)  # no reset known: stays blocked

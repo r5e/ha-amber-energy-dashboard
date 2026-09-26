@@ -1,6 +1,6 @@
 # Amber Energy Dashboard v2 (HACS integration): Design
 
-Status: agreed design, pre-implementation (September 2026).
+Status: agreed design (September 2026). Milestone 1 API and schema findings applied.
 Owner: r5e. Implementation via Claude Code, planning in chat.
 
 Names (agreed): repository `r5e/ha-amber-energy-dashboard` (the existing v1 repo, reused),
@@ -49,7 +49,7 @@ Out of scope:
 - **madpilot/hass-amber-electric**: the original component; its usage sensor was dropped
   during the merge into core, which is the gap this project fills.
 - **r5e/ha-amber-energy-dashboard v1**: the YAML predecessor (this repo, `legacy/v1/`). Its full design history is in
-  `amber-technical-reference.md`.
+  `amber-technical-reference.md`, a private document that is **not in this repository**.
 
 ## 3. Architecture overview
 
@@ -74,27 +74,51 @@ Out of scope:
 
 ## 4. Amber API facts relied on
 
-- Usage records carry: `date` (NEM calendar date), `nemTime` (interval END, UTC+10),
-  `startTime` / `endTime` (UTC), `duration` (minutes), `kwh`, `cost` (cents),
-  `perKwh` (c/kWh), `channelType`, `channelIdentifier` (for example `E1`, `B1`),
-  and `quality` (`estimated` or `billable`).
-- `startTime` values may carry a one-second offset (for example `05:30:01Z`). Always floor
-  to the hour; never assume exact boundaries.
+- Usage records carry: `type` (`Usage`), `date` (NEM calendar date), `nemTime` (interval
+  END, UTC+10), `startTime` / `endTime` (UTC), `duration` (minutes), `kwh`, `cost` (cents),
+  `perKwh` (c/kWh), `spotPerKwh`, `renewables`, `descriptor`, `spikeStatus`,
+  `channelType`, `channelIdentifier` and `quality` (`estimated` or `billable`).
+  `tariffInformation` is present on general channels and **absent** (not null) on feed-in.
+- Channel identifiers vary by account (`E1`/`B1`, but also `E9`/`B9` and others). Always
+  take them from site discovery; never hardcode them.
+- `startTime` values carry a one-second offset (`14:00:01Z`) on every observed usage and
+  price record; `endTime` is exact. Always floor `startTime` to the hour; never assume
+  exact boundaries.
 - Native usage resolution is 5 minutes. HA long-term statistics accept full-hour
   timestamps only. Short-term (5-minute) statistics cannot be imported at all.
 - An empty response (HTTP 200, `[]`) means both "not published yet" and "outside
   retention". There is no distinguishing signal.
 - Rolling usage retention was measured at 86 days. It rolls forward daily.
-- Rate limit: 50 calls per 300 seconds. It may be per account rather than per key.
-- Cost sign convention from Amber: feed-in cost is negative (money earned).
+- Rate limit: 50 calls per 300 seconds, in **fixed** windows, reported in IETF
+  `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds to window end) and
+  `RateLimit-Policy: 50;w=300` headers. There are **two independent counters**: one for
+  `/sites` plus `/usage`, one for `/prices`. The budget is **shared** with other clients
+  (other keys on the account, or the same source IP; not distinguishable), so treat it as
+  shared: another client was observed using about 2 calls a minute.
+- Maximum range per call, usage and prices alike: `endDate − startDate ≤ 7` (8 inclusive
+  days are accepted, despite the message). Longer ranges return **HTTP 422** with the
+  plain-text body `Range requested is too large. Maximum 7 days.` Plan 7-day windows.
+- An invalid key returns **HTTP 403** with a JSON `message` (not 401) and no rate-limit
+  headers. Treat 401 and 403 alike as auth failures.
+- Cost sign convention from Amber: feed-in cost is negative (money earned). Feed-in
+  `perKwh` is negative too.
+- `cost` = `kwh × perKwh`, rounded by Amber to 4 decimal places (cents). `perKwh` equals
+  the `/prices` `ActualInterval` `perKwh` for the same interval and is the all-in retail
+  rate: wholesale energy (spot times loss factors) plus network time-of-use charge plus
+  market and environmental per-kWh charges, GST-inclusive. There is no daily supply charge
+  or membership fee in usage data.
+- `/prices` returns complete 5-minute `ActualInterval` history back to at least
+  **2025-03-01** (earlier dates return `[]`), well before a site's `activeFrom`. Whether
+  this start is fixed or rolling is not yet known.
 
-**To verify in Milestone 1** (with the test key, cheaply):
-1. Maximum date range per usage call (Tmbao's code implies 7 days).
-2. How far back `/prices` returns actual intervals (this bounds own-sensor cost backfill).
-3. Whether the rate limit is per key or per account (observe response headers).
-4. That usage `date` equals the NEM date, and that 00:00 to 24:00 AEST maps to 24 UTC hours.
-5. Exactly what `cost` includes (energy only, or also network and market fees; no daily
-   supply charge is expected).
+**Verified in Milestone 1** (details and raw observations in `reports/M1-report.md`):
+1. Maximum date range: `endDate − startDate ≤ 7` for usage and prices (above).
+2. Price history: back to 2025-03-01 (above). It will not limit own-sensor cost backfill
+   in practice; HA's retention of the user's own statistics will.
+3. Rate limit: shared budget, two counters (above). No second-key test; treat as shared.
+4. Usage `date` is the NEM date; 00:00 to 24:00 AEST is exactly 24 UTC hours
+   (`D-1T14:00Z` to `DT14:00Z`), 288 five-minute records per channel.
+5. `cost` = `kwh × perKwh`, all-in per-kWh rate, no supply charge (above).
 
 ## 5. Time handling (DST-safe by construction)
 
@@ -135,9 +159,19 @@ Optional:
 | `amber_energy_dashboard:{site}_{chan}_price` | AUD/kWh | mean | Off by default. Hourly mean of `perKwh`. README explains why this is not a cost rate |
 | `amber_energy_dashboard:{site}_own_{sensor_slug}_cost` | AUD | sum | Own-sensor cost (section 11) |
 
-Metadata: `has_sum=True` for sums, `source="amber_energy_dashboard"`, friendly `name`. **Verify the
-`StatisticMetaData` schema against HA 2026.9** (`mean_type` and `unit_class` fields) and
-pin the minimum HA version accordingly. The initial minimum is 2026.9.
+Metadata (verified against HA 2026.9.3 in Milestone 1): `source="amber_energy_dashboard"`,
+friendly `name`, and **always both `mean_type` and `unit_class`** (omitting either is
+deprecated and breaks in HA 2026.11):
+
+| Kind | `has_sum` | `mean_type` | `unit_of_measurement` | `unit_class` |
+|---|---|---|---|---|
+| energy | `True` | `StatisticMeanType.NONE` | `kWh` | `"energy"` |
+| cost, compensation, net cost, own-sensor cost | `True` | `StatisticMeanType.NONE` | `AUD` | `None` |
+| price (optional) | `False` | `StatisticMeanType.ARITHMETIC` | `AUD/kWh` | `None` |
+
+Statistic IDs must be lowercase and contain no double or leading underscore in the object
+ID (`valid_statistic_id`). Row timestamps must be timezone-aware and on the hour. The
+minimum HA version is 2026.9; nothing newer is required.
 
 Rules carried forward:
 - Sum at full precision internally. Round only the values written.
@@ -170,8 +204,9 @@ For one target NEM day D and one site:
    record was `estimated`).
 
 Failure at any step leaves the marker untouched. Existing rows at the same timestamps
-are overwritten by the write (confirmed behaviour from the YAML era; re-verify for
-external statistics).
+are overwritten by the write (confirmed in the YAML era, and re-confirmed for external
+statistics in Milestone 1: a re-import of the same hours replaces `state` and `sum`
+rather than adding rows).
 
 ## 8. Guards 2 and revisions
 
@@ -195,12 +230,19 @@ rewrite uses the same guarded per-day path, so it is covered by the same tests.
 ## 9. Catch-up and rate limiting
 
 - Walk forward from marker + 1 toward yesterday, applying all guards to each day.
-- Fetch in multi-day windows up to the verified maximum range, then validate and write
-  per day. This cuts API calls roughly sevenfold compared with the YAML design.
+- Fetch in multi-day windows of **7 inclusive days** (one day inside the verified limit,
+  so an Amber-side off-by-one fix cannot break us), then validate and write per day. This
+  cuts API calls roughly sevenfold compared with the YAML design.
 - Budget each run to stay well inside 50 calls per 300 seconds (target no more than 25
-  calls per run). On HTTP 429, back off using the response headers and resume on the
-  next scheduled attempt.
-- A full 86-day recovery should complete within one or two runs.
+  calls per run), **per counter**: `/sites` plus `/usage` share one counter, `/prices` has
+  its own.
+- The budget is shared with other clients. **Read `RateLimit-Remaining` from the first
+  response of each run** (and every later one) and stop the run early, as a normal
+  "resume next attempt" outcome, if it falls below a reserve (default 15). The client
+  implements this as a per-run budget (`RunBudget`).
+- On HTTP 429, back off using the response headers and resume on the next scheduled
+  attempt.
+- A full 86-day recovery needs 13 usage calls and should complete within one run.
 
 ## 10. Scheduling
 
@@ -226,6 +268,8 @@ Own-sensor cost (available in any mode):
   each to a price channel (general, controlled load or feed-in).
 - For each Amber interval, cost = the sensor's energy delta over that interval (from HA
   **short-term 5-minute statistics**) times Amber's confirmed `perKwh` for that interval.
+  Because Amber's own `cost` is exactly `kwh × perKwh`, own-sensor cost is directly
+  comparable with Amber's figures.
   Summed hourly into `amber_energy_dashboard:{site}_own_{slug}_cost`.
 - Short-term statistics are purged after roughly 10 days by default. Amber's day-late data
   arrives well within that window. For older periods (a backfill), the default is to use
@@ -261,8 +305,9 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 
 ## 13. Error handling
 
-- Timeouts on every request. 401/403 starts reauth. 429 triggers backoff. 5xx and network
-  errors retry at the next scheduled attempt.
+- Timeouts on every request. 401/403 starts reauth (an invalid key returns 403). 429
+  triggers backoff. A run stopped by the rate-limit reserve (section 9) resumes at the
+  next attempt. 5xx and network errors retry at the next scheduled attempt.
 - Empty or ambiguous inner results are always treated as **errors**, never as success
   (lesson from the YAML rebuild bug).
 - Every stop is recorded in the Store with a reason, and exposed via the status sensor

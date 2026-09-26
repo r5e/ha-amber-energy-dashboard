@@ -37,7 +37,7 @@ from custom_components.amber_energy_dashboard.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 
-from .synthetic import SITE_ID, expected_totals, make_usage_day
+from .synthetic import SITE_ID, expected_totals, make_usage_day, site_json
 
 USAGE_URL = f"https://api.amber.com.au/v1/sites/{SITE_ID}/usage"
 SID = SITE_ID.lower()
@@ -53,9 +53,21 @@ CHANNELS = [
 ]
 
 
+OTHER_SITE = "01FAKESITE0000000000000009"
+
+
 @pytest.fixture(autouse=True)
-def _setup(recorder_mock, enable_custom_integrations: None) -> None:
-    """Recorder first (it must precede hass), then allow custom integrations."""
+def _setup(
+    recorder_mock, enable_custom_integrations: None, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Recorder first (it must precede hass), then allow custom integrations.
+
+    Entry setup validates the key with GET /sites, so both fake sites are listed.
+    """
+    aioclient_mock.get(
+        "https://api.amber.com.au/v1/sites",
+        json=[site_json(), site_json(id=OTHER_SITE, nmi="FAKENMI009")],
+    )
 
 
 async def _add_entry(hass: HomeAssistant, site_id: str = SITE_ID, **kw: Any) -> MockConfigEntry:
@@ -114,6 +126,10 @@ async def _rows(hass: HomeAssistant, ids=ALL_IDS) -> dict[str, list[dict]]:
         None,
         {"state", "sum"},
     )
+
+
+def _usage_calls(aioclient_mock: AiohttpClientMocker) -> int:
+    return sum(1 for _m, url, _d, _h in aioclient_mock.mock_calls if url.path.endswith("/usage"))
 
 
 def _start(row: dict) -> datetime:
@@ -509,7 +525,7 @@ async def test_refuses_partial_history(
         with pytest.raises(importer.ImportRefusedError) as exc_info:
             await _import(hass, target)
         assert exc_info.value.reason == "partial_history"
-    assert aioclient_mock.call_count == 0
+    assert _usage_calls(aioclient_mock) == 0
 
 
 async def test_refuses_inconsistent_history(
@@ -639,7 +655,7 @@ async def test_service_with_two_entries(
 ) -> None:
     """With several sites, config_entry_id is required and selects the site."""
     await _add_entry(hass)
-    other = "01FAKESITE0000000000000009"
+    other = OTHER_SITE
     second = await _add_entry(hass, other)
     _mock_day(aioclient_mock, D3, make_usage_day(D3), site=other)
 
@@ -759,7 +775,7 @@ async def test_diagnostics_redacts_key_and_nmi(
     assert diag["entry"]["title"] == "**REDACTED**"
     assert [s["statistic_id"] for s in diag["statistics"]] == ALL_IDS
     assert diag["last_import"]["date"] == "2026-09-24"
-    assert diag["api"]["requests_since_start"] == 1
+    assert diag["api"]["requests_since_start"] == 2  # setup validation + one import
 
 
 async def test_refuses_reimport_when_latest_day_has_gaps(
@@ -773,7 +789,7 @@ async def test_refuses_reimport_when_latest_day_has_gaps(
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, D2)
     assert exc_info.value.reason == "partial_history"
-    assert aioclient_mock.call_count == 0
+    assert _usage_calls(aioclient_mock) == 0
 
 
 async def test_budget_refusal_is_reported(

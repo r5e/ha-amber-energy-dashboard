@@ -17,7 +17,12 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -136,10 +141,24 @@ def _resolve_entry(hass: HomeAssistant, entry_id: str | None) -> AmberConfigEntr
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
-    """Set up one Amber site. No API call is made here, to save the shared rate limit."""
+    """Set up one Amber site, validating the key with one GET /sites.
+
+    A rejected key, or a key that no longer sees this site, starts reauth. Network
+    errors, 5xx, 429 and unexpected responses retry setup later.
+    """
     channels = tuple(ChannelConfig.from_dict(c) for c in entry.data[CONF_CHANNELS])
     site_id = entry.data[CONF_SITE_ID]
     client = AmberClient(async_get_clientsession(hass), entry.data[CONF_API_KEY])
+    try:
+        sites = await client.async_get_sites()
+    except AmberAuthError as err:
+        raise ConfigEntryAuthFailed("Amber rejected the API key") from err
+    except (AmberConnectionError, AmberServerError, AmberRateLimitError) as err:
+        raise ConfigEntryNotReady(f"Amber API unavailable: {err}") from err
+    except AmberError as err:
+        raise ConfigEntryNotReady(f"Unexpected response from Amber: {err}") from err
+    if site_id not in {site.id for site in sites}:
+        raise ConfigEntryAuthFailed("The API key no longer has access to this site")
     entry.runtime_data = AmberRuntimeData(
         ImportContext(
             client=client,

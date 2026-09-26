@@ -36,25 +36,36 @@ from .api import (
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DATE,
+    ATTR_END_DATE,
+    ATTR_START_DATE,
+    CONF_CHANNEL,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
+    CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
+    CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
+    CONF_SENSOR,
     CONF_SITE_ID,
+    CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
     DOMAIN,
+    MODE_FULL,
+    MODE_PRICING,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
+    SERVICE_BACKFILL,
     SERVICE_IMPORT_DAY,
     SERVICE_RUN_NOW,
+    SUBENTRY_OWN_SENSOR,
 )
 from .importer import ImportContext
-from .manager import AmberManager
+from .manager import AmberManager, OwnSensor
 from .schedule import ScheduleConfig, parse_times
-from .statistics import ChannelConfig, build_specs
-from .storage import AmberStore
+from .statistics import ChannelConfig, build_specs, own_cost_spec
+from .storage import AmberStore, async_forget_chain
 
 PLATFORMS = [Platform.SENSOR]
 
@@ -67,6 +78,13 @@ IMPORT_DAY_SCHEMA = vol.Schema(
     }
 )
 RUN_NOW_SCHEMA = vol.Schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string})
+BACKFILL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_START_DATE): cv.date,
+        vol.Required(ATTR_END_DATE): cv.date,
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
 
 
 @dataclass(slots=True)
@@ -82,13 +100,44 @@ class AmberRuntimeData:
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
 
 
-def settings_from_options(options: dict[str, Any]) -> tuple[ScheduleConfig, int, int]:
-    """Schedule, patience days and revision days from entry options."""
+def settings_from_options(options: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
+    """Positional and keyword settings for the manager, from entry options."""
     return (
-        schedule_from_options(options),
-        int(options.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS)),
-        int(options.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS)),
+        (
+            schedule_from_options(options),
+            int(options.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS)),
+            int(options.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS)),
+        ),
+        {
+            "usage_mode": options.get(CONF_USAGE_MODE, MODE_FULL),
+            "price_series": bool(options.get(CONF_PRICE_SERIES, False)),
+            "own_fallback": bool(options.get(CONF_OWN_FALLBACK, True)),
+        },
     )
+
+
+def own_sensors_from_entry(
+    entry: ConfigEntry, channels: tuple[ChannelConfig, ...]
+) -> list[OwnSensor]:
+    """The own-sensor mappings (config sub-entries) whose channel still exists."""
+    by_ident = {c.identifier: c for c in channels}
+    sensors = []
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_OWN_SENSOR:
+            continue
+        channel = by_ident.get(subentry.data[CONF_CHANNEL])
+        if channel is None:
+            continue
+        entity_id = subentry.data[CONF_SENSOR]
+        sensors.append(
+            OwnSensor(
+                subentry.subentry_id,
+                entity_id,
+                channel,
+                own_cost_spec(entry.data[CONF_SITE_ID], entity_id, channel),
+            )
+        )
+    return sensors
 
 
 def schedule_from_options(options: dict[str, Any]) -> ScheduleConfig:
@@ -152,6 +201,30 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=IMPORT_DAY_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+    async def _backfill(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        start: date = call.data[ATTR_START_DATE]
+        end: date = call.data[ATTR_END_DATE]
+        manager = entry.runtime_data.manager
+        if manager.usage_mode == MODE_PRICING:
+            raise ServiceValidationError(
+                "Pricing-only mode writes no usage statistics; there is nothing to backfill."
+            )
+        if end < start:
+            raise ServiceValidationError(f"end_date {end} is before start_date {start}")
+        summary = await manager.async_run("backfill", backfill=(start, end))
+        if summary.get("reason") in ("backfill_forward", "backfill_range"):
+            raise ServiceValidationError(summary.get("message") or summary["reason"])
+        return summary if call.return_response else None
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BACKFILL,
+        _backfill,
+        schema=BACKFILL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_NOW,
@@ -210,7 +283,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         specs=tuple(build_specs(site_id, channels)),
         lock=asyncio.Lock(),
     )
-    schedule, patience_days, revision_days = settings_from_options(dict(entry.options))
+    (schedule, patience_days, revision_days), extra = settings_from_options(dict(entry.options))
+    own = own_sensors_from_entry(entry, channels)
+    known = {s.key for s in own} | {"price"}
+    for key in list(store.as_dict()["chains"]):
+        if key not in known:
+            await async_forget_chain(store, key)  # mapping removed; statistics are kept
     manager = AmberManager(
         hass,
         entry,
@@ -220,6 +298,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         active_from=site.active_from,
         patience_days=patience_days,
         revision_days=revision_days,
+        own_sensors=own,
+        **extra,
     )
     entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
 
@@ -243,8 +323,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
-    """Apply option changes without reloading (no API call needed)."""
-    entry.runtime_data.manager.async_update_settings(*settings_from_options(dict(entry.options)))
+    """Apply option changes in place; reload only when own-sensor mappings changed."""
+    manager = entry.runtime_data.manager
+    current = {s.subentry_id for s in manager.own_sensors}
+    wanted = {
+        sid for sid, sub in entry.subentries.items() if sub.subentry_type == SUBENTRY_OWN_SENSOR
+    }
+    if current != wanted:
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
+    args, kwargs = settings_from_options(dict(entry.options))
+    manager.async_update_settings(*args, **kwargs)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:

@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import AmberConfigEntry
-from .const import CHANNEL_FEED_IN, DOMAIN
+from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL, DOMAIN
 from .manager import STATUSES
 from .statistics import CURRENCY, Metric
 
@@ -85,6 +85,24 @@ def _yesterday_attrs(data: dict[str, Any]) -> dict[str, Any]:
     return {"date": day.isoformat()}
 
 
+def _reconciliation_value(subentry_id: str) -> Callable[[dict[str, Any]], float | None]:
+    def value(data: dict[str, Any]) -> float | None:
+        result = (data.get("reconciliation") or {}).get(subentry_id)
+        return None if result is None else result["difference_kwh"]
+
+    return value
+
+
+def _reconciliation_attrs(subentry_id: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    def attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+        result = (data.get("reconciliation") or {}).get(subentry_id)
+        if result is None:
+            return None
+        return {k: v for k, v in result.items() if k != "difference_kwh"}
+
+    return attrs
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AmberConfigEntry,
@@ -131,6 +149,22 @@ async def async_setup_entry(
     async_add_entities(
         AmberSensor(manager.coordinator, entry, description) for description in descriptions
     )
+    for sensor in manager.own_sensors:
+        if sensor.channel.type != CHANNEL_GENERAL:
+            continue
+        description = AmberSensorDescription(
+            key=f"reconciliation_{sensor.subentry_id}",
+            translation_key="reconciliation",
+            translation_placeholders={"sensor": sensor.entity_id},
+            native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            suggested_display_precision=3,
+            value_fn=_reconciliation_value(sensor.subentry_id),
+            attrs_fn=_reconciliation_attrs(sensor.subentry_id),
+        )
+        async_add_entities(
+            [AmberSensor(manager.coordinator, entry, description)],
+            config_subentry_id=sensor.subentry_id,
+        )
 
 
 class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], SensorEntity):

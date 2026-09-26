@@ -711,7 +711,8 @@ async def test_two_estimated_days_in_one_window_and_unavailable_recheck(
     assert result["revisions"]["changed"] == []
     # (single-day calls are the daily retention probes, which may land on the same day)
     revision_fetches = [c for c in fake.calls[calls:] if c[0] == days[0] and c[1] != c[0]]
-    assert revision_fetches == [(days[0], YESTERDAY)]  # one window covers both days
+    # One window covers both days (and runs on to the new yesterday, which the walk reuses).
+    assert revision_fetches == [(days[0], TODAY)]
     assert set(entry.runtime_data.manager.store.revisions) == {d.isoformat() for d in days}
 
 

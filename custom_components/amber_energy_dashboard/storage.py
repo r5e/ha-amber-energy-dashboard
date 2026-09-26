@@ -31,6 +31,19 @@ MAX_DAY_ENTRIES: Final = 400
 STATUS_IMPORTED: Final = "imported"
 STATUS_SKIPPED_UNAVAILABLE: Final = "skipped_unavailable"
 STATUS_SKIPPED_GAP: Final = "skipped_gap"
+STATUS_SKIPPED_NOT_REQUESTED: Final = "skipped_not_requested"
+"""Recovery-only mode: a day between two backfilled ranges that was not asked for."""
+STATUS_SKIPPED_SENSOR: Final = "skipped_sensor_data"
+"""Own-sensor chain: the sensor has no usable statistics for the day."""
+STATUS_SKIPPED_PRECISION: Final = "skipped_no_short_term"
+"""Own-sensor chain: 5-minute data is gone and the hourly fallback is turned off."""
+SKIPPED_STATUSES: Final = (
+    STATUS_SKIPPED_UNAVAILABLE,
+    STATUS_SKIPPED_GAP,
+    STATUS_SKIPPED_NOT_REQUESTED,
+    STATUS_SKIPPED_SENSOR,
+    STATUS_SKIPPED_PRECISION,
+)
 
 
 def schedule_seed_for(entry_id: str) -> int:
@@ -89,6 +102,7 @@ class AmberStore:
             "revisions_checked": None,
             "tail_rewrite": None,
             "channel_since": {},
+            "chains": {},
         }
 
     async def async_load(self) -> None:
@@ -295,3 +309,109 @@ class AmberStore:
         if len(days) > MAX_DAY_ENTRIES:
             for key in sorted(days)[: len(days) - MAX_DAY_ENTRIES]:
                 del days[key]
+
+
+class ChainState:
+    """Store-backed state for a secondary chain (price series, or one own sensor).
+
+    Same rules as the usage chain: ``marker`` is the last resolved day, ``last_written``
+    the last day with statistics, ``pending`` a day whose write started, ``rewrite`` the
+    progress of an interrupted rewrite. Saved through the parent store.
+    """
+
+    def __init__(self, store: AmberStore, key: str) -> None:
+        """Bind to ``store.chains[key]``, creating it if needed."""
+        self._store = store
+        self.key = key
+        chains = store._data["chains"]
+        self._data: dict[str, Any] = chains.setdefault(
+            key,
+            {"marker": None, "last_written": None, "pending": None, "rewrite": None, "days": {}},
+        )
+
+    @property
+    def marker(self) -> date | None:
+        """The last resolved day."""
+        return _day(self._data["marker"])
+
+    @property
+    def last_written(self) -> date | None:
+        """The last day with statistics."""
+        return _day(self._data["last_written"])
+
+    @property
+    def pending(self) -> date | None:
+        """A day whose write started."""
+        return _day(self._data["pending"])
+
+    @property
+    def rewrite(self) -> dict[str, Any] | None:
+        """Progress of an interrupted rewrite: {next, to}."""
+        return self._data["rewrite"]
+
+    def day(self, day: date) -> dict[str, Any] | None:
+        """Per-day record."""
+        return self._data["days"].get(day.isoformat())
+
+    def last_imported_before(self, day: date) -> date | None:
+        """The latest day before ``day`` with statistics."""
+        found = [
+            date.fromisoformat(k)
+            for k, v in self._data["days"].items()
+            if v.get("status") == STATUS_IMPORTED and k < day.isoformat()
+        ]
+        return max(found) if found else None
+
+    async def async_set_pending(self, day: date | None) -> None:
+        """Record (or clear) the day being written."""
+        self._data["pending"] = day.isoformat() if day else None
+        await self._store._async_save()
+
+    async def async_adopt(self, last: date) -> None:
+        """Continue after existing statistics that end at ``last`` (a re-added sensor)."""
+        self._data["marker"] = self._data["last_written"] = last.isoformat()
+        await self._store._async_save()
+
+    async def async_mark_written(self, day: date, record: dict[str, Any]) -> None:
+        """Record a verified write of ``day``."""
+        if self.marker is None or day > self.marker:
+            self._data["marker"] = day.isoformat()
+        if self.last_written is None or day > self.last_written:
+            self._data["last_written"] = day.isoformat()
+        self._data["pending"] = None
+        self._set_day(day, {"status": STATUS_IMPORTED, **record})
+        await self._store._async_save()
+
+    async def async_mark_skipped(self, first: date, last: date, status: str, reason: str) -> None:
+        """Resolve days without statistics and advance the marker."""
+        day = first
+        while day <= last:
+            if (self.day(day) or {}).get("status") != STATUS_IMPORTED:
+                self._set_day(day, {"status": status, "reason": reason})
+            day += timedelta(days=1)
+        if self.marker is None or last > self.marker:
+            self._data["marker"] = last.isoformat()
+        await self._store._async_save()
+
+    async def async_set_rewrite(self, progress: dict[str, Any] | None) -> None:
+        """Record rewrite progress, or None when done."""
+        self._data["rewrite"] = progress
+        await self._store._async_save()
+
+    def _set_day(self, day: date, record: dict[str, Any]) -> None:
+        days: dict[str, Any] = self._data["days"]
+        days[day.isoformat()] = {**record, "at": datetime.now(UTC).isoformat(timespec="seconds")}
+        if len(days) > MAX_DAY_ENTRIES:
+            for key in sorted(days)[: len(days) - MAX_DAY_ENTRIES]:
+                del days[key]
+
+
+def chain_state(store: AmberStore, key: str) -> ChainState:
+    """Return the state object for a secondary chain."""
+    return ChainState(store, key)
+
+
+async def async_forget_chain(store: AmberStore, key: str) -> None:
+    """Drop a chain's state (the sensor mapping was removed; statistics are kept)."""
+    if store._data["chains"].pop(key, None) is not None:
+        await store._async_save()

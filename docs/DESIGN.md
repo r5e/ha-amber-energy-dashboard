@@ -198,6 +198,10 @@ For one target NEM day D and one site:
 4. **Guard 3 (completeness):** per channel, all records have `date == D`; one uniform
    `duration`; count equals `1440 / duration`; no duplicate `startTime`. Otherwise stop,
    without writing anything, and record the reason.
+   - A channel in the usage data that is not in the configuration fails Guard 3
+     (`unexpected_channel`), for example a newly installed controlled load. It is never
+     silently ignored. **M3/M4:** raise a Repairs issue for it and provide a reconfigure
+     flow that adds the new channel's statistics. Imports stay stopped until then.
 5. **Group** into 24 UTC-hour buckets per channel and metric.
 6. **Baseline** for each statistic = the `sum` of the last row strictly before D's first
    hour (zero if none).
@@ -220,6 +224,9 @@ rather than adding rows).
 - **Daily**, re-verify with 2 calls: the boundary day (expected to have data) and the
   day before (expected empty). Self-correct in either direction: if the boundary day
   is empty, the boundary moved forward; if the day before has data, it moved back.
+- **When the daily check detects a move (M4):** if the move is one day, step one day.
+  If it moved further, bisect to find the new boundary. The 8-call cap applies either
+  way.
 - Days older than the boundary that return empty are marked `skipped_unavailable`, and
   the marker advances past them.
 
@@ -291,7 +298,10 @@ Own-sensor cost (available in any mode):
 ## 12. Configuration
 
 **Config flow:**
-1. API key, validated live.
+1. API key, validated live. Each entry setup validates it again with one `GET /sites`.
+   A rejected key, or a key that no longer sees the site, raises
+   `ConfigEntryAuthFailed` (starting reauth). Network errors, 5xx and 429 raise
+   `ConfigEntryNotReady` (HA retries setup).
 2. Site selection (active sites, shown with NMI). The unique ID is the site ID, so one
    config entry per site.
 3. Channel discovery. Controlled load is supported automatically.
@@ -332,9 +342,17 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
   file-and-block instructions.
 - **Old statistics**, one of: keep frozen; delete; or (recommended) copy the history into
   the new external IDs so the dashboard shows one continuous series, then retire the old IDs.
+- **Compensation sign.** The v1 kit's compensation statistic carries Amber's sign: feed-in
+  earnings are **negative**. As a result, the Energy dashboard adds feed-in earnings to
+  cost instead of subtracting them, so v1's net cost is wrong. Confirmed against
+  production for 2026-09-23 to 25. The new statistic is positive-when-earned (section 6).
+  - When copying history, the migration must **negate** the legacy compensation values:
+    both each hourly `state` and the cumulative `sum`.
+  - The parity check must compare compensation **by magnitude** (`|v1| == |v2|`).
+    Energy and import cost are still compared exactly.
 - **Order:** backup check, dry-run report, parity verification over the overlap window
-  (exact-match test, as in the YAML rebuild), switch Energy dashboard sources, disable old
-  automations, remove.
+  (exact-match test, as in the YAML rebuild, with compensation compared by magnitude),
+  switch Energy dashboard sources, disable old automations, remove.
 - Robert's own dev leftovers (`_v2` names, debug scripts, backup files) are a one-off
   cleanup task, not part of the public tool.
 

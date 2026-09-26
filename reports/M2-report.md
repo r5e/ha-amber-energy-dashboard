@@ -351,3 +351,156 @@ due. Running total since M1 began: 44.
 3. The first session on a date after 2026-09-26: the 2-call retention re-probe
    (2026-06-28 and 2026-06-29), as decision B requires.
 4. Then Milestone 3 (scheduler, catch-up loop, Store, Guards 1 and 3), after sign-off.
+
+---
+
+## Addendum: post-sign-off session (2026-09-26, 19:58 AEST onwards)
+
+**Status: stopped before pushing.** The pre-push history scan found a configuration
+value in an old version of a committed file (A3). Following the instruction to stop and
+report if anything fails, nothing has been pushed. The CI runs and repository settings,
+which depend on the push, are not done yet.
+
+### A0. Production comparison (from Robert)
+
+Import and export kWh and import cost match production exactly for 2026-09-23 to 25.
+The 0.01 kWh display difference on the 09-25 export is rounding of exactly 8.025 kWh.
+Dev's net cost is correct. Production's is wrong: v1's compensation statistic carries
+Amber's negative sign, so the Energy dashboard adds feed-in earnings to cost. This is
+recorded in DESIGN section 14 (A2).
+
+### A1. VM 9101 destroyed
+
+```
+09:58:49 stop: task finished exitstatus=OK
+09:58:51 destroy: task finished exitstatus=OK
+09:58:51 destroy: VM 9101 present after delete: False; clones now: []
+```
+
+No clones exist.
+
+### A2. Planning-chat decisions implemented
+
+| Commit | Content |
+|---|---|
+| `a309baa` | **Item 2 reversed:** `async_setup_entry` validates the key with one `GET /sites` (details below). |
+| `a805ffe` | **DESIGN updates** (details below). |
+
+**Setup validation (`a309baa`):**
+- 401 or 403 raises `ConfigEntryAuthFailed`, which starts reauth.
+- A timeout or other network error, 5xx or 429 raises `ConfigEntryNotReady`, so HA
+  retries setup.
+- Two small additions beyond the decision, flagged here for review:
+  - a key that no longer lists this site also raises `ConfigEntryAuthFailed`, because
+    reauth asks for a key that sees the site;
+  - an unexpected or malformed response raises `ConfigEntryNotReady`.
+- New tests in `test_init.py`:
+  - setup makes exactly one call, with the entry's key;
+  - 401 and 403 give `SETUP_ERROR` and a reauth flow;
+  - a missing site gives reauth;
+  - timeout, 500, 503, 429 and a malformed response give `SETUP_RETRY` and no reauth.
+- Importer tests now mock `/sites` for setup. The refusal tests assert "no usage
+  request" rather than "no request".
+
+**DESIGN updates (`a805ffe`):**
+- Section 14: the migration **negates legacy compensation** (hourly `state` and
+  cumulative `sum`) when copying history, and the parity check compares compensation
+  **by magnitude**. Energy and import cost are still compared exactly.
+- Item 6 (section 7, Guard 3): `unexpected_channel` gets a Repairs issue and a
+  reconfigure flow in M3/M4, and imports stay stopped until then.
+- Item 9 (section 8): a retention move of one day steps one day. A larger move is
+  found by bisection, within the 8-call cap.
+- Section 12: setup-time key validation.
+- Items 5 and 10 were accepted. Item 5 needs no code change. Item 10's `sudo` note is
+  in CLAUDE.md, which is local only.
+
+**Tests: 150 passed, 0 skipped**, with 100 % coverage (706 statements). `ruff check`
+and `ruff format --check` are clean.
+
+### A3. Pre-push checks
+
+**Identity: PASS.** All 16 commits in `main..v2` have author and committer
+`r5e <6285489+r5e@users.noreply.github.com>`. Their only trailer is
+`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+
+**Leak scan across everything reachable from `v2`** (19 commits, 60 blobs, plus all
+commit metadata and messages):
+
+| Check | Result |
+|---|---|
+| Secrets (`PVE_TOKEN_SECRET`, `HA_TEMPLATE_TOKEN`, `HA_LAB101_TOKEN`, `AMBER_TEST_API_KEY`) | none |
+| Real site ID (either case) and real NMI | none |
+| Real network name, the owner's surname, employer email domain | none |
+| Real usage data: the real M1 fixture blob | not reachable |
+| Real usage data: record-by-record comparison of every usage-shaped JSON blob against both real captures (the M1 day and the M2 lab's 3 days) | 1 usage blob (the synthetic fixture): 4 of 576 records coincide, the known chance collisions of 3-decimal kWh noted in the M1 addendum |
+| Commit messages and metadata | none |
+| Other configuration values | **2 hits**, below |
+
+- **`uv.lock`:** the template VMID's digits occur inside three PyPI package hash URLs.
+  This is coincidence, not a leak.
+- **`reports/M1-report.md`, blob `a4a0ab9`:** the first-session version of the M1
+  report contains the **template VMID value** 4 times (in the clone API path and three
+  mentions of the pool contents). That version was written before configuration values
+  were ruled out of committed files. It is the file's content in commits `552c607`,
+  `e0f3cee`, `98476bd` and `84866fb`. The current version (from `78aad33`) uses
+  placeholders.
+
+The push gate's listed criteria all pass: no secrets, no real site ID or NMI, no real
+usage data. But CLAUDE.md says configuration values never go into committed files, and
+a push would publish this old blob permanently. So I stopped. **Options for Robert:**
+1. **Accept and push.** It is the Proxmox VMID of the lab template, which is low
+   sensitivity.
+2. **Approve a second history rewrite before the first push** (recommended, since it is
+   cheap now and impossible after publishing). It would replace the value with
+   `<template>` in `reports/M1-report.md` in the four commits that contain it.
+   Hashes from `552c607` onwards change, and the report hash tables need updating
+   again. I would then re-run both checks and push.
+
+### A4. Push, CI and repository settings: not started
+
+These wait on A3. For when they go ahead:
+- The push is `git push -u origin v2` only. `main` is never pushed.
+- CI: all three workflows run on push to any branch (`on: push`).
+  - The HACS action may validate the repository as a whole, including the default
+    branch, which is still the v1 kit on `main`. If it fails for that reason on `v2`,
+    I will report it rather than change `main`.
+- **Repository description and topics cannot be set with a deploy key.** A deploy key
+  gives git access only, not the GitHub API, and `gh` is not installed here. Please set
+  them on the repository page, via the gear icon next to **About**:
+  - **Description:** `Unofficial Home Assistant integration that imports Amber Electric
+    usage and cost history into the Energy dashboard.`
+  - **Topics:** `home-assistant`, `homeassistant`, `hacs`, `hacs-integration`,
+    `amber-electric`, `energy`, `energy-monitoring`
+  - HACS also expects **Issues** to be enabled, under Settings → General → Features,
+    and the repository not to be archived.
+
+### A5. Retention re-probe: not due
+
+The date is still 2026-09-26, so the 2-call re-probe of 2026-06-28 and 2026-06-29 was
+not run.
+
+### A6. Live Amber API calls
+
+**0 in this session.** The M2 total stays at 6, and the running total since M1 began
+at 44.
+
+### A7. Lab state
+
+- **No VMs** other than the template. VM 9101 was destroyed. VM 101 was not touched.
+- **Git:** 17 commits on `v2` ahead of `main` (including this addendum). **Nothing
+  pushed.**
+- **claude-dev:**
+  - `local/` (excluded from git) holds the real M1 sample;
+  - the scratchpad holds lab scripts and logs, and the M2 raw capture, which the leak
+    scan used as its fingerprint source and which will be deleted once the push is
+    done;
+  - `CLAUDE.md` has the `sudo` note (local only).
+
+### A8. Next steps
+
+1. **Robert:** choose option 1 or 2 in A3.
+2. I then push `v2`, check the hassfest, HACS and pytest runs and fix anything that
+   fails, and add the results to this addendum.
+3. **Robert:** set the description, topics and Issues setting from A4.
+4. The retention re-probe in the first session dated after 2026-09-26.
+5. M3 after sign-off.

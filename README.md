@@ -27,13 +27,56 @@ alongside the core integration, not instead of it.
 - Handling of Amber's later revisions to estimated data.
 - Controlled load support, detected automatically from your site's channels.
 - Optional: cost of your own locally metered energy (CT clamps, smart plugs) priced with
-  Amber's confirmed per-interval prices.
-- Optional: historical price series.
+  Amber's billed per-interval prices (see below).
+- Optional: hourly price series.
 - A guided migration and clean-up path from the v1 YAML kit.
 - Configured entirely in the UI. No YAML.
 
 Live and forecast prices, and battery or device control, are out of scope. Use the core
 Amber Electric integration (or similar) for those.
+
+## Usage modes
+
+Chosen in the integration's options (default **Full**):
+
+- **Full**: imports your Amber usage and cost every day.
+- **Recovery-only**: imports nothing on a schedule. Use the `amber_energy_dashboard.backfill`
+  service to import a date range when you need it, for example to cover an outage of
+  your own metering.
+- **Pricing-only**: writes no usage statistics; only own-sensor cost and the optional
+  price series (below).
+
+Switching modes never deletes statistics. Statistics a mode no longer updates simply stop.
+
+## Own-sensor cost (for example CT clamps)
+
+If you measure energy yourself (CT clamps on the mains, a smart plug, another
+integration's cumulative energy sensor), you can price it at the rate Amber actually
+billed you:
+
+1. Open the integration and choose **Add own energy sensor**.
+2. Pick the sensor (it must be an energy sensor with state class `total` or
+   `total_increasing`) and the Amber channel whose price applies (general, controlled
+   load or feed-in).
+
+Each five-minute interval of your sensor's energy is multiplied by Amber's billed price for
+that interval and recorded as `amber_energy_dashboard:<site>_own_<sensor>_cost` (AUD).
+History older than about 10 days only has hourly sensor data; those days are priced at the
+hour's average price and flagged as lower precision (an option can skip them instead).
+Feed-in mappings are recorded as positive earnings.
+
+In the Energy dashboard you can then use your own sensor as the grid consumption and this
+statistic as the **entity tracking the total costs**, so the dashboard shows your own
+meter priced at Amber's real rates. When a whole-house sensor is mapped to the general
+channel, a **reconciliation** sensor shows the daily difference between your meter and
+Amber's (in kWh and per cent), which catches CT calibration drift or a dropped sensor.
+
+## Price series (optional)
+
+An optional hourly price statistic per channel (AUD/kWh: mean, min and max of Amber's
+billed five-minute prices). It is useful for charts, but an hourly **mean price is not a
+cost rate**: your usage is not spread evenly across the hour, so multiplying hourly energy
+by the mean price does not give your bill. Use the cost statistics for that.
 
 ## Requirements
 

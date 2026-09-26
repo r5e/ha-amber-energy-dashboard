@@ -303,28 +303,74 @@ rewrite uses the same guarded per-day path, so it is covered by the same tests.
 
 ## 11. Usage modes and own-sensor cost
 
-Usage modes (options flow):
-- **Full:** scheduled import of all usage statistics (sections 6 to 10).
-- **Recovery-only:** no schedule. The `amber_energy_dashboard.backfill` service imports a given date
-  range on demand, for users whose own metering had an outage.
-- **Pricing-only:** no usage statistics. Provides prices and/or own-sensor cost only.
+Decisions agreed for Milestone 5.
 
-Own-sensor cost (available in any mode):
-- The user selects one or more energy sensors (`device_class: energy`, cumulative) and maps
-  each to a price channel (general, controlled load or feed-in).
-- For each Amber interval, cost = the sensor's energy delta over that interval (from HA
-  **short-term 5-minute statistics**) times Amber's confirmed `perKwh` for that interval.
-  Because Amber's own `cost` is exactly `kwh × perKwh`, own-sensor cost is directly
-  comparable with Amber's figures.
-  Summed hourly into `amber_energy_dashboard:{site}_own_{slug}_cost`.
-- Short-term statistics are purged after roughly 10 days by default. Amber's day-late data
-  arrives well within that window. For older periods (a backfill), the default is to use
-  hourly statistics times the hourly mean price and flag the day as lower precision. An
-  option skips such days instead.
-- **Reconciliation:** when a whole-house sensor is mapped to general, a display sensor shows
-  the daily difference between the user's own metered energy and Amber's metered energy.
-  This catches CT calibration drift and dropped sensors.
-- Price history depth (section 4, item 2) bounds how far back own-sensor cost can go.
+**Usage modes** (options flow, default **Full**):
+- **Full:** unchanged. Scheduled import of all usage statistics (sections 6 to 10), plus the
+  secondary chains below.
+- **Recovery-only:** no scheduled imports (no timer). The service
+  `amber_energy_dashboard.backfill(start_date, end_date)` imports a range on demand
+  through the existing guarded path:
+  - days older than the retention boundary are marked `skipped_unavailable`;
+  - a range that starts at or before existing data is written with the tail rewrite, so
+    every later sum is re-derived;
+  - a range after the existing data is appended, and the days in between are recorded as
+    `skipped_not_requested` (they are written if a later backfill requests them);
+  - an empty requested day follows the patience rule (wait, or `skipped_gap` after
+    `patience_days` with later data), and an interrupted backfill resumes from its stored
+    progress.
+  `run_now` in this mode extends only the secondary chains. Writing into other
+  integrations' statistics is out of scope. In Full mode, `backfill` only fills or
+  rewrites history up to the last imported day; later days belong to the schedule.
+- **Pricing-only:** no usage statistics are written. Usage records are still fetched for
+  their `perKwh`, to drive own-sensor cost and the price series.
+- **Switching modes never deletes existing statistics.** Statistics that a mode does not
+  update simply stop; switching back resumes each chain from its own marker (days older
+  than retention by then are skipped as unavailable).
+
+**Chains.** Besides the usage chain, each **own sensor** and the optional **price series**
+is a *secondary chain* with its own marker, `last_written`, pending day, per-day records
+and resumable rewrite in the Store, and its own Guard 1 (a separate `marker_mismatch`
+Repairs issue per chain). They share the run's fetched usage records, the retention
+boundary and patience. A revision (section 8) rewrites every active chain from the
+earliest changed day.
+
+**Own-sensor cost** (any mode):
+- The user maps any cumulative energy sensor (`device_class: energy`, `state_class: total`
+  or `total_increasing`) to one of the site's channels (general, controlled load or
+  feed-in). Each mapping is a **config sub-entry** (supported by HA 2026.9): one entry per
+  sensor with its own add and delete in the UI, a unique ID per sensor, and entities
+  attached to it. Removing a mapping forgets its chain state; its statistic is kept.
+- The price is the usage records' `perKwh` per interval (the billed rate), matched by
+  channel identifier. Because Amber's own `cost` is exactly `kwh × perKwh`, own-sensor cost
+  is directly comparable with Amber's figures.
+- **Precise path:** each Amber interval's energy from the sensor's **5-minute short-term
+  statistics** (the change of the statistic's `sum`, so meter resets are handled, converted
+  to kWh) × that interval's `perKwh`, summed hourly into
+  `amber_energy_dashboard:{site}_own_{slug}_cost` (AUD, sum). For a feed-in mapping the value
+  is **positive when earned**, like the compensation statistics. Amber's `startTime`
+  (`hh:mm:01`) is floored to the minute, so it lines up with HA's 5-minute buckets.
+- **Fallback:** when the 5-minute data is gone (HA purges it after about 10 days), hourly
+  energy × the hour's mean `perKwh`, with the day flagged `lower_precision`. The
+  `own_fallback` option (default on) allows it; when off, such days are recorded as
+  `skipped_no_short_term`. A day without even hourly sensor statistics is recorded as
+  `skipped_sensor_data`.
+- **Start and continuation:** a new mapping backfills from the later of the sensor's first
+  complete day of statistics and the retention boundary; each run then extends it as new
+  days are imported. A mapping re-added later continues its existing statistic after the
+  last written day (a gap in between).
+- Price history depth (section 4, item 2) does not limit this in practice; the sensor's own
+  statistics and Amber's usage retention do.
+
+**Reconciliation** (Full mode, for each sensor mapped to a general channel): a display
+sensor (no `state_class`) for the last NEM day that both Amber and the sensor have. Its
+state is own kWh − Amber general kWh; the percentage and both totals are attributes. It
+catches CT calibration drift and dropped sensors. In other modes it is unknown.
+
+**Price series** (optional, default off): `amber_energy_dashboard:{site}_{chan}_price`,
+AUD/kWh, hourly mean with min and max, `mean_type` arithmetic, `unit_class` None. It follows
+Amber's sign (feed-in prices are negative). An hourly mean price is **not** a cost rate:
+cost follows usage, which is not spread evenly over the hour; use the cost statistics.
 
 ## 12. Configuration
 

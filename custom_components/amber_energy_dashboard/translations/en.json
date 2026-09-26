@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Amber",
+        "description": "Enter an Amber API key. You can create one on Amber's developer page.",
+        "data": {
+          "api_key": "API key"
+        }
+      },
+      "site": {
+        "title": "Choose a site",
+        "description": "Each site is set up as its own entry.",
+        "data": {
+          "site_id": "Site"
+        }
+      },
+      "channels": {
+        "title": "Confirm channels",
+        "description": "These metering channels were found for NMI {nmi}. Usage, cost and feed-in compensation will be imported for each of them.\n\n{channels}"
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Amber",
+        "description": "Amber rejected the API key for NMI {nmi}. Enter a new key for the same account.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The API key was rejected.",
+      "cannot_connect": "Could not reach the Amber API. Try again later.",
+      "site_not_found": "This key does not have access to the configured site.",
+      "unknown": "Unexpected response from the Amber API."
+    },
+    "abort": {
+      "already_configured": "This site is already configured.",
+      "no_active_sites": "This API key has no active sites.",
+      "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "services": {
+    "import_day": {
+      "name": "Import day",
+      "description": "Import one NEM day of Amber usage and cost into statistics. Only the day after the latest imported day, or the latest imported day itself, can be imported.",
+      "fields": {
+        "date": {
+          "name": "Date",
+          "description": "The NEM date (Australian Eastern Standard Time) to import."
+        },
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site to import for. Optional when only one site is configured."
+        }
+      }
+    }
+  }
+}

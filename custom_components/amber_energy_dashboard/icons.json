@@ -1,0 +1,7 @@
+{
+  "services": {
+    "import_day": {
+      "service": "mdi:database-import"
+    }
+  }
+}

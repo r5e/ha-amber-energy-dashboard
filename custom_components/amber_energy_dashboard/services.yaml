@@ -1,0 +1,12 @@
+import_day:
+  fields:
+    date:
+      required: true
+      example: "2026-09-24"
+      selector:
+        date:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard

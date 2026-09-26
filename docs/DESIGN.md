@@ -211,6 +211,13 @@ For one target NEM day D and one site:
 9. **Only then** advance the Store marker and record D's status (including whether any
    record was `estimated`).
 
+**Crash recovery (accepted in M3).** Before writing day D (always marker + 1), the Store
+records D as `pending`. Guard 1 accepts exactly one disagreement between the marker and
+the statistics table: `pending` is marker + 1, and every statistic ends either at the
+marker's last hour or at D's last hour (so D was fully, partly or not written). D is then
+rewritten from the marker's baseline, and the walk continues. Every other disagreement
+raises the `marker_mismatch` Repairs issue and stops without writing.
+
 Failure at any step leaves the marker untouched. Existing rows at the same timestamps
 are overwritten by the write (confirmed in the YAML era, and re-confirmed for external
 statistics in Milestone 1: a re-import of the same hours replaces `state` and `sum`
@@ -261,13 +268,19 @@ rewrite uses the same guarded per-day path, so it is covered by the same tests.
 
 ## 10. Scheduling
 
-- **Automatic (default):** a daily first attempt at a random offset within a morning
-  window. The offset is seeded from the config entry ID, so it is stable for each install.
-  Retry attempts follow later in the day. Once caught up for the day, remaining attempts
-  are skipped.
+- **Automatic (default, accepted in M3):** a daily first attempt at a stable offset inside
+  **06:30 to 08:30** local time, seeded from the config entry ID. Retries follow at
+  **+3 h and +6 h**. Once caught up for the day, remaining attempts are skipped.
 - **Fixed times (option):** a user-supplied list of times.
+- **Startup run (accepted in M3):** a catch-up also starts once HA has started, on first
+  setup (no marker yet) and whenever the last run was left `running` (it was
+  interrupted, for example by a crash or kill). Without this, an interrupted run would
+  wait for the next scheduled attempt.
 - If still behind after the day's final attempt, raise a Repairs issue (replaces the
   YAML-era 12:05 notification). It clears automatically once caught up.
+- **`incomplete_data` (Guard 3) Repairs issue:** raised only if the day still fails on the
+  **final attempt of the day**. A day that is incomplete in the morning and complete by a
+  later attempt raises nothing. `unexpected_channel` is raised immediately.
 - A future enhancement: learn when each user's data typically appears.
 
 ## 11. Usage modes and own-sensor cost

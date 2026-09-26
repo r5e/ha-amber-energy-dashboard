@@ -356,10 +356,14 @@ due. Running total since M1 began: 44.
 
 ## Addendum: post-sign-off session (2026-09-26, 19:58 AEST onwards)
 
-**Status: stopped before pushing.** The pre-push history scan found a configuration
-value in an old version of a committed file (A3). Following the instruction to stop and
-report if anything fails, nothing has been pushed. The CI runs and repository settings,
-which depend on the push, are not done yet.
+**Status (updated after A9):** Robert approved a second history rewrite. After it,
+both pre-push checks passed, `v2` was pushed (`main` untouched), and CI ran:
+- **hassfest:** passes.
+- **Tests:** pass, after a workflow fix.
+- **HACS:** fails on one check only, *"The repository has no valid topics"*. GitHub
+  shows no topics on the repository (A9.4).
+
+Sections A0 to A8 are as first written. A9 holds the results.
 
 ### A0. Production comparison (from Robert)
 
@@ -506,3 +510,89 @@ at 44.
 3. **Robert:** set the description, topics and Issues setting from A4.
 4. The retention re-probe in the first session dated after 2026-09-26.
 5. M3 after sign-off.
+
+### A9. Second history rewrite, push and CI (after Robert's approval)
+
+**A9.1 Rewrite.** `git filter-branch --index-filter` over `main..v2`, applied only to
+commits whose `reports/M1-report.md` was the old blob `a4a0ab9`:
+- That blob was replaced by `e278711`, the same text with the 4 template VMID
+  occurrences written as `<template>`.
+- No other version of the file contained the value.
+- Commit messages, and so all `Co-Authored-By` trailers, are unchanged.
+- I deleted `refs/original` afterwards.
+
+Old to new hashes (earlier commits are unchanged):
+
+| Old | New | Commit |
+|---|---|---|
+| `552c607` | `6f980d7` | Add Milestone 1 report |
+| `e0f3cee` | `bd18c5b` | docs/DESIGN.md |
+| `98476bd` | `5a28eff` | Design findings |
+| `84866fb` | `94c2831` | RunBudget |
+| `78aad33` | `7ce3b49` | Follow-up M1 report |
+| `e02d9e5` | `9762615` | Retention and M1 hash update |
+| `4eca205` | `8b7e84a` | Milestone 2 code |
+| `ad6ce77` | `f8b4495` | Refusals as ServiceValidationError |
+| `a18b512` | `63d2ea9` | M2 report |
+| `a309baa` | `c72ea39` | Setup-time key validation |
+| `a805ffe` | `e80a7cc` | Design decisions |
+| `b404b22` | `582cce9` | M2 addendum |
+
+Both reports' hash tables are updated (commit `ceb2311`). The only places that keep
+old hashes are the A3 text above, where they are labelled as pre-rewrite, and the M1
+A9 mapping note.
+
+**A9.2 Pre-push checks, re-run:**
+- **Identity: PASS.** All 18 commits in `main..v2` have author and committer
+  `r5e <6285489+r5e@users.noreply.github.com>`, and all 18 keep the
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` trailer.
+- **Leak scan: PASS.** It covered 21 commits and 63 blobs reachable from `v2`, plus
+  all commit metadata and messages, with the template VMID value now among the needles.
+  - **No hits** for any secret, any other configuration value or URL host, the real
+    site ID (either case), the real NMI, the real network name, the owner's surname or
+    the employer email domain.
+  - The only match was the known coincidence in `uv.lock`'s package hashes, ignored as
+    instructed.
+  - The old report blob `a4a0ab9` and the real usage blob are reachable from **no
+    ref**.
+  - Usage-shaped JSON: only the synthetic fixture, with the known 4 of 576 chance
+    coincidences.
+
+**A9.3 Push.** `git push -u origin v2` created `v2` at `ceb2311`. Remote `main` is still
+`cc179b7`, and nothing was pushed to it. The M2 raw capture was then deleted from the
+scratchpad (step 4).
+
+**A9.4 CI** (GitHub Actions; results read through the public API):
+
+| Workflow | `ceb2311` (first push) | `ba9a2e8` (fix) |
+|---|---|---|
+| Validate with hassfest | success | success |
+| Tests (checkout, setup-uv, `uv sync --locked`, ruff lint, ruff format check, pytest) | **failure**: `Unable to resolve action astral-sh/setup-uv@v10` | **success**, every step |
+| HACS validation | **failure**: `<Validation topics> failed: The repository has no valid topics`, 1 of 8 checks failed | **failure**, same single check |
+
+- **Fix `ba9a2e8`:** `astral-sh/setup-uv` publishes only full version tags (the latest
+  is `v10.2.0`) and no moving `v10` tag, so the workflow now pins `@v10.2.0`. This was
+  my error in M1: I checked the latest release but not whether a major tag exists.
+- **HACS:**
+  - The other 7 checks pass. The failure is **not** caused by the default branch being
+    v1.
+  - `GET /repos/r5e/ha-amber-energy-dashboard/topics` returns `{"names": []}`. The
+    description and `has_issues: true` are set, but **no topics are saved**.
+  - I cannot set them with the deploy key. **Robert:** on the repository page, open
+    About (gear icon) → Topics. Type each topic and press Enter so it becomes a chip,
+    then click **Save changes**: `home-assistant`, `homeassistant`, `hacs`,
+    `hacs-integration`, `amber-electric`, `energy`, `energy-monitoring`.
+  - Then re-run *HACS validation* from the Actions tab (Re-run jobs). It also runs
+    weekly, and on every push.
+- **CI logs:** job logs need an authenticated API call even for public repositories
+  (HTTP 403), so I read step results and annotations only. Pytest's pass/fail is
+  visible, but its test count is not.
+
+**A9.5 Live Amber API calls:** 0 in this session. The running total stays at 44.
+
+**A9.6 State:**
+- No VMs other than the template.
+- The scratchpad no longer holds any real usage capture. The real M1 sample remains in
+  the excluded `local/` folder, by decision.
+- `origin/v2` matches local `v2` after this addendum is pushed.
+

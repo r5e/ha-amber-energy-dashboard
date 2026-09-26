@@ -1,0 +1,35 @@
+# Secrets and local environment files: never commit
+.env
+.env.*
+*.env
+env
+secrets.yaml
+*.secret
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+amber-lab/
+
+# v1 kit artefacts containing real household data
+amber_backfill_cache.json
+
+# Raw (non-anonymised) API captures. Only anonymised fixtures under tests/fixtures/ are committed.
+raw_captures/
+*.raw.json
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

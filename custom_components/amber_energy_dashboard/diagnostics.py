@@ -45,4 +45,11 @@ async def async_get_config_entry_diagnostics(
         },
         "last_import": runtime.last_import,
         "last_error": runtime.last_error,
+        "store": runtime.manager.store.as_dict(),
+        "schedule": {
+            "mode": runtime.manager.schedule.mode,
+            "fixed_times": [t.strftime("%H:%M") for t in runtime.manager.schedule.fixed_times],
+            "next_run": runtime.manager.next_run.isoformat() if runtime.manager.next_run else None,
+        },
+        "status": runtime.manager.status,
     }

@@ -1,5 +1,7 @@
 """Tests for integration setup, including key validation at entry setup."""
 
+from unittest.mock import PropertyMock, patch
+
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
@@ -18,6 +20,17 @@ from custom_components.amber_energy_dashboard.const import (
 from .synthetic import SITE_ID, site_json
 
 SITES_URL = "https://api.amber.com.au/v1/sites"
+
+
+@pytest.fixture(autouse=True)
+def _no_startup_run():
+    """Setup tests only; the first-setup catch-up is tested in test_manager.py."""
+    with patch(
+        "custom_components.amber_energy_dashboard.manager.AmberManager.needs_startup_run",
+        new_callable=PropertyMock,
+        return_value=False,
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

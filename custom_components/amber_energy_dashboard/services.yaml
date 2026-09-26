@@ -10,3 +10,10 @@ import_day:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+run_now:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard

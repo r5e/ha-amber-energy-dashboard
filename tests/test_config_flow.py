@@ -1,16 +1,21 @@
-"""Config flow and reauth tests."""
+"""Config flow, options flow and reauth tests."""
+
+from unittest.mock import PropertyMock, patch
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.amber_energy_dashboard.const import (
     CONF_CHANNELS,
+    CONF_FIXED_TIMES,
     CONF_NMI,
+    CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
     DOMAIN,
 )
@@ -19,6 +24,17 @@ from .synthetic import SITE_ID, site_json
 
 SITES_URL = "https://api.amber.com.au/v1/sites"
 KEY = "psk_test_key"
+
+
+@pytest.fixture(autouse=True)
+def _no_startup_run():
+    """Entries created here would start a first-setup catch-up; that is tested elsewhere."""
+    with patch(
+        "custom_components.amber_energy_dashboard.manager.AmberManager.needs_startup_run",
+        new_callable=PropertyMock,
+        return_value=False,
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +77,13 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
     }
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "schedule"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {CONF_SCHEDULE_MODE: "automatic"}
     assert result["title"] == "Amber FAKENMI000"
     assert result["result"].unique_id == SITE_ID
     assert result["data"] == {
@@ -227,3 +249,95 @@ async def test_reauth_wrong_site_then_bad_key(
     )
     assert result["errors"] == {"base": "invalid_auth"}
     assert entry.data[CONF_API_KEY] == "old_key"
+
+
+async def _to_schedule_step(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker):
+    aioclient_mock.get(SITES_URL, json=[site_json()])
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_ID: SITE_ID}
+    )
+    return await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "7:15, 25:00", "0715", "07:15, 08:15, 09:15, 10:15, 11:15, 12:15, 13:15"]
+)
+async def test_fixed_times_validated(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, bad: str
+) -> None:
+    """Fixed times must be 1 to 6 valid HH:MM values; errors keep the form open."""
+    result = await _to_schedule_step(hass, aioclient_mock)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: bad}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_FIXED_TIMES: "invalid_times"}
+
+
+async def test_fixed_times_saved_sorted(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Valid fixed times are normalised, de-duplicated and sorted."""
+    result = await _to_schedule_step(hass, aioclient_mock)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: "13:15, 7:15; 10:15, 07:15"},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {
+        CONF_SCHEDULE_MODE: "fixed",
+        CONF_FIXED_TIMES: ["07:15", "10:15", "13:15"],
+    }
+    await hass.async_block_till_done()
+    manager = result["result"].runtime_data.manager
+    assert [t.strftime("%H:%M") for t in manager.schedule.fixed_times] == [
+        "07:15",
+        "10:15",
+        "13:15",
+    ]
+
+
+async def test_options_flow_changes_schedule_without_reload(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The options flow reschedules in place: no reload, so no extra API call."""
+    result = await _to_schedule_step(hass, aioclient_mock)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
+    )
+    entry = result["result"]
+    await hass.async_block_till_done()
+    calls = aioclient_mock.call_count
+    manager = entry.runtime_data.manager
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: "x"}
+    )
+    assert result["errors"] == {CONF_FIXED_TIMES: "invalid_times"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: "07:15, 10:15"}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: ["07:15", "10:15"]}
+    assert entry.runtime_data.manager is manager  # same instance: not reloaded
+    assert manager.schedule.mode == "fixed"
+    assert manager.next_run.astimezone(dt_util.get_time_zone(hass.config.time_zone)).strftime(
+        "%H:%M"
+    ) in {"07:15", "10:15"}
+    assert aioclient_mock.call_count == calls
+
+    # And back to automatic, with the current fixed times offered as the suggestion.
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema_fields = {str(k): k for k in result["data_schema"].schema}
+    assert schema_fields[CONF_FIXED_TIMES].description == {"suggested_value": "07:15, 10:15"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
+    )
+    assert entry.options == {CONF_SCHEDULE_MODE: "automatic"}
+    assert manager.schedule.mode == "automatic"

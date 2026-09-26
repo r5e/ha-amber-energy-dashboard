@@ -19,6 +19,17 @@
         "title": "Confirm channels",
         "description": "These metering channels were found for NMI {nmi}. Usage, cost and feed-in compensation will be imported for each of them.\n\n{channels}"
       },
+      "schedule": {
+        "title": "Import schedule",
+        "description": "Amber publishes usage about a day late. Automatic picks a stable time for this installation each morning (between 06:30 and 08:30), with retries 3 and 6 hours later. Once the day is imported, the remaining attempts are skipped.",
+        "data": {
+          "schedule_mode": "Schedule",
+          "fixed_times": "Fixed times"
+        },
+        "data_description": {
+          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15."
+        }
+      },
       "reauth_confirm": {
         "title": "Re-authenticate with Amber",
         "description": "Amber rejected the API key for NMI {nmi}. Enter a new key for the same account.",
@@ -31,6 +42,7 @@
       "invalid_auth": "The API key was rejected.",
       "cannot_connect": "Could not reach the Amber API. Try again later.",
       "site_not_found": "This key does not have access to the configured site.",
+      "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
       "unknown": "Unexpected response from the Amber API."
     },
     "abort": {
@@ -38,6 +50,86 @@
       "no_active_sites": "This API key has no active sites.",
       "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
       "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Import schedule",
+        "description": "Automatic picks a stable time each morning (between 06:30 and 08:30), with retries 3 and 6 hours later.",
+        "data": {
+          "schedule_mode": "Schedule",
+          "fixed_times": "Fixed times"
+        },
+        "data_description": {
+          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15."
+        }
+      }
+    },
+    "error": {
+      "invalid_times": "Enter one to six times as HH:MM, separated by commas."
+    }
+  },
+  "selector": {
+    "schedule_mode": {
+      "options": {
+        "automatic": "Automatic",
+        "fixed": "Fixed times"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Import status",
+        "state": {
+          "never_run": "Not run yet",
+          "running": "Running",
+          "caught_up": "Up to date",
+          "waiting_for_data": "Waiting for Amber data",
+          "budget_exhausted": "Paused (rate limit budget)",
+          "rate_limited": "Paused (rate limited)",
+          "api_unavailable": "Amber unavailable",
+          "auth_failed": "Authentication failed",
+          "needs_attention": "Needs attention"
+        }
+      },
+      "last_imported_date": {
+        "name": "Last imported date"
+      },
+      "days_behind": {
+        "name": "Days behind"
+      },
+      "next_run": {
+        "name": "Next scheduled run"
+      },
+      "yesterday_energy": {
+        "name": "Yesterday {channel} energy"
+      },
+      "yesterday_cost": {
+        "name": "Yesterday {channel} cost"
+      },
+      "yesterday_compensation": {
+        "name": "Yesterday {channel} compensation"
+      }
+    }
+  },
+  "issues": {
+    "marker_mismatch": {
+      "title": "Amber import stopped: marker and statistics disagree",
+      "description": "The import for {entry} has stopped because its saved position does not match the statistics in the database: {details}.\n\nNothing has been written. This can happen if statistics were changed or deleted by hand, or the integration's storage was restored from a different backup. Restore a consistent backup, or open an issue with the diagnostics attached."
+    },
+    "unexpected_channel": {
+      "title": "Amber reports a new metering channel",
+      "description": "Usage for {day} on {entry} contains a channel that is not configured: {details}.\n\nThis usually means a new meter channel (for example controlled load) was added to your Amber account. Imports are paused so that no data is lost or mis-assigned. Reconfiguring the channels will be supported in a later version; until then, remove and re-add the integration."
+    },
+    "incomplete_data": {
+      "title": "Amber usage data is incomplete",
+      "description": "Usage for {day} on {entry} failed the completeness check ({reason}): {details}.\n\nNothing was written for this day. The next attempt will fetch it again; this clears automatically once a complete day is imported."
+    },
+    "import_failed": {
+      "title": "Amber import could not be verified",
+      "description": "{day} was written for {entry} but reading it back did not match: {details}.\n\nThe import position was not advanced. The next attempt will rewrite the day."
     }
   },
   "services": {
@@ -52,6 +144,16 @@
         "config_entry_id": {
           "name": "Site",
           "description": "The Amber site to import for. Optional when only one site is configured."
+        }
+      }
+    },
+    "run_now": {
+      "name": "Run now",
+      "description": "Catch up now: import every missing day up to yesterday, as a scheduled run would.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site to run for. Optional when only one site is configured."
         }
       }
     }

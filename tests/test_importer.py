@@ -461,6 +461,7 @@ async def test_refuses_anything_but_next_or_latest_day(
     with pytest.raises(importer.ImportRefusedError) as exc_info:
         await _import(hass, target)
     assert exc_info.value.reason == "not_next_day"
+    assert isinstance(exc_info.value, ServiceValidationError)
     assert "Only 2026-09-24 (the next day) or 2026-09-23" in str(exc_info.value)
     assert aioclient_mock.call_count == calls  # refused before any API call
     assert await _rows(hass) == before

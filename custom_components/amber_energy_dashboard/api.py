@@ -8,12 +8,18 @@ Every request has a timeout. Failures are mapped onto a small error hierarchy so
 can decide between reauth (auth), backoff (rate limit) and retry-later (server, network).
 Responses that do not have the documented shape raise ``AmberResponseError``: an
 unexpected body is never silently treated as an empty result.
+
+The rate limit (50 calls per 300 s) is shared with other clients and is counted separately
+for ``/sites`` plus ``/usage`` and for ``/prices``. A ``RunBudget`` started with
+``AmberClient.start_run`` caps the calls per counter in one run and stops the run once
+``RateLimit-Remaining`` drops below a reserve.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime
 import logging
+import time
 from typing import Any, Final
 
 import aiohttp
@@ -24,6 +30,11 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT: Final = aiohttp.ClientTimeout(total=30, connect=10)
 _ERROR_BODY_LIMIT: Final = 300
+
+COUNTER_SITES_USAGE: Final = "sites_usage"
+COUNTER_PRICES: Final = "prices"
+DEFAULT_MAX_CALLS_PER_COUNTER: Final = 25
+DEFAULT_RATE_LIMIT_RESERVE: Final = 15
 
 
 class AmberError(Exception):
@@ -76,6 +87,19 @@ class AmberResponseError(AmberError):
     """The response body was not the documented shape."""
 
 
+class AmberBudgetExhaustedError(AmberError):
+    """The run's call budget is spent. Stop now and resume at the next attempt.
+
+    Raised before a request is sent, so no call is made. This is a planned stop, not a
+    failure of the API.
+    """
+
+    def __init__(self, message: str, counter: str) -> None:
+        """Store which rate-limit counter ran out."""
+        super().__init__(message)
+        self.counter = counter
+
+
 @dataclass(frozen=True, slots=True)
 class RateLimit:
     """Rate limit state reported by the API (IETF ``RateLimit-*`` headers)."""
@@ -102,6 +126,61 @@ class RateLimit:
             reset=reset,
             policy=policy,
         )
+
+
+@dataclass(slots=True)
+class RunBudget:
+    """Call budget for one import run, tracked per rate-limit counter.
+
+    A request is refused (``AmberBudgetExhaustedError``, nothing sent) when the run has
+    already made ``max_calls_per_counter`` calls on that counter, or when the last
+    ``RateLimit-Remaining`` seen for that counter is below ``reserve`` and its window has
+    not yet reset. The first response of a run therefore acts as the start-of-run check.
+    """
+
+    max_calls_per_counter: int = DEFAULT_MAX_CALLS_PER_COUNTER
+    reserve: int = DEFAULT_RATE_LIMIT_RESERVE
+    clock: Callable[[], float] = time.monotonic
+    calls: dict[str, int] = field(default_factory=dict)
+    """Requests sent in this run, per counter."""
+    remaining: dict[str, int] = field(default_factory=dict)
+    """Last ``RateLimit-Remaining`` seen, per counter."""
+    _window_ends: dict[str, float] = field(default_factory=dict)
+
+    def check(self, counter: str) -> None:
+        """Raise if another request on ``counter`` would exceed the budget."""
+        calls = self.calls.get(counter, 0)
+        if calls >= self.max_calls_per_counter:
+            raise AmberBudgetExhaustedError(
+                f"run budget spent: {calls} calls on {counter}", counter
+            )
+        remaining = self.remaining.get(counter)
+        if remaining is None or remaining >= self.reserve:
+            return
+        window_end = self._window_ends.get(counter)
+        if window_end is not None and self.clock() >= window_end:
+            # The window has reset since we looked; the old figure no longer applies.
+            del self.remaining[counter]
+            return
+        raise AmberBudgetExhaustedError(
+            f"rate limit reserve reached on {counter}: {remaining} remaining, "
+            f"reserve {self.reserve}",
+            counter,
+        )
+
+    def record_call(self, counter: str) -> None:
+        """Count a request that is about to be sent."""
+        self.calls[counter] = self.calls.get(counter, 0) + 1
+
+    def record_rate_limit(self, counter: str, rate_limit: RateLimit) -> None:
+        """Remember the rate limit state reported for ``counter``."""
+        if rate_limit.remaining is None:
+            return
+        self.remaining[counter] = rate_limit.remaining
+        if rate_limit.reset is None:
+            self._window_ends.pop(counter, None)
+        else:
+            self._window_ends[counter] = self.clock() + rate_limit.reset
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +288,17 @@ class AmberClient:
         self.request_count = 0
         """Requests attempted by this client (for call budgeting and logs)."""
         self.last_rate_limit: RateLimit | None = None
+        self.budget: RunBudget | None = None
+        """Budget of the current run, if one was started."""
+
+    def start_run(self, budget: RunBudget | None = None) -> RunBudget:
+        """Start a run with a fresh budget (default limits unless one is given)."""
+        self.budget = budget if budget is not None else RunBudget()
+        return self.budget
+
+    def end_run(self) -> None:
+        """Stop applying a run budget."""
+        self.budget = None
 
     async def async_get_sites(self) -> list[Site]:
         """Return all sites visible to the API key."""
@@ -252,6 +342,11 @@ class AmberClient:
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
         }
+        counter = _counter_for(path)
+        budget = self.budget
+        if budget is not None:
+            budget.check(counter)
+            budget.record_call(counter)
         self.request_count += 1
         try:
             async with self._session.get(
@@ -260,6 +355,8 @@ class AmberClient:
                 rate_limit = RateLimit.from_headers(resp.headers)
                 if rate_limit is not None:
                     self.last_rate_limit = rate_limit
+                    if budget is not None:
+                        budget.record_rate_limit(counter, rate_limit)
                 if resp.status == 200:
                     try:
                         return await resp.json(content_type=None)
@@ -272,6 +369,11 @@ class AmberClient:
         except aiohttp.ClientError as err:
             raise AmberConnectionError(f"{path}: {type(err).__name__}") from err
         raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _counter_for(path: str) -> str:
+    """Return the rate-limit counter a request path is charged to."""
+    return COUNTER_PRICES if path.endswith("/prices") else COUNTER_SITES_USAGE
 
 
 def _raise_for_status(

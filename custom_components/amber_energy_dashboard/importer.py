@@ -27,7 +27,7 @@ from homeassistant.components.recorder.statistics import (
     statistics_during_period,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .api import AmberClient, UsageRecord
 from .const import NEM_TZ
@@ -55,8 +55,12 @@ class ImportDayError(HomeAssistantError):
         self.reason = reason
 
 
-class ImportRefusedError(ImportDayError):
-    """The requested day may not be imported now (append-only rule). Nothing written."""
+class ImportRefusedError(ImportDayError, ServiceValidationError):
+    """The requested day may not be imported now (append-only rule). Nothing written.
+
+    Also a ServiceValidationError: the request itself is not allowed, so HA reports it
+    to the caller as a validation error rather than an internal failure.
+    """
 
 
 class IncompleteDataError(ImportDayError):

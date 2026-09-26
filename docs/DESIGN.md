@@ -200,8 +200,11 @@ For one target NEM day D and one site:
    without writing anything, and record the reason.
    - A channel in the usage data that is not in the configuration fails Guard 3
      (`unexpected_channel`), for example a newly installed controlled load. It is never
-     silently ignored. **M3/M4:** raise a Repairs issue for it and provide a reconfigure
-     flow that adds the new channel's statistics. Imports stay stopped until then.
+     silently ignored. It raises the `unexpected_channel` Repairs issue immediately.
+     Imports stay stopped until the channel is added with the integration's
+     **Reconfigure** flow. The issue is not a "fixable" Repairs issue; its text directs
+     the user to Reconfigure (accepted in M4). A new channel's statistics start at the
+     next day to be imported (marker + 1), from zero.
 5. **Group** into 24 UTC-hour buckets per channel and metric.
 6. **Baseline** for each statistic = the `sum` of the last row strictly before D's first
    hour (zero if none).
@@ -217,6 +220,9 @@ the statistics table: `pending` is marker + 1, and every statistic ends either a
 marker's last hour or at D's last hour (so D was fully, partly or not written). D is then
 rewritten from the marker's baseline, and the walk continues. Every other disagreement
 raises the `marker_mismatch` Repairs issue and stops without writing.
+If the pending day has meanwhile become older than Amber's retention, it cannot be
+fetched again: the run stops with `recovery_unavailable` (needs attention) rather than
+guessing (accepted in M4).
 
 Failure at any step leaves the marker untouched. Existing rows at the same timestamps
 are overwritten by the write (confirmed in the YAML era, and re-confirmed for external
@@ -231,9 +237,14 @@ rather than adding rows).
 - **Daily**, re-verify with 2 calls: the boundary day (expected to have data) and the
   day before (expected empty). Self-correct in either direction: if the boundary day
   is empty, the boundary moved forward; if the day before has data, it moved back.
-- **When the daily check detects a move (M4):** if the move is one day, step one day.
-  If it moved further, bisect to find the new boundary. The 8-call cap applies either
-  way.
+- **When the daily check detects a move (M4):** if the move is one day, step one day
+  (confirmed with one more probe). If it moved further, bisect within a **15-day
+  bracket** beyond the step probe, so the whole check stays within 8 calls (2 checks +
+  1 step + 1 bracket + 4 bisection). A move too large for the bracket is *unresolved*:
+  the old value is kept, and full discovery (30-day bracket, 8 calls) runs on the next
+  day (accepted in M4).
+- **Boundary day empty, day before has data:** treated as a gap on the boundary day,
+  not a boundary move. The retention value is kept (accepted in M4).
 - Days older than the boundary that return empty are marked `skipped_unavailable`, and
   the marker advances past them.
 
@@ -243,11 +254,18 @@ returned empty. After `patience_days` (default 7), if any later day already has 
 `skipped_gap` and the chain continues.
 
 **Revisions (new).** Days containing any `estimated` record join a revision set. They are
-re-fetched once a day for `revision_days` (default 14, configurable). If the data has
-changed, the integration **rewrites the tail**: from the earliest changed day forward to
-the latest imported hour, re-deriving every sum. A mid-history change must shift all
-later cumulative sums, so re-writing a single day on its own is not allowed. The tail
+re-fetched once a day for `revision_days` (default 14, configurable), counted from the
+day's **first import**, not from its own date, so an old estimated day found during a
+catch-up still gets its checks (accepted in M4). If the data has changed, the
+integration **rewrites the tail**: from the earliest changed day forward to the latest
+imported hour, re-deriving every sum. A mid-history change must shift all later
+cumulative sums, so re-writing a single day on its own is not allowed. The tail
 rewrite uses the same guarded per-day path, so it is covered by the same tests.
+- The tail is **re-fetched** through that path rather than rebuilt from stored hourly
+  states. Cost: at most `ceil(tail days / 7)` calls, and windows already fetched for the
+  revision check are reused (accepted in M4).
+- Progress is stored after each rewritten day, so an interrupted rewrite resumes from
+  the first day not yet rewritten before anything else is written.
 
 ## 9. Catch-up and rate limiting
 

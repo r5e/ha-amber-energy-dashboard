@@ -23,6 +23,13 @@ from custom_components.amber_energy_dashboard.const import (
 from .synthetic import SITE_ID, site_json
 
 SITES_URL = "https://api.amber.com.au/v1/sites"
+OPTION_DEFAULTS = {
+    "patience_days": 7,
+    "revision_days": 14,
+    "usage_mode": "full",
+    "price_series": False,
+    "own_fallback": True,
+}
 KEY = "psk_test_key"
 
 
@@ -327,8 +334,7 @@ async def test_options_flow_changes_schedule_without_reload(
     assert entry.options == {
         CONF_SCHEDULE_MODE: "fixed",
         CONF_FIXED_TIMES: ["07:15", "10:15"],
-        "patience_days": 7,
-        "revision_days": 14,
+        **OPTION_DEFAULTS,
     }
     assert entry.runtime_data.manager is manager  # same instance: not reloaded
     assert manager.schedule.mode == "fixed"
@@ -346,7 +352,6 @@ async def test_options_flow_changes_schedule_without_reload(
     )
     assert entry.options == {
         CONF_SCHEDULE_MODE: "automatic",
-        "patience_days": 7,
-        "revision_days": 14,
+        **OPTION_DEFAULTS,
     }
     assert manager.schedule.mode == "automatic"

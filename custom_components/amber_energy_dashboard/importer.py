@@ -267,14 +267,9 @@ async def async_write_day(
     """
     by_channel = check_completeness(records, day, ctx.channels)
     amounts = hourly_amounts(by_channel, ctx.specs, day)
-    expected = {
-        spec.statistic_id: build_rows(day, amounts[spec.statistic_id], baselines[spec.statistic_id])
-        for spec in ctx.specs
-    }
-    for spec in ctx.specs:
-        async_add_external_statistics(hass, spec.metadata(), expected[spec.statistic_id])
-
-    await _async_verify(hass, day, expected, expect_latest=expect_latest)
+    expected = await async_write_amounts(
+        hass, day, ctx.specs, amounts, baselines, expect_latest=expect_latest
+    )
 
     estimated = sum(1 for r in records if r.quality == "estimated")
     summary = {
@@ -294,6 +289,40 @@ async def async_write_day(
     }
     _LOGGER.info("Imported %s (%s): %d records, %d estimated", day, mode, len(records), estimated)
     return summary
+
+
+async def async_write_amounts(
+    hass: HomeAssistant,
+    day: date,
+    specs: Sequence[StatisticSpec],
+    amounts: Mapping[str, Sequence[float]],
+    baselines: Mapping[str, float],
+    *,
+    expect_latest: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
+    """Write 24 hourly amounts per sum statistic from its baseline, then verify."""
+    expected = {
+        spec.statistic_id: build_rows(day, amounts[spec.statistic_id], baselines[spec.statistic_id])
+        for spec in specs
+    }
+    for spec in specs:
+        async_add_external_statistics(hass, spec.metadata(), expected[spec.statistic_id])
+    await _async_verify(hass, day, expected, expect_latest=expect_latest)
+    return expected
+
+
+async def async_write_means(
+    hass: HomeAssistant,
+    day: date,
+    specs: Sequence[Any],
+    rows: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    expect_latest: bool = True,
+) -> None:
+    """Write mean-type rows (mean, min, max) for one day, then verify."""
+    for spec in specs:
+        async_add_external_statistics(hass, spec.metadata(), rows[spec.statistic_id])
+    await _async_verify(hass, day, rows, expect_latest=expect_latest, keys=("mean", "min", "max"))
 
 
 async def async_latest_hours(hass: HomeAssistant, ids: Iterable[str]) -> dict[str, datetime | None]:
@@ -443,10 +472,21 @@ async def async_plan_day(
 
 
 async def _async_read_rows(
-    hass: HomeAssistant, ids: Iterable[str], start: datetime, end: datetime
+    hass: HomeAssistant,
+    ids: Iterable[str],
+    start: datetime,
+    end: datetime,
+    types: set[str] | None = None,
 ) -> dict[str, list[Mapping[str, Any]]]:
     return await get_instance(hass).async_add_executor_job(
-        statistics_during_period, hass, start, end, set(ids), "hour", None, {"state", "sum"}
+        statistics_during_period,
+        hass,
+        start,
+        end,
+        set(ids),
+        "hour",
+        None,
+        types or {"state", "sum"},
     )
 
 
@@ -456,14 +496,17 @@ async def _async_verify(
     expected: Mapping[str, Sequence[Mapping[str, Any]]],
     *,
     expect_latest: bool = True,
+    keys: tuple[str, ...] = ("state", "sum"),
 ) -> None:
     """Read the day back until it matches what was written, or time out."""
     day_start = nem_day_start(day)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + VERIFY_TIMEOUT
     while True:
-        rows = await _async_read_rows(hass, expected, day_start, day_start + DAY_HOURS * HOUR)
-        problem = _compare(expected, rows)
+        rows = await _async_read_rows(
+            hass, expected, day_start, day_start + DAY_HOURS * HOUR, types=set(keys)
+        )
+        problem = _compare(expected, rows, keys)
         if problem is None and expect_latest:
             problem = await _async_check_nothing_after(hass, expected)
         if problem is None:
@@ -479,6 +522,7 @@ async def _async_verify(
 def _compare(
     expected: Mapping[str, Sequence[Mapping[str, Any]]],
     actual: Mapping[str, Sequence[Mapping[str, Any]]],
+    keys: tuple[str, ...] = ("state", "sum"),
 ) -> str | None:
     for sid, want in expected.items():
         got = actual.get(sid, [])
@@ -487,7 +531,7 @@ def _compare(
         for w, g in zip(want, got, strict=True):
             if abs(g["start"] - w["start"].timestamp()) > 0.5:
                 return f"{sid}: row at {g['start']} expected {w['start'].isoformat()}"
-            for key in ("state", "sum"):
+            for key in keys:
                 if g.get(key) is None or abs(float(g[key]) - w[key]) > _TOLERANCE:
                     return f"{sid} {w['start'].isoformat()}: {key} {g.get(key)} != {w[key]}"
     return None

@@ -23,10 +23,14 @@ A run does, in order:
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 import logging
+import math
 from typing import Any
 
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -34,7 +38,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from . import importer
+from . import chains, importer
 from .api import (
     AmberAuthError,
     AmberBudgetExhaustedError,
@@ -46,10 +50,15 @@ from .api import (
     UsageRecord,
 )
 from .const import (
+    CHANNEL_FEED_IN,
+    CHANNEL_GENERAL,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
     DOMAIN,
     FETCH_WINDOW_DAYS,
+    MODE_FULL,
+    MODE_PRICING,
+    MODE_RECOVERY,
     NEM_TZ,
     RETENTION_BRACKET_DAYS,
     RETENTION_DISCOVERY_MAX_CALLS,
@@ -66,8 +75,24 @@ from .importer import (
     nem_day_start,
 )
 from .schedule import ScheduleConfig, is_final_attempt, next_attempt
-from .statistics import StatisticSpec
-from .storage import STATUS_SKIPPED_GAP, STATUS_SKIPPED_UNAVAILABLE, AmberStore
+from .statistics import (
+    ChannelConfig,
+    MeanSpec,
+    StatisticSpec,
+    price_specs,
+)
+from .storage import (
+    SKIPPED_STATUSES,
+    STATUS_IMPORTED,
+    STATUS_SKIPPED_GAP,
+    STATUS_SKIPPED_NOT_REQUESTED,
+    STATUS_SKIPPED_PRECISION,
+    STATUS_SKIPPED_SENSOR,
+    STATUS_SKIPPED_UNAVAILABLE,
+    AmberStore,
+    ChainState,
+    chain_state,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,7 +102,7 @@ ISSUE_INCOMPLETE_DATA = "incomplete_data"
 ISSUE_IMPORT_FAILED = "import_failed"
 ISSUE_BEHIND = "behind"
 _DATA_ISSUES = (ISSUE_UNEXPECTED_CHANNEL, ISSUE_INCOMPLETE_DATA, ISSUE_IMPORT_FAILED)
-_SKIPPED = (STATUS_SKIPPED_GAP, STATUS_SKIPPED_UNAVAILABLE)
+_SKIPPED = SKIPPED_STATUSES
 
 # Run outcomes (also the status sensor's states)
 STATUS_NEVER_RUN = "never_run"
@@ -104,6 +129,37 @@ STATUSES = [
 
 class MarkerMismatchError(ImportRefusedError):
     """Guard 1: the Store marker and the statistics table disagree."""
+
+
+@dataclass(frozen=True, slots=True)
+class OwnSensor:
+    """A user's energy sensor mapped to an Amber channel (a config sub-entry)."""
+
+    subentry_id: str
+    entity_id: str
+    channel: ChannelConfig
+    spec: StatisticSpec
+
+    @property
+    def key(self) -> str:
+        """The chain key in the Store."""
+        return f"own:{self.subentry_id}"
+
+
+@dataclass(slots=True)
+class _Chain:
+    """A secondary chain: the price series, or one own sensor."""
+
+    key: str
+    state: ChainState
+    mean_specs: list[MeanSpec] = field(default_factory=list)
+    sensor: OwnSensor | None = None
+
+    @property
+    def ids(self) -> list[str]:
+        if self.sensor is not None:
+            return [self.sensor.spec.statistic_id]
+        return [s.statistic_id for s in self.mean_specs]
 
 
 class _DiscoveryIncomplete(Exception):
@@ -145,6 +201,10 @@ class AmberManager:
         active_from: date | None = None,
         patience_days: int = DEFAULT_PATIENCE_DAYS,
         revision_days: int = DEFAULT_REVISION_DAYS,
+        usage_mode: str = MODE_FULL,
+        price_series: bool = False,
+        own_fallback: bool = True,
+        own_sensors: Iterable[OwnSensor] = (),
     ) -> None:
         """Create the manager (call async_start after the store is loaded)."""
         self.hass = hass
@@ -155,6 +215,12 @@ class AmberManager:
         self.active_from = active_from
         self.patience_days = patience_days
         self.revision_days = revision_days
+        self.usage_mode = usage_mode
+        self.price_series = price_series
+        self.own_fallback = own_fallback
+        self.own_sensors = list(own_sensors)
+        self._cache: dict[date, list[UsageRecord]] = {}
+        self._last_rewrite_count = 0
         self.status = STATUS_NEVER_RUN if store.last_run is None else store.last_run["status"]
         self.next_run: datetime | None = None
         self.coordinator: DataUpdateCoordinator[dict[str, Any]] = DataUpdateCoordinator(
@@ -190,12 +256,25 @@ class AmberManager:
 
     @callback
     def async_update_settings(
-        self, schedule: ScheduleConfig, patience_days: int, revision_days: int
+        self,
+        schedule: ScheduleConfig,
+        patience_days: int,
+        revision_days: int,
+        *,
+        usage_mode: str = MODE_FULL,
+        price_series: bool = False,
+        own_fallback: bool = True,
     ) -> None:
-        """Apply new options (options flow) without reloading the entry."""
+        """Apply new options (options flow) without reloading the entry.
+
+        Switching usage mode never deletes statistics; inactive ones stop updating.
+        """
         self.schedule = schedule
         self.patience_days = patience_days
         self.revision_days = revision_days
+        self.usage_mode = usage_mode
+        self.price_series = price_series
+        self.own_fallback = own_fallback
         self.async_stop()
         self._schedule_next()
         self._publish()
@@ -208,6 +287,9 @@ class AmberManager:
 
     @callback
     def _schedule_next(self) -> None:
+        if self.usage_mode == MODE_RECOVERY:
+            self.next_run = None  # recovery-only: nothing is scheduled
+            return
         self.next_run = next_attempt(_utcnow(), self.schedule, self.store.schedule_seed, self._tz)
         self._unsub_timer = async_track_point_in_utc_time(self.hass, self._on_timer, self.next_run)
 
@@ -230,13 +312,22 @@ class AmberManager:
 
     @property
     def caught_up(self) -> bool:
-        """True when yesterday (NEM) is resolved."""
-        marker = self.store.marker
-        return marker is not None and marker >= nem_today() - timedelta(days=1)
+        """True when yesterday (NEM) is resolved by every chain the mode updates."""
+        yesterday = nem_today() - timedelta(days=1)
+        markers = [c.state.marker for c in self._secondary_chains()]
+        if self.usage_mode == MODE_FULL:
+            markers.append(self.store.marker)
+        return all(m is not None and m >= yesterday for m in markers)
 
     # --- runs ---------------------------------------------------------------------
 
-    async def async_run(self, trigger: str, *, final: bool = False) -> dict[str, Any]:
+    async def async_run(
+        self,
+        trigger: str,
+        *,
+        final: bool = False,
+        backfill: tuple[date, date] | None = None,
+    ) -> dict[str, Any]:
         """Run a catch-up now. Returns a summary; never raises for API or data stops.
 
         ``final`` marks the last scheduled attempt of the day: only then are the
@@ -251,11 +342,12 @@ class AmberManager:
             )
             self._publish()
             budget = self.ctx.client.start_run(RunBudget())
+            self._cache = {}
             imported: list[str] = []
             info: dict[str, Any] = {}
             outcome: dict[str, Any]
             try:
-                outcome = await self._async_run_steps(imported, info)
+                outcome = await self._async_run_steps(imported, info, backfill)
             except AmberBudgetExhaustedError as err:
                 outcome = {"status": STATUS_BUDGET, "reason": str(err)}
             except AmberRateLimitError as err:
@@ -303,12 +395,24 @@ class AmberManager:
             )
             return summary
 
-    async def _async_run_steps(self, imported: list[str], info: dict[str, Any]) -> dict[str, Any]:
-        recovery = await self._async_guard1()
-        if self.store.tail_rewrite is not None:
+    @property
+    def _usage_active(self) -> bool:
+        """True when usage statistics are written (Full and Recovery-only modes)."""
+        return self.usage_mode != MODE_PRICING
+
+    async def _async_run_steps(
+        self,
+        imported: list[str],
+        info: dict[str, Any],
+        backfill: tuple[date, date] | None = None,
+    ) -> dict[str, Any]:
+        recovery = await self._async_guard1() if self._usage_active else None
+        if self._usage_active and self.store.tail_rewrite is not None:
             progress = self.store.tail_rewrite
             info["tail_resumed"] = progress
-            await self._async_tail_rewrite(date.fromisoformat(progress["next"]), {})
+            outcome = await self._async_range_rewrite(date.fromisoformat(progress["next"]))
+            if outcome is not None:
+                return outcome
         retention = self.store.retention or {}
         if self.store.retention_days is None or retention.get("needs_discovery"):
             await self._async_discover_retention()
@@ -316,7 +420,21 @@ class AmberManager:
         elif retention.get("last_verified") != nem_today().isoformat():
             info["retention"] = await self._async_verify_retention()
         info["revisions"] = await self._async_check_revisions()
-        return await self._async_walk(recovery, imported, info)
+        if backfill is not None:
+            outcome = await self._async_backfill(*backfill, imported, info)
+        elif self.usage_mode == MODE_FULL:
+            outcome = await self._async_walk(recovery, imported, info)
+        else:
+            outcome = {"status": STATUS_CAUGHT_UP, "reason": None}
+        chain_results = await self._async_secondary(info)
+        if chain_results:
+            info["chains"] = chain_results
+            if not (self.usage_mode == MODE_FULL or backfill is not None):
+                # The mode writes no usage now: the chains decide the status.
+                worst = [r for r in chain_results.values() if r["status"] != STATUS_CAUGHT_UP]
+                if worst:
+                    outcome = {k: worst[0].get(k) for k in ("status", "reason")}
+        return outcome
 
     # --- per-day context -----------------------------------------------------------
 
@@ -482,8 +600,7 @@ class AmberManager:
         day = start
         while day <= yesterday:
             end = min(day + timedelta(days=FETCH_WINDOW_DAYS - 1), yesterday)
-            records = await self.ctx.client.async_get_usage(self.ctx.site_id, day, end)
-            by_date = self._split_by_date(records, day, end)
+            by_date = await self._async_fetch_window(day, end)
             while day <= end:
                 day_records = by_date.get(day, [])
                 if not day_records:
@@ -554,12 +671,15 @@ class AmberManager:
     ) -> dict[str, Any]:
         """Write one day through the shared path, then record it in the Store.
 
-        Modes ``catch_up`` and ``recovery`` write marker + 1 (``pending`` is set first);
-        ``revision`` rewrites a day inside history during a tail rewrite.
+        A day after ``last_written`` (catch-up, recovery, or a backfill that extends the
+        history) is written as the latest day, with ``pending`` set first. A day inside the
+        history (a revision or backfill rewrite) is written without it; an interrupted
+        range rewrite is resumed from its stored progress instead.
         """
         ctx = self._ctx_for(day)
         baselines = await self._async_baselines(day, ctx)
-        tail = mode == "revision"
+        last_written = self.store.last_written
+        tail = last_written is not None and day <= last_written
         if not tail:
             await self.store.async_set_pending(day)
         try:
@@ -577,48 +697,70 @@ class AmberManager:
             self._create_issue(ISSUE_IMPORT_FAILED, {"day": day.isoformat(), "details": str(err)})
             raise
         await self.store.async_mark_imported(day, summary)
-        await self._async_track_revision(day, records, summary)
+        await self._async_track_revision(day, records, summary.get("estimated_records", 0))
         self._clear_data_issues()
         return summary
 
     # --- revisions ----------------------------------------------------------------
 
     async def _async_track_revision(
-        self, day: date, records: list[UsageRecord], summary: dict[str, Any]
+        self, day: date, records: list[UsageRecord], estimated: int
     ) -> None:
-        if summary.get("estimated_records"):
+        if estimated:
             await self.store.async_set_revision(
                 day, nem_today(), importer.revision_fingerprint(records)
             )
         elif day.isoformat() in self.store.revisions:
             await self.store.async_drop_revisions([day])
 
-    async def _async_fetch_days(
-        self, days: Iterable[date], fetched: dict[date, list[UsageRecord]], last: date
-    ) -> None:
+    async def _async_fetch_window(self, start: date, end: date) -> dict[date, list[UsageRecord]]:
+        """Fetch usage for ``start``..``end`` (one call) into the run's cache."""
+        records = await self.ctx.client.async_get_usage(self.ctx.site_id, start, end)
+        by_date = self._split_by_date(records, start, end)
+        for d in _days(start, end):
+            self._cache[d] = by_date.get(d, [])
+        return by_date
+
+    async def _async_records_for(self, day: date, last: date) -> list[UsageRecord]:
+        """Usage records for ``day``, fetching a window up to ``last`` if not cached."""
+        if day not in self._cache:
+            await self._async_fetch_window(
+                day, min(day + timedelta(days=FETCH_WINDOW_DAYS - 1), last)
+            )
+        return self._cache[day]
+
+    async def _async_fetch_days(self, days: Iterable[date], last: date) -> None:
         """Fetch the given days (windows of up to 7 days, capped at ``last``)."""
         for day in sorted(days):
-            if day in fetched:
-                continue
-            end = min(day + timedelta(days=FETCH_WINDOW_DAYS - 1), last)
-            records = await self.ctx.client.async_get_usage(self.ctx.site_id, day, end)
-            by_date = self._split_by_date(records, day, end)
-            for d in _days(day, end):
-                fetched[d] = by_date.get(d, [])
+            await self._async_records_for(day, max(day, last))
+
+    def _later_has_data(self, day: date) -> bool:
+        return any(d > day and recs for d, recs in self._cache.items())
+
+    async def _async_rewrite_after_revision(self, first: date, result: dict[str, Any]) -> None:
+        """Rewrite every active chain from the earliest revised day."""
+        last_written = self.store.last_written
+        if self._usage_active and last_written and first <= last_written:
+            outcome = await self._async_range_rewrite(first)
+            if outcome is not None:  # pragma: no cover - revision rewrites never wait
+                raise ImportDayError(outcome["reason_code"], outcome["reason"])
+            result["rewritten_days"] = self._last_rewrite_count
+        for chain in self._secondary_chains():
+            if chain.state.last_written and first <= chain.state.last_written:
+                result.setdefault("chains_rewritten", {})[
+                    chain.key
+                ] = await self._async_chain_rewrite(chain, first)
 
     async def _async_check_revisions(self) -> dict[str, Any] | None:
         """Once a day: re-fetch estimated days; rewrite the tail if any changed."""
         today = nem_today()
         if self.store.revisions_checked == today:
             return None
-        last_written = self.store.last_written
         entries = self.store.revisions
         expired = [
             date.fromisoformat(d)
             for d, e in entries.items()
-            if last_written is None
-            or date.fromisoformat(d) > last_written
-            or date.fromisoformat(e["since"]) + timedelta(days=self.revision_days) < today
+            if date.fromisoformat(e["since"]) + timedelta(days=self.revision_days) < today
         ]
         if expired:
             await self.store.async_drop_revisions(expired)
@@ -630,12 +772,10 @@ class AmberManager:
             "rewritten_days": 0,
         }
         if days:
-            assert last_written is not None
-            fetched: dict[date, list[UsageRecord]] = {}
-            await self._async_fetch_days(days, fetched, last_written)
+            await self._async_fetch_days(days, today - timedelta(days=1))
             changed, final = [], []
             for day in days:
-                records = fetched.get(day, [])
+                records = self._cache.get(day, [])
                 if not records:
                     continue  # not available right now; try again tomorrow
                 if (
@@ -652,48 +792,94 @@ class AmberManager:
                 _LOGGER.info(
                     "Revised data for %s; rewriting from %s", result["changed"], changed[0]
                 )
-                result["rewritten_days"] = await self._async_tail_rewrite(changed[0], fetched)
+                await self._async_rewrite_after_revision(changed[0], result)
         await self.store.async_set_revisions_checked(today)
         return result
 
-    async def _async_tail_rewrite(self, first: date, fetched: dict[date, list[UsageRecord]]) -> int:
-        """Rewrite every imported day from ``first`` to ``last_written``, in order.
+    async def _async_range_rewrite(
+        self,
+        first: date,
+        last: date | None = None,
+        *,
+        requested_end: date | None = None,
+        on_empty: str = "error",
+        imported: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Write every day from ``first`` to ``last`` in order through the shared path.
 
+        Used by the revision tail rewrite (``on_empty="error"``: every day must be
+        available) and by ``backfill`` (``on_empty="patience"``: an empty requested day
+        follows the patience rule). Imported days are rewritten; days up to
+        ``requested_end`` without statistics are written; skipped days stay skipped
+        (except days skipped as not requested, when they are now requested).
         Progress is stored after each day, so an interrupted rewrite resumes where it
-        stopped (from the first day not yet rewritten).
+        stopped. Returns None when done, or a waiting outcome.
         """
         progress = self.store.tail_rewrite
-        last = (
-            date.fromisoformat(progress["to"]) if progress is not None else self.store.last_written
-        )
-        assert last is not None
-        origin = progress["from"] if progress is not None else first.isoformat()
-        await self.store.async_set_tail_rewrite(
-            {"from": origin, "next": first.isoformat(), "to": last.isoformat()}
-        )
-        rewritten = 0
-        for day in _days(first, last):
-            record = self.store.day(day) or {}
-            if record.get("status") not in _SKIPPED:
-                if day not in fetched:
-                    await self._async_fetch_days([day], fetched, last)
-                records = fetched.get(day, [])
-                if not records:
-                    raise ImportDayError(
-                        "tail_unavailable",
-                        f"{day} returned no usage during a revision rewrite; it will be retried.",
-                    )
-                await self._async_write(day, records, "revision")
-                rewritten += 1
+        if progress is not None:
+            last = date.fromisoformat(progress["to"])
+            requested_end = date.fromisoformat(progress.get("requested_end") or progress["to"])
+            on_empty = progress.get("on_empty", "error")
+            origin = progress["from"]
+        else:
+            last = last or self.store.last_written
+            assert last is not None
+            requested_end = requested_end or last
+            origin = first.isoformat()
+
+        async def save(next_day: date) -> None:
             await self.store.async_set_tail_rewrite(
                 {
                     "from": origin,
-                    "next": (day + timedelta(days=1)).isoformat(),
+                    "next": next_day.isoformat(),
                     "to": last.isoformat(),
+                    "requested_end": requested_end.isoformat(),
+                    "on_empty": on_empty,
                 }
             )
+
+        await save(first)
+        count = 0
+        for day in _days(first, last):
+            status = (self.store.day(day) or {}).get("status")
+            requested = day <= requested_end
+            skip = status in _SKIPPED and not (status == STATUS_SKIPPED_NOT_REQUESTED and requested)
+            if skip or (status != STATUS_IMPORTED and not requested):
+                await save(day + timedelta(days=1))
+                continue
+            records = await self._async_records_for(day, last)
+            if not records:
+                if status == STATUS_IMPORTED or on_empty == "error":
+                    raise ImportDayError(
+                        "tail_unavailable",
+                        f"{day} returned no usage during a rewrite; it will be retried.",
+                    )
+                seen = await self.store.async_note_empty(day, nem_today())
+                if seen >= self.patience_days and self._later_has_data(day):
+                    await self.store.async_mark_skipped(
+                        day, day, STATUS_SKIPPED_GAP, f"empty on {seen} separate days"
+                    )
+                    await save(day + timedelta(days=1))
+                    continue
+                await save(day)
+                self._last_rewrite_count = count
+                return {
+                    "status": STATUS_WAITING,
+                    "reason": f"no usage for {day} yet",
+                    "reason_code": "waiting_for_data",
+                    "waiting_for": day.isoformat(),
+                    "empty_days_seen": seen,
+                }
+            await self._async_write(
+                day, records, "revision" if status == STATUS_IMPORTED else "backfill"
+            )
+            if status != STATUS_IMPORTED and imported is not None:
+                imported.append(day.isoformat())
+            count += 1
+            await save(day + timedelta(days=1))
         await self.store.async_set_tail_rewrite(None)
-        return rewritten
+        self._last_rewrite_count = count
+        return None
 
     # --- retention ----------------------------------------------------------------
 
@@ -850,6 +1036,355 @@ class AmberManager:
         _LOGGER.info("Usage retention: %d days (%s, %d calls)", days, method, calls)
         await self.store.async_set_retention(days, info)
 
+    # --- backfill (Recovery-only mode, or rewriting history in Full mode) ------------
+
+    async def _async_backfill(
+        self, start: date, end: date, imported: list[str], info: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Import ``start``..``end`` through the guarded path.
+
+        Days older than the retention boundary are skipped as unavailable. A range that
+        starts at or before existing data is written with a tail rewrite, so every later
+        sum is re-derived. In Recovery-only mode a range after the existing data is
+        appended, and the days in between are recorded as not requested. In Full mode,
+        days after the last import are left to the schedule.
+        """
+        today = nem_today()
+        yesterday = today - timedelta(days=1)
+        boundary = today - timedelta(days=self.store.retention_days)
+        end = min(end, yesterday)
+        if start > end:
+            raise ImportRefusedError(
+                "backfill_range", f"nothing to import between {start} and {end}"
+            )
+        old_last = min(end, boundary - timedelta(days=1))
+        if start <= old_last:
+            await self.store.async_mark_skipped(
+                start, old_last, STATUS_SKIPPED_UNAVAILABLE, "older than Amber's usage retention"
+            )
+            info["skipped_unavailable"] = {"from": start.isoformat(), "to": old_last.isoformat()}
+        first = max(start, boundary)
+        if first > end:
+            return {"status": STATUS_CAUGHT_UP, "reason": "the whole range is older than retention"}
+        last_written = self.store.last_written
+        if last_written is not None and first > last_written + timedelta(days=1):
+            if self.usage_mode == MODE_FULL:
+                raise ImportRefusedError(
+                    "backfill_forward",
+                    f"In Full mode, days after the last import ({last_written}) are imported by "
+                    "the schedule (or run_now). backfill fills or rewrites history up to it.",
+                )
+            marker = self.store.marker
+            gap_first = marker + timedelta(days=1) if marker else first
+            if gap_first < first:
+                await self.store.async_mark_skipped(
+                    gap_first,
+                    first - timedelta(days=1),
+                    STATUS_SKIPPED_NOT_REQUESTED,
+                    "not part of a backfill range",
+                )
+        last = max(end, last_written) if last_written else end
+        outcome = await self._async_range_rewrite(
+            first, last, requested_end=end, on_empty="patience", imported=imported
+        )
+        info["backfill"] = {
+            "from": first.isoformat(),
+            "to": end.isoformat(),
+            "rewritten_to": last.isoformat(),
+        }
+        return outcome or {"status": STATUS_CAUGHT_UP, "reason": None}
+
+    # --- secondary chains: price series and own sensors ---------------------------
+
+    def _secondary_chains(self) -> list[_Chain]:
+        chains_: list[_Chain] = []
+        if self.price_series:
+            chains_.append(
+                _Chain(
+                    "price",
+                    chain_state(self.store, "price"),
+                    mean_specs=price_specs(self.ctx.site_id, self.ctx.channels),
+                )
+            )
+        chains_.extend(
+            _Chain(sensor.key, chain_state(self.store, sensor.key), sensor=sensor)
+            for sensor in self.own_sensors
+        )
+        return chains_
+
+    async def _async_secondary(self, info: dict[str, Any]) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for chain in self._secondary_chains():
+            try:
+                results[chain.key] = await self._async_chain_walk(chain)
+            except ImportDayError as err:
+                results[chain.key] = {
+                    "status": STATUS_ATTENTION,
+                    "reason": err.reason,
+                    "message": str(err),
+                }
+        return results
+
+    async def _async_chain_guard(self, chain: _Chain) -> date | None:
+        """Guard 1 for a secondary chain; also adopts statistics left by an earlier mapping."""
+        state = chain.state
+        latest = await importer.async_latest_hours(self.hass, chain.ids)
+        values = set(latest.values())
+        if (
+            state.marker is None
+            and state.last_written is None
+            and None not in values
+            and len(values) == 1
+        ):
+            end = values.pop()
+            last = importer.nem_date(end)
+            if end == _day_last_hour(last):
+                _LOGGER.info("%s: continuing existing statistics after %s", chain.key, last)
+                await state.async_adopt(last)
+                return None
+            values = {end}
+        marker, last_written, pending = state.marker, state.last_written, state.pending
+        expected = _day_last_hour(last_written) if last_written else None
+        problem = None
+        if marker is not None and (last_written is None or marker >= last_written):
+            gap_start = last_written + timedelta(days=1) if last_written else None
+            if gap_start is not None:
+                for day in _days(gap_start, marker):
+                    if (state.day(day) or {}).get("status") not in _SKIPPED:
+                        problem = f"{chain.key}: {day} is neither imported nor skipped"
+                        break
+        elif marker is not None or last_written is not None:
+            problem = f"{chain.key}: marker {marker} is before the last written day {last_written}"
+        if problem is None and values == {expected}:
+            self._delete_issue(ISSUE_MARKER_MISMATCH, chain.key.replace(":", "_"))
+            if pending is not None:
+                await state.async_set_pending(None)
+            return None
+        if (
+            problem is None
+            and pending is not None
+            and pending == (marker + timedelta(days=1) if marker else pending)
+            and values <= {expected, _day_last_hour(pending)}
+        ):
+            return pending
+        details = problem or (
+            f"{chain.key}: expected the last stored hour to be "
+            f"{expected.isoformat() if expected else 'none'}, but the statistics end at "
+            f"{', '.join(sorted(v.isoformat() if v else 'none' for v in values))}"
+        )
+        self._create_issue(ISSUE_MARKER_MISMATCH, {"details": details}, chain.key.replace(":", "_"))
+        raise MarkerMismatchError("marker_mismatch", details)
+
+    async def _async_chain_start(self, chain: _Chain, boundary: date) -> date | None:
+        """First day for a new chain: the boundary, or the sensor's first complete day."""
+        if chain.sensor is None:
+            return boundary
+        first = await self._async_sensor_first_day(chain.sensor.entity_id, boundary)
+        return None if first is None else max(first, boundary)
+
+    async def _async_sensor_first_day(self, entity_id: str, boundary: date) -> date | None:
+        start = nem_day_start(boundary) - HOUR
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period, self.hass, start, None, {entity_id}, "hour", None, {"sum"}
+        )
+        found = rows.get(entity_id, [])
+        if not found:
+            return None
+        first_hour = datetime.fromtimestamp(found[0]["start"], UTC)
+        day = importer.nem_date(first_hour)
+        if nem_day_start(day) - HOUR < first_hour:
+            day += timedelta(days=1)  # the first day needs the hour before it as a baseline
+        return day
+
+    async def _async_chain_walk(self, chain: _Chain) -> dict[str, Any]:
+        """Extend one secondary chain from its marker to yesterday."""
+        state = chain.state
+        recovery = await self._async_chain_guard(chain)
+        if state.rewrite is not None:
+            await self._async_chain_rewrite(chain, date.fromisoformat(state.rewrite["next"]))
+        yesterday = nem_today() - timedelta(days=1)
+        start = await self._async_chain_first_day(chain, recovery, yesterday)
+        report: dict[str, Any] = {
+            "status": STATUS_CAUGHT_UP,
+            "reason": None,
+            "written": [],
+            "skipped": [],
+            "lower_precision": [],
+        }
+        if start is None:
+            return {
+                **report,
+                "status": STATUS_WAITING,
+                "reason": "the sensor has no statistics yet",
+            }
+        for day in _days(start, yesterday):
+            records = await self._async_records_for(day, yesterday)
+            if not records:
+                if await self._async_chain_empty_day(state, day, yesterday):
+                    report["skipped"].append(day.isoformat())
+                    continue
+                return {**report, "status": STATUS_WAITING, "reason": f"no usage for {day} yet"}
+            try:
+                result = await self._async_chain_write(chain, day, records, rewriting=False)
+            except ImportDayError as err:
+                return {
+                    **report,
+                    "status": STATUS_ATTENTION,
+                    "reason": err.reason,
+                    "message": str(err),
+                }
+            if result in ("written", "lower_precision"):
+                report["written"].append(day.isoformat())
+                if result == "lower_precision":
+                    report["lower_precision"].append(day.isoformat())
+            else:
+                report["skipped"].append(day.isoformat())
+        return report
+
+    async def _async_chain_first_day(
+        self, chain: _Chain, recovery: date | None, yesterday: date
+    ) -> date | None:
+        """The day a chain continues from; days older than retention are skipped first."""
+        state = chain.state
+        boundary = nem_today() - timedelta(days=self.store.retention_days)
+        if recovery is not None:
+            start: date | None = recovery
+        elif state.marker is not None:
+            start = state.marker + timedelta(days=1)
+        else:
+            start = await self._async_chain_start(chain, boundary)
+        if start is not None and start < boundary:
+            last = min(boundary - timedelta(days=1), yesterday)
+            await state.async_mark_skipped(
+                start, last, STATUS_SKIPPED_UNAVAILABLE, "older than retention"
+            )
+            start = last + timedelta(days=1)
+        return start
+
+    async def _async_chain_empty_day(self, state: ChainState, day: date, yesterday: date) -> bool:
+        """Retention and patience for a chain's empty day. True if the day was skipped."""
+        shared = (self.store.day(day) or {}).get("status")
+        if shared in (STATUS_SKIPPED_GAP, STATUS_SKIPPED_UNAVAILABLE):
+            await state.async_mark_skipped(day, day, shared, "as for the usage data")
+            return True
+        seen = await self.store.async_note_empty(day, nem_today())
+        if seen < self.patience_days:
+            return False
+        if not self._later_has_data(day) and day < yesterday:
+            await self._async_records_for(day + timedelta(days=1), yesterday)
+        if not self._later_has_data(day):
+            return False
+        await state.async_mark_skipped(
+            day, day, STATUS_SKIPPED_GAP, f"empty on {seen} separate days"
+        )
+        return True
+
+    async def _async_chain_write(
+        self, chain: _Chain, day: date, records: list[UsageRecord], *, rewriting: bool
+    ) -> str:
+        """Write one day of a secondary chain.
+
+        Returns ``written``, ``lower_precision`` or the skip status it recorded.
+        """
+        state = chain.state
+        ctx = self._ctx_for(day)
+        try:
+            by_channel = importer.check_completeness(records, day, ctx.channels)
+        except IncompleteDataError as err:
+            self._raise_data_issue(err, day)
+            raise
+        tail = rewriting or (state.last_written is not None and day <= state.last_written)
+        estimated = sum(1 for r in records if r.quality == "estimated")
+        if chain.sensor is None:
+            specs = [s for s in chain.mean_specs if s.channel in by_channel]
+            rows = chains.price_rows(records, specs, day)
+            if not tail:
+                await state.async_set_pending(day)
+            await importer.async_write_means(self.hass, day, specs, rows, expect_latest=not tail)
+            await state.async_mark_written(day, {"mode": "revision" if tail else "catch_up"})
+            await self._async_track_revision(day, records, estimated)
+            return "written"
+        sensor = chain.sensor
+        channel_records = by_channel.get(sensor.channel.identifier)
+        if not channel_records:
+            await state.async_mark_skipped(
+                day, day, STATUS_SKIPPED_SENSOR, f"channel {sensor.channel.identifier} not active"
+            )
+            return STATUS_SKIPPED_SENSOR
+        five, hourly = await chains.async_sensor_energy(self.hass, sensor.entity_id, day)
+        try:
+            priced = chains.own_cost_day(
+                channel_records,
+                day,
+                five,
+                hourly,
+                feed_in=sensor.channel.type == CHANNEL_FEED_IN,
+                allow_fallback=self.own_fallback,
+            )
+        except chains.SensorDataUnavailable as err:
+            await state.async_mark_skipped(day, day, STATUS_SKIPPED_SENSOR, str(err))
+            return STATUS_SKIPPED_SENSOR
+        except chains.PreciseDataUnavailable as err:
+            await state.async_mark_skipped(day, day, STATUS_SKIPPED_PRECISION, str(err))
+            return STATUS_SKIPPED_PRECISION
+        sid = sensor.spec.statistic_id
+        prev = (
+            state.last_written
+            if (state.last_written and state.last_written < day)
+            else state.last_imported_before(day)
+        )
+        if prev is None:
+            baseline = 0.0
+        else:
+            sums = await importer.async_sums_at(self.hass, [sid], _day_last_hour(prev))
+            if sums[sid] is None:
+                raise ImportRefusedError(
+                    "partial_history", f"{sid} has no row at the end of {prev}"
+                )
+            baseline = sums[sid]
+        if not tail:
+            await state.async_set_pending(day)
+        await importer.async_write_amounts(
+            self.hass,
+            day,
+            [sensor.spec],
+            {sid: priced.amounts},
+            {sid: baseline},
+            expect_latest=not tail,
+        )
+        await state.async_mark_written(
+            day,
+            {
+                "mode": "revision" if tail else "catch_up",
+                "amount": round(math.fsum(priced.amounts), 6),
+                "energy_kwh": priced.energy_kwh,
+                "lower_precision": priced.lower_precision,
+            },
+        )
+        await self._async_track_revision(day, records, estimated)
+        return "lower_precision" if priced.lower_precision else "written"
+
+    async def _async_chain_rewrite(self, chain: _Chain, first: date) -> int:
+        """Rewrite a secondary chain from ``first`` to its last written day, resumably."""
+        state = chain.state
+        last = date.fromisoformat(state.rewrite["to"]) if state.rewrite else state.last_written
+        if last is None:
+            return 0
+        count = 0
+        for day in _days(first, last):
+            await state.async_set_rewrite({"next": day.isoformat(), "to": last.isoformat()})
+            if (state.day(day) or {}).get("status") != STATUS_IMPORTED:
+                continue
+            records = await self._async_records_for(day, last)
+            if not records:
+                raise ImportDayError(
+                    "tail_unavailable", f"{chain.key}: {day} returned no usage during a rewrite"
+                )
+            await self._async_chain_write(chain, day, records, rewriting=True)
+            count += 1
+        await state.async_set_rewrite(None)
+        return count
+
     # --- import_day service -------------------------------------------------------
 
     async def async_import_day(self, day: date) -> dict[str, Any]:
@@ -902,7 +1437,9 @@ class AmberManager:
                 )
                 raise
             await self.store.async_mark_imported(day, summary)
-            await self._async_track_revision(day, list(records), summary)
+            await self._async_track_revision(
+                day, list(records), summary.get("estimated_records", 0)
+            )
             self._clear_data_issues()
             self._publish()
             return summary
@@ -920,14 +1457,17 @@ class AmberManager:
 
     # --- Repairs ------------------------------------------------------------------
 
-    def _issue_id(self, kind: str) -> str:
-        return f"{kind}_{self.entry.entry_id}"
+    def _issue_id(self, kind: str, suffix: str | None = None) -> str:
+        base = f"{kind}_{self.entry.entry_id}"
+        return f"{base}_{suffix}" if suffix else base
 
-    def _create_issue(self, kind: str, placeholders: dict[str, str]) -> None:
+    def _create_issue(
+        self, kind: str, placeholders: dict[str, str], suffix: str | None = None
+    ) -> None:
         ir.async_create_issue(
             self.hass,
             DOMAIN,
-            self._issue_id(kind),
+            self._issue_id(kind, suffix),
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING if kind == ISSUE_BEHIND else ir.IssueSeverity.ERROR,
             translation_key=kind,
@@ -935,8 +1475,8 @@ class AmberManager:
             data={"entry_id": self.entry.entry_id},
         )
 
-    def _delete_issue(self, kind: str) -> None:
-        ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(kind))
+    def _delete_issue(self, kind: str, suffix: str | None = None) -> None:
+        ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(kind, suffix))
 
     def _raise_data_issue(self, err: IncompleteDataError, day: date) -> None:
         if err.reason == "unexpected_channel":
@@ -971,6 +1511,43 @@ class AmberManager:
                 },
             )
 
+    def _reconciliation(self) -> dict[str, dict[str, Any] | None]:
+        """Own kWh minus Amber general kWh for the last day both have (Full mode only)."""
+        result: dict[str, dict[str, Any] | None] = {}
+        for sensor in self.own_sensors:
+            if sensor.channel.type != CHANNEL_GENERAL:
+                continue
+            result[sensor.subentry_id] = None
+            if self.usage_mode != MODE_FULL:
+                continue
+            energy_sid = next(
+                s.statistic_id
+                for s in self.ctx.specs
+                if s.channel == sensor.channel.identifier and s.unit == "kWh"
+            )
+            state = chain_state(self.store, sensor.key)
+            day = nem_today() - timedelta(days=1)
+            for _ in range(15):
+                own = state.day(day) or {}
+                amber = self.store.day(day) or {}
+                if own.get("status") == STATUS_IMPORTED and amber.get("status") == STATUS_IMPORTED:
+                    amber_kwh = (amber.get("totals") or {}).get(energy_sid)
+                    own_kwh = own.get("energy_kwh")
+                    if amber_kwh is not None and own_kwh is not None:
+                        diff = own_kwh - amber_kwh
+                        result[sensor.subentry_id] = {
+                            "date": day.isoformat(),
+                            "difference_kwh": round(diff, 3),
+                            "difference_percent": round(100 * diff / amber_kwh, 2)
+                            if amber_kwh
+                            else None,
+                            "own_kwh": round(own_kwh, 3),
+                            "amber_kwh": round(amber_kwh, 3),
+                        }
+                        break
+                day -= timedelta(days=1)
+        return result
+
     # --- display snapshot ---------------------------------------------------------
 
     @callback
@@ -984,6 +1561,11 @@ class AmberManager:
         record = self.store.day(yesterday) or {}
         totals = record.get("totals") if record.get("status") == "imported" else None
         return {
+            "reconciliation": self._reconciliation(),
+            "chains": {
+                c.key: {"marker": c.state.marker, "last_written": c.state.last_written}
+                for c in self._secondary_chains()
+            },
             "status": self.status,
             "last_run": self.store.last_run,
             "marker": marker,

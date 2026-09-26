@@ -137,6 +137,7 @@ async def _setup_entry(
     startup: bool = False,
     options: dict | None = None,
     site: dict | None = None,
+    subentries: list[dict] | None = None,
 ) -> MockConfigEntry:
     fake.install(aioclient_mock, [site or site_json()])
     entry = MockConfigEntry(
@@ -154,6 +155,7 @@ async def _setup_entry(
             ],
         },
         options=options or {CONF_SCHEDULE_MODE: "automatic"},
+        subentries_data=subentries or [],
     )
     entry.add_to_hass(hass)
     if startup:

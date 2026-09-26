@@ -5,6 +5,9 @@
     },
     "run_now": {
       "service": "mdi:play-circle-outline"
+    },
+    "backfill": {
+      "service": "mdi:history"
     }
   },
   "entity": {
@@ -20,6 +23,9 @@
       },
       "next_run": {
         "default": "mdi:clock-outline"
+      },
+      "reconciliation": {
+        "default": "mdi:scale-balance"
       }
     }
   }

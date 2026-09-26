@@ -71,12 +71,18 @@
           "schedule_mode": "Schedule",
           "fixed_times": "Fixed times",
           "patience_days": "Patience days",
-          "revision_days": "Revision days"
+          "revision_days": "Revision days",
+          "usage_mode": "Usage mode",
+          "price_series": "Price series",
+          "own_fallback": "Hourly fallback for own sensors"
         },
         "data_description": {
           "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15.",
           "patience_days": "A day that stays empty on this many separate days, while later days have data, is skipped as a gap (default 7).",
-          "revision_days": "Days with estimated data are re-checked daily for this many days; if Amber revises them, history is rewritten from that day on (default 14, 0 turns it off)."
+          "revision_days": "Days with estimated data are re-checked daily for this many days; if Amber revises them, history is rewritten from that day on (default 14, 0 turns it off).",
+          "usage_mode": "Full imports usage every day. Recovery-only imports nothing on a schedule (use the backfill service). Pricing-only writes no usage statistics, only prices and own-sensor cost. Switching never deletes statistics; ones no longer updated simply stop.",
+          "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate.",
+          "own_fallback": "When 5-minute sensor data is no longer available (after about 10 days), price hourly energy at the hour's mean price and flag the day as lower precision. If off, such days are skipped."
         }
       }
     },
@@ -89,6 +95,13 @@
       "options": {
         "automatic": "Automatic",
         "fixed": "Fixed times"
+      }
+    },
+    "usage_mode": {
+      "options": {
+        "full": "Full",
+        "recovery": "Recovery-only",
+        "pricing": "Pricing-only"
       }
     }
   },
@@ -125,6 +138,9 @@
       },
       "yesterday_compensation": {
         "name": "Yesterday {channel} compensation"
+      },
+      "reconciliation": {
+        "name": "Reconciliation {sensor}"
       }
     }
   },
@@ -173,6 +189,49 @@
           "name": "Site",
           "description": "The Amber site to run for. Optional when only one site is configured."
         }
+      }
+    },
+    "backfill": {
+      "name": "Backfill",
+      "description": "Import a range of NEM days on demand (Recovery-only mode, or to fill history before the first imported day). Days older than Amber's retention are skipped; a range before existing data rewrites the later sums.",
+      "fields": {
+        "start_date": {
+          "name": "Start date",
+          "description": "First NEM date to import."
+        },
+        "end_date": {
+          "name": "End date",
+          "description": "Last NEM date to import (at most yesterday)."
+        },
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "own_sensor": {
+      "entry_type": "Own energy sensor",
+      "initiate_flow": {
+        "user": "Add own energy sensor"
+      },
+      "step": {
+        "user": {
+          "title": "Price your own energy sensor",
+          "description": "Choose a cumulative energy sensor (for example CT clamps or a smart plug) and the Amber channel whose billed price applies. Its cost is recorded as a statistic, from the later of the sensor's history start and Amber's retention boundary.",
+          "data": {
+            "entity_id": "Energy sensor",
+            "channel": "Amber channel"
+          }
+        }
+      },
+      "error": {
+        "sensor_not_found": "The sensor was not found.",
+        "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing."
+      },
+      "abort": {
+        "already_configured": "This sensor is already mapped."
       }
     }
   }

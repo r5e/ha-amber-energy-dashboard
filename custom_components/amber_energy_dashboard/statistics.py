@@ -145,3 +145,60 @@ def build_specs(site_id: str, channels: Iterable[ChannelConfig]) -> list[Statist
         )
     )
     return specs
+
+
+@dataclass(frozen=True, slots=True)
+class MeanSpec:
+    """A mean-type external statistic (the optional price series)."""
+
+    statistic_id: str
+    channel: str
+    name: str
+    unit: str = "AUD/kWh"
+
+    def metadata(self) -> StatisticMetaData:
+        """Recorder metadata: an arithmetic mean, no sum; unit_class always set."""
+        return StatisticMetaData(
+            has_sum=False,
+            mean_type=StatisticMeanType.ARITHMETIC,
+            name=self.name,
+            source=DOMAIN,
+            statistic_id=self.statistic_id,
+            unit_class=None,
+            unit_of_measurement=self.unit,
+        )
+
+
+def price_specs(site_id: str, channels: Iterable[ChannelConfig]) -> list[MeanSpec]:
+    """The optional per-channel price series."""
+    return [
+        MeanSpec(
+            statistic_id(site_id, f"{c.identifier.lower()}_price"),
+            c.identifier,
+            f"Amber {_CHANNEL_LABELS[c.type]} {c.identifier} price",
+        )
+        for c in channels
+    ]
+
+
+def sensor_slug(entity_id: str) -> str:
+    """A statistic-ID-safe slug for an entity ID (``sensor.house_energy`` -> ``house_energy``)."""
+    object_id = entity_id.split(".", 1)[-1].lower()
+    slug = "".join(ch if ch.isalnum() else "_" for ch in object_id)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_") or "sensor"
+
+
+def own_cost_spec(site_id: str, entity_id: str, channel: ChannelConfig) -> StatisticSpec:
+    """The own-sensor cost statistic. Feed-in mappings are positive when earned."""
+    slug = sensor_slug(entity_id)
+    feed_in = channel.type == CHANNEL_FEED_IN
+    return StatisticSpec(
+        statistic_id(site_id, f"own_{slug}_cost"),
+        Metric.COMPENSATION if feed_in else Metric.COST,
+        channel.identifier,
+        f"Amber own {slug} {'compensation' if feed_in else 'cost'}",
+        CURRENCY,
+        None,
+    )

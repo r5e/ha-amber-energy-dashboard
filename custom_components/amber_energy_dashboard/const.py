@@ -55,3 +55,22 @@ DEFAULT_PATIENCE_DAYS: Final = 7
 DEFAULT_REVISION_DAYS: Final = 14
 RETENTION_REVERIFY_BRACKET_DAYS: Final = 15
 """Daily re-verify bracket: 2 check calls + 1 step + 1 bracket + 4 bisection = 8."""
+
+# Usage modes (options)
+CONF_USAGE_MODE: Final = "usage_mode"
+MODE_FULL: Final = "full"
+MODE_RECOVERY: Final = "recovery"
+MODE_PRICING: Final = "pricing"
+USAGE_MODES: Final = (MODE_FULL, MODE_RECOVERY, MODE_PRICING)
+CONF_PRICE_SERIES: Final = "price_series"
+CONF_OWN_FALLBACK: Final = "own_fallback"
+"""Allow the hourly (lower precision) own-sensor cost when 5-minute data is gone."""
+
+# Own-sensor cost (config sub-entries)
+SUBENTRY_OWN_SENSOR: Final = "own_sensor"
+CONF_SENSOR: Final = "entity_id"
+CONF_CHANNEL: Final = "channel"
+
+SERVICE_BACKFILL: Final = "backfill"
+ATTR_START_DATE: Final = "start_date"
+ATTR_END_DATE: Final = "end_date"

@@ -5,12 +5,22 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    ConfigSubentryFlow,
+    OptionsFlow,
+    SubentryFlowResult,
+)
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -37,19 +47,27 @@ from .const import (
     CHANNEL_CONTROLLED_LOAD,
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
+    CONF_CHANNEL,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
     CONF_NMI,
+    CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
+    CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
+    CONF_SENSOR,
     CONF_SITE_ID,
+    CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
     DOMAIN,
+    MODE_FULL,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
+    SUBENTRY_OWN_SENSOR,
     SUPPORTED_CHANNEL_TYPES,
+    USAGE_MODES,
 )
 from .schedule import format_times, parse_times
 from .storage import AmberStore
@@ -75,6 +93,15 @@ _SCHEDULE_SCHEMA = vol.Schema(
 
 _OPTIONS_SCHEMA = _SCHEDULE_SCHEMA.extend(
     {
+        vol.Optional(CONF_USAGE_MODE): SelectSelector(
+            SelectSelectorConfig(
+                options=list(USAGE_MODES),
+                mode=SelectSelectorMode.LIST,
+                translation_key=CONF_USAGE_MODE,
+            )
+        ),
+        vol.Optional(CONF_PRICE_SERIES): BooleanSelector(),
+        vol.Optional(CONF_OWN_FALLBACK): BooleanSelector(),
         vol.Optional(CONF_PATIENCE_DAYS): NumberSelector(
             NumberSelectorConfig(min=1, max=30, step=1, mode=NumberSelectorMode.BOX)
         ),
@@ -234,6 +261,14 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return the options flow (schedule)."""
         return AmberOptionsFlow()
 
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Own-sensor cost mappings are config sub-entries, one per sensor."""
+        return {SUBENTRY_OWN_SENSOR: OwnSensorSubentryFlow}
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -345,6 +380,15 @@ class AmberOptionsFlow(OptionsFlow):
                         CONF_REVISION_DAYS, current.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS)
                     )
                 )
+                options[CONF_USAGE_MODE] = user_input.get(
+                    CONF_USAGE_MODE, current.get(CONF_USAGE_MODE, MODE_FULL)
+                )
+                options[CONF_PRICE_SERIES] = bool(
+                    user_input.get(CONF_PRICE_SERIES, current.get(CONF_PRICE_SERIES, False))
+                )
+                options[CONF_OWN_FALLBACK] = bool(
+                    user_input.get(CONF_OWN_FALLBACK, current.get(CONF_OWN_FALLBACK, True))
+                )
                 return self.async_create_entry(data=options)
         current = dict(self.config_entry.options)
         suggested = user_input or {
@@ -354,9 +398,70 @@ class AmberOptionsFlow(OptionsFlow):
             else "",
             CONF_PATIENCE_DAYS: current.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS),
             CONF_REVISION_DAYS: current.get(CONF_REVISION_DAYS, DEFAULT_REVISION_DAYS),
+            CONF_USAGE_MODE: current.get(CONF_USAGE_MODE, MODE_FULL),
+            CONF_PRICE_SERIES: current.get(CONF_PRICE_SERIES, False),
+            CONF_OWN_FALLBACK: current.get(CONF_OWN_FALLBACK, True),
         }
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(_OPTIONS_SCHEMA, suggested),
+            errors=errors,
+        )
+
+
+class OwnSensorSubentryFlow(ConfigSubentryFlow):
+    """Map a cumulative energy sensor to an Amber channel for own-sensor cost."""
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Choose the sensor and the channel whose billed price applies."""
+        entry = self._get_entry()
+        channels = entry.data[CONF_CHANNELS]
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            entity_id = user_input[CONF_SENSOR]
+            state = self.hass.states.get(entity_id)
+            attrs = state.attributes if state else {}
+            mapped = [
+                s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_OWN_SENSOR
+            ]
+            if any(sub.unique_id == entity_id for sub in mapped):
+                return self.async_abort(reason="already_configured")
+            if state is None:
+                errors[CONF_SENSOR] = "sensor_not_found"
+            elif attrs.get("device_class") != "energy" or attrs.get("state_class") not in (
+                "total",
+                "total_increasing",
+            ):
+                errors[CONF_SENSOR] = "not_cumulative_energy"
+            else:
+                channel = next(c for c in channels if c["identifier"] == user_input[CONF_CHANNEL])
+                name = attrs.get("friendly_name") or entity_id
+                return self.async_create_entry(
+                    title=f"{name} ({_CHANNEL_LABELS[channel['type']]} {channel['identifier']})",
+                    data={CONF_SENSOR: entity_id, CONF_CHANNEL: channel["identifier"]},
+                    unique_id=entity_id,
+                )
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_SENSOR): EntitySelector(
+                    EntitySelectorConfig(domain="sensor", device_class="energy")
+                ),
+                vol.Required(CONF_CHANNEL, default=channels[0]["identifier"]): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=c["identifier"],
+                                label=f"{c['identifier']} ({_CHANNEL_LABELS[c['type']]})",
+                            )
+                            for c in channels
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input or {}),
             errors=errors,
         )

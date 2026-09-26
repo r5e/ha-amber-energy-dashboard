@@ -21,8 +21,8 @@ Commits on `v2` (newest first):
 
 | Commit | Content |
 |---|---|
-| `9ddb76c` | Tests pinning the HA 2026.9 external statistics contract |
-| `b253941` | Async Amber API client, tests and anonymised fixtures |
+| `2f99b30` | Tests pinning the HA 2026.9 external statistics contract |
+| `3842117` | Async Amber API client, tests and anonymised fixtures |
 | `b461bea` | uv dev environment (`pyproject.toml`, `uv.lock`, `.python-version`) and CI workflows |
 | `0076035` | Integration scaffold, `hacs.json`, `.gitignore`, README draft |
 | `88dabd9` | `git mv` of the v1 kit into `legacy/v1/` (4 files, pure renames, 0 line changes) |
@@ -408,7 +408,7 @@ The highest use of one window was 16 calls on counter B. Remaining never went be
   - the repository `.venv/`, which is gitignored
   - the session scratchpad holds only the call log (no response bodies) and helper
     scripts
-- **Git:** 6 new commits on `v2` (including this report), nothing pushed, `main` untouched. `CLAUDE.md` and
+- **Git:** 6 new commits on `v2` at the time (including this report; hashes updated after the A9 rewrite), nothing pushed, `main` untouched. `CLAUDE.md` and
   `DESIGN.md` are untracked (item 5.2).
 
 ## 8. Recommended next steps
@@ -445,11 +445,14 @@ This session applied the planning-chat decisions that followed the first report.
 
 | Commit | Content |
 |---|---|
-| `1cebcec` | `DESIGN.md` moved to `docs/DESIGN.md` and committed unchanged |
-| `77f320e` | All accepted section 5 changes applied to `docs/DESIGN.md`, plus a note that the technical reference is private and not in the repository |
-| `375ab11` | `RunBudget`: per-run rate-limit budget in the client (A3). Ruff now skips `reports/` and `docs/` |
-| `d61fa2c` | Synthetic usage fixture replaces the real one (A4) |
-| *(this commit)* | Report update |
+| `e0f3cee` | `DESIGN.md` moved to `docs/DESIGN.md` and committed unchanged |
+| `98476bd` | All accepted section 5 changes applied to `docs/DESIGN.md`, plus a note that the technical reference is private and not in the repository |
+| `84866fb` | `RunBudget`: per-run rate-limit budget in the client (A3). Ruff now skips `reports/` and `docs/` |
+| *(removed)* | Synthetic usage fixture replaces the real one (A4). Dropped by the history rewrite (A9): the fixture is now synthetic from its first commit, so this commit became empty |
+| `78aad33` | Report update |
+
+Hashes in this report are post-rewrite (A9). The first-session report commit is
+`552c607`.
 
 Local-only changes (not committed):
 - **`CLAUDE.md`:**
@@ -569,8 +572,8 @@ and ends with `client.end_run()`.
 - The real sample and the generator live only in `local/`, which is excluded via
   `.git/info/exclude`.
 
-**Open point for Robert: git history.** The real day is still in commit `b253941` and
-in the history after it, up to `d61fa2c`. Nothing has been pushed. I tried to rewrite
+**Git history: resolved (A9).** At the time of this addendum, the real day was still in
+the client commit and the history after it. I tried to rewrite
 the unpushed `v2` commits (`git filter-branch`, limited to `main..v2`) so that the file
 is synthetic from its first commit. Claude Code's permission system blocked that, and I
 did not look for another way to do it. Options:
@@ -580,6 +583,8 @@ did not look for another way to do it. Options:
   need updating.
 - **Accept it in history.** It is one day of household load with the site ID and NMI
   removed.
+
+Robert approved the rewrite after this addendum was written; see A9.
 
 ### A5. Usage retention probe (separate from price history)
 
@@ -635,7 +640,7 @@ key. All were outside production quiet windows.
 - **`claude-dev`:** the `local/` folder (excluded) holds the real usage sample
   and the synthetic generator. The session scratchpad holds call
   and smoke logs plus helper scripts, and no response bodies.
-- **Git:** 10 commits on `v2` (11 with this report update), nothing pushed, `main`
+- **Git:** 10 commits on `v2` after the A9 rewrite (the fixture-replacement commit was dropped), nothing pushed, `main`
   untouched. `CLAUDE.md` and `amber-technical-reference.md` are excluded through
   `.git/info/exclude`.
 
@@ -648,3 +653,39 @@ key. All were outside production quiet windows.
    import service, verified on a lab clone), with no work started until then.
 4. When GitHub access is available: push, check the first CI runs, and set the
    repository description and topics.
+
+### A9. History rewrite (approved after sign-off)
+
+Robert approved the rewrite once Milestone 1 was signed off. I ran:
+
+```
+git filter-branch --prune-empty --index-filter \
+  'if the tree contains tests/fixtures/usage_2026-09-24.json, set it to the synthetic blob be1115e' \
+  -- main..v2
+```
+
+Old to new hashes:
+
+| Old | New | Commit |
+|---|---|---|
+| `88dabd9`, `0076035`, `b461bea` | unchanged | before the fixture existed |
+| `b253941` | `3842117` | Async Amber API client with tests |
+| `9ddb76c` | `2f99b30` | Statistics contract tests |
+| `0cd05ae` | `552c607` | Milestone 1 report |
+| `1cebcec` | `e0f3cee` | docs/DESIGN.md |
+| `77f320e` | `98476bd` | Design findings |
+| `375ab11` | `84866fb` | RunBudget |
+| `d61fa2c` | dropped | became empty (`--prune-empty`) |
+| `005f6e9` | `78aad33` | Follow-up report |
+
+Verification:
+- **No object reachable from `v2` is the real blob:**
+  `git rev-list --objects v2 | grep -c 2d1bb11…` gives `0`.
+- I then deleted the backup ref `refs/original/refs/heads/v2`. After that, no ref at
+  all reaches the real blob (`--all` also gives `0`).
+- Every one of the 7 commits containing the file holds the synthetic blob `be1115e`.
+- `main` is unchanged at `cc179b7`.
+- The rewritten client commit `3842117`, checked out in a temporary worktree, passes
+  its own tests (51 passed).
+- The unreachable old objects remain in the local object store until git's normal
+  garbage collection. They can never be pushed, because no ref points to them.

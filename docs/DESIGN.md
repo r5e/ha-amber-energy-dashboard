@@ -359,8 +359,8 @@ earliest changed day.
   history start and the retention boundary. The history starts in the hour after the
   sensor's first statistic (the first row is only a starting reading). On that first,
   possibly partial, day the hours before the sensor existed count as zero energy. Each run
-  then extends the mapping as new days are imported. A mapping re-added later continues its existing statistic after the
-  last written day (a gap in between).
+  then extends the mapping as new days are imported. A mapping re-added later continues its
+  existing statistic after the last written day (a gap in between).
 - Price history depth (section 4, item 2) does not limit this in practice; the sensor's own
   statistics and Amber's usage retention do.
 

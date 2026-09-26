@@ -25,9 +25,9 @@ Date: 2026-09-26, 18:20 to about 19:00 AEST. Branch `v2`, not pushed.
 | Commit | Content |
 |---|---|
 | *(this commit)* | This report |
-| `ad6ce77` | Refusals raised as `ServiceValidationError` (found in the lab, section 5.3) |
-| `4eca205` | Milestone 2: config flow, statistics model, `import_day`, diagnostics, tests |
-| `e02d9e5` | DESIGN sections 4 and 8 retention update; M1 report hash tables after the rewrite |
+| `f8b4495` | Refusals raised as `ServiceValidationError` (found in the lab, section 5.3) |
+| `8b7e84a` | Milestone 2: config flow, statistics model, `import_day`, diagnostics, tests |
+| `9762615` | DESIGN sections 4 and 8 retention update; M1 report hash tables after the rewrite |
 
 Before these, `filter-branch` rewrote the M1 history (decision A; section 4.1).
 
@@ -282,7 +282,7 @@ The 3-day row is the cumulative `sum` in HA at 2026-09-25 13:00Z. Every channel 
    cost a call on the shared budget. Instead, an auth failure during an import starts
    reauth. For M3: the scheduler's first run of the day is where a revoked key will
    surface.
-3. **Refusals are `ServiceValidationError`** (commit `ad6ce77`, found in the lab). They
+3. **Refusals are `ServiceValidationError`** (commit `f8b4495`, found in the lab). They
    first surfaced as generic internal errors. Note: HA's REST API returns HTTP 500 for
    *any* service exception, `ServiceValidationError` included, so REST callers cannot
    see the message. The websocket and the UI show it. This is HA behaviour, not ours.
@@ -327,7 +327,7 @@ due. Running total since M1 began: 44.
 - **VM 9101 `amber-test-m2` is running**, left for Robert: **http://192.168.94.111/**
   (template token and template user).
   - It has the integration installed in `/config/custom_components/amber_energy_dashboard/`
-    at commit `ad6ce77`, with one config entry for the real site.
+    at commit `f8b4495`, with one config entry for the real site.
   - Statistics for 2026-09-23 to 25: 5 statistics × 72 hours.
   - The Energy dashboard is configured with the grid source above.
   - No other files were written. Nothing was put in `/config/.claude_work/`, since no
@@ -383,10 +383,10 @@ No clones exist.
 
 | Commit | Content |
 |---|---|
-| `a309baa` | **Item 2 reversed:** `async_setup_entry` validates the key with one `GET /sites` (details below). |
-| `a805ffe` | **DESIGN updates** (details below). |
+| `c72ea39` | **Item 2 reversed:** `async_setup_entry` validates the key with one `GET /sites` (details below). |
+| `e80a7cc` | **DESIGN updates** (details below). |
 
-**Setup validation (`a309baa`):**
+**Setup validation (`c72ea39`):**
 - 401 or 403 raises `ConfigEntryAuthFailed`, which starts reauth.
 - A timeout or other network error, 5xx or 429 raises `ConfigEntryNotReady`, so HA
   retries setup.
@@ -402,7 +402,7 @@ No clones exist.
 - Importer tests now mock `/sites` for setup. The refusal tests assert "no usage
   request" rather than "no request".
 
-**DESIGN updates (`a805ffe`):**
+**DESIGN updates (`e80a7cc`):**
 - Section 14: the migration **negates legacy compensation** (hourly `state` and
   cumulative `sum`) when copying history, and the parity check compares compensation
   **by magnitude**. Energy and import cost are still compared exactly.
@@ -441,8 +441,10 @@ commit metadata and messages):
 - **`reports/M1-report.md`, blob `a4a0ab9`:** the first-session version of the M1
   report contains the **template VMID value** 4 times (in the clone API path and three
   mentions of the pool contents). That version was written before configuration values
-  were ruled out of committed files. It is the file's content in commits `552c607`,
-  `e0f3cee`, `98476bd` and `84866fb`. The current version (from `78aad33`) uses
+  were ruled out of committed files. It was the file's content in commits `552c607`,
+  `e0f3cee`, `98476bd` and `84866fb` (hashes before the A9 rewrite; now `6f980d7`,
+  `bd18c5b`, `5a28eff` and `94c2831`). The current version (from `78aad33`, now
+  `7ce3b49`) uses
   placeholders.
 
 The push gate's listed criteria all pass: no secrets, no real site ID or NMI, no real
@@ -453,7 +455,7 @@ a push would publish this old blob permanently. So I stopped. **Options for Robe
 2. **Approve a second history rewrite before the first push** (recommended, since it is
    cheap now and impossible after publishing). It would replace the value with
    `<template>` in `reports/M1-report.md` in the four commits that contain it.
-   Hashes from `552c607` onwards change, and the report hash tables need updating
+   Hashes from `552c607` (pre-rewrite) onwards change, and the report hash tables need updating
    again. I would then re-run both checks and push.
 
 ### A4. Push, CI and repository settings: not started

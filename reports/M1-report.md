@@ -445,14 +445,14 @@ This session applied the planning-chat decisions that followed the first report.
 
 | Commit | Content |
 |---|---|
-| `e0f3cee` | `DESIGN.md` moved to `docs/DESIGN.md` and committed unchanged |
-| `98476bd` | All accepted section 5 changes applied to `docs/DESIGN.md`, plus a note that the technical reference is private and not in the repository |
-| `84866fb` | `RunBudget`: per-run rate-limit budget in the client (A3). Ruff now skips `reports/` and `docs/` |
+| `bd18c5b` | `DESIGN.md` moved to `docs/DESIGN.md` and committed unchanged |
+| `5a28eff` | All accepted section 5 changes applied to `docs/DESIGN.md`, plus a note that the technical reference is private and not in the repository |
+| `94c2831` | `RunBudget`: per-run rate-limit budget in the client (A3). Ruff now skips `reports/` and `docs/` |
 | *(removed)* | Synthetic usage fixture replaces the real one (A4). Dropped by the history rewrite (A9): the fixture is now synthetic from its first commit, so this commit became empty |
-| `78aad33` | Report update |
+| `7ce3b49` | Report update |
 
 Hashes in this report are post-rewrite (A9). The first-session report commit is
-`552c607`.
+`6f980d7`.
 
 Local-only changes (not committed):
 - **`CLAUDE.md`:**
@@ -671,12 +671,12 @@ Old to new hashes:
 | `88dabd9`, `0076035`, `b461bea` | unchanged | before the fixture existed |
 | `b253941` | `3842117` | Async Amber API client with tests |
 | `9ddb76c` | `2f99b30` | Statistics contract tests |
-| `0cd05ae` | `552c607` | Milestone 1 report |
-| `1cebcec` | `e0f3cee` | docs/DESIGN.md |
-| `77f320e` | `98476bd` | Design findings |
-| `375ab11` | `84866fb` | RunBudget |
+| `0cd05ae` | `6f980d7` | Milestone 1 report |
+| `1cebcec` | `bd18c5b` | docs/DESIGN.md |
+| `77f320e` | `5a28eff` | Design findings |
+| `375ab11` | `94c2831` | RunBudget |
 | `d61fa2c` | dropped | became empty (`--prune-empty`) |
-| `005f6e9` | `78aad33` | Follow-up report |
+| `005f6e9` | `7ce3b49` | Follow-up report |
 
 Verification:
 - **No object reachable from `v2` is the real blob:**
@@ -689,3 +689,9 @@ Verification:
   its own tests (51 passed).
 - The unreachable old objects remain in the local object store until git's normal
   garbage collection. They can never be pushed, because no ref points to them.
+
+**Second rewrite (after M2 sign-off, approved by Robert).** A later scan found the
+template VMID in the first-session version of this report. It was replaced with
+`<template>` in every commit containing that version, and the hashes in this report were
+updated to match. Mapping: `552c607`→`6f980d7`, `e0f3cee`→`bd18c5b`, `98476bd`→`5a28eff`,
+`84866fb`→`94c2831`, `78aad33`→`7ce3b49`. Full details are in the M2 report addendum.

@@ -963,9 +963,9 @@ async def _async_execute(hass: HomeAssistant, manager: AmberManager, plan: _Plan
 
 async def _async_begin(hass: HomeAssistant, store: Any, plan: _Plan) -> dict[str, Any]:
     """Start a new record (backup check included), or return the one in progress."""
-    record = copy.deepcopy(store.migration)
-    if record is not None and record["status"] == STATUS_IN_PROGRESS:
-        return record
+    previous = copy.deepcopy(store.migration)
+    if previous is not None and previous["status"] == STATUS_IN_PROGRESS:
+        return previous
     assert plan.boundary is not None
     energy = await async_get_manager(hass)
     record = {
@@ -983,6 +983,15 @@ async def _async_begin(hass: HomeAssistant, store: Any, plan: _Plan) -> dict[str
         "steps": {},
         "changes": [],
         "legacy_deleted": False,
+        # Earlier runs that were undone, with their recorded changes.
+        "history": [
+            *(previous or {}).get("history", []),
+            *(
+                [{k: previous.get(k) for k in ("started", "finished", "undone", "changes")}]
+                if previous
+                else []
+            ),
+        ],
     }
     await store.async_set_migration(record)
     stored = await store.async_read_back_migration()
@@ -991,7 +1000,7 @@ async def _async_begin(hass: HomeAssistant, store: Any, plan: _Plan) -> dict[str
         or stored.get("energy_backup") != record["energy_backup"]
         or stored.get("sources") != record["sources"]
     ):
-        await store.async_set_migration(None)
+        await store.async_set_migration(previous)  # nothing changed: keep the old record
         raise MigrationRefused(
             "backup_check_failed",
             "The saved copy of the Energy preferences did not read back; nothing was changed.",

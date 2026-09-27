@@ -425,6 +425,9 @@ async def test_second_run_refused_undo_and_rerun(
 
     report = await _migrate(hass, dry_run=False, confirm_backup=True)
     assert report["result"]["rebase"] == {"skipped": "already continuous"}
+    history = _record(hass_storage)["history"]
+    assert [c["action"] for c in history[0]["changes"]][-2:] == ["completed", "undo"]
+    assert history[0]["undone"] is not None
     assert await _rows(hass) == rows_after
     assert hass.states.get(ADV_AUTOMATION).state == "off"
     assert energy.data["energy_sources"][0]["stat_energy_from"] == E1

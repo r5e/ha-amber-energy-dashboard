@@ -499,7 +499,7 @@ async def test_backfill_before_existing_data_rewrites_tail(
     entry = await _setup_entry(hass, aioclient_mock, fake)
     await _run(hass)
     store = entry.runtime_data.manager.store
-    store._data["retention_days"] = 10
+    store._data["retention_boundary"] = (TODAY - timedelta(days=10)).isoformat()
 
     result = await hass.services.async_call(
         DOMAIN,
@@ -581,8 +581,9 @@ async def test_pricing_mode_writes_no_usage_but_prices_and_own_cost(
     assert result["imported_days"] == []
     assert await _rows(hass) == usage_before  # untouched, still there
     assert result["chains"]["own:sub_house"]["written"] == [TODAY.isoformat()]
-    # The series starts at the retention boundary on the day it is enabled.
-    assert len(result["chains"]["price"]["written"]) == 2
+    # The series starts at the retention boundary date (TODAY - 2, which stays fixed).
+    assert result["chains"]["price"]["written"][0] == (TODAY - timedelta(days=2)).isoformat()
+    assert len(result["chains"]["price"]["written"]) == 3
     meta = await hass.async_add_executor_job(get_metadata, hass)
     assert set(ALL_IDS) <= set(meta)
     # Back to Full: the usage chain resumes from its marker.
@@ -845,6 +846,8 @@ async def test_chain_mirrors_usage_gap_and_outage(
     assert gap.isoformat() in result["chains"]["price"]["skipped"]
     store = entry.runtime_data.manager.store
     store._data["retention"]["last_verified"] = (TODAY + timedelta(days=10)).isoformat()
+    # Ten days on, Amber keeps 4 days again: the boundary date moved forward.
+    store._data["retention_boundary"] = (TODAY + timedelta(days=6)).isoformat()
     clock.now += timedelta(days=10)
     later = await _run(hass)
     price = store.as_dict()["chains"]["price"]["days"]

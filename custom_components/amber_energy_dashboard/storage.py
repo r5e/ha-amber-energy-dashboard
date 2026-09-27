@@ -14,18 +14,19 @@ The statistics table stays the source of truth for running totals. The Store hol
 Writes are atomic and immediate.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 import hashlib
 from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, NEM_TZ
 
 STORAGE_VERSION: Final = 1
-STORAGE_MINOR_VERSION: Final = 2
+STORAGE_MINOR_VERSION: Final = 3
 MAX_DAY_ENTRIES: Final = 400
 
 STATUS_IMPORTED: Final = "imported"
@@ -55,7 +56,31 @@ def _day(value: str | None) -> date | None:
     return date.fromisoformat(value) if value else None
 
 
+def _nem_today() -> date:
+    return dt_util.utcnow().astimezone(NEM_TZ).date()
+
+
+def retention_boundary_from_days(data: dict[str, Any], today: date) -> str | None:
+    """The boundary date for a store that held a day count (layout 1.2 and earlier).
+
+    The date recorded with the measurement wins; otherwise the count is taken as
+    measured on its ``measured_on`` day, or today when that is missing too.
+    """
+    info = data.get("retention") or {}
+    if info.get("boundary"):
+        return info["boundary"]
+    days = data.get("retention_days")
+    if days is None:
+        return None
+    base = _day(info.get("measured_on")) or today
+    return (base - timedelta(days=days)).isoformat()
+
+
 class _VersionedStore(Store[dict[str, Any]]):
+    def __init__(self, *args: Any, today: Callable[[], date] = _nem_today, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._today = today
+
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
@@ -63,27 +88,40 @@ class _VersionedStore(Store[dict[str, Any]]):
 
         1.1 -> 1.2 (Milestone 4): add ``last_written``. In 1.1 every resolved day was
         imported, so it equals the marker. Other new keys are filled with defaults.
+        1.2 -> 1.3 (Milestone 6b): retention is kept as the boundary date
+        (``retention_boundary``); the day count is derived from it.
         """
         if old_major_version > STORAGE_VERSION:
             raise NotImplementedError(f"store version {old_major_version} is newer")
         data = dict(old_data)
         if old_minor_version < 2:
             data.setdefault("last_written", data.get("marker"))
+        if old_minor_version < 3 and not data.get("retention_boundary"):
+            data["retention_boundary"] = retention_boundary_from_days(data, self._today())
+        if old_minor_version < 3:
+            data.pop("retention_days", None)
         return data
 
 
 class AmberStore:
     """Typed access to the per-entry store."""
 
-    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
-        """Create the store handle (call async_load before use)."""
+    def __init__(
+        self, hass: HomeAssistant, entry_id: str, today: Callable[[], date] = _nem_today
+    ) -> None:
+        """Create the store handle (call async_load before use).
+
+        ``today`` returns the current NEM date; the manager passes its own clock.
+        """
         self._entry_id = entry_id
+        self._today = today
         self._store = _VersionedStore(
             hass,
             STORAGE_VERSION,
             f"{DOMAIN}.{entry_id}",
             minor_version=STORAGE_MINOR_VERSION,
             atomic_writes=True,
+            today=today,
         )
         self._data: dict[str, Any] = {}
 
@@ -93,7 +131,7 @@ class AmberStore:
             "last_written": None,
             "pending": None,
             "days": {},
-            "retention_days": None,
+            "retention_boundary": None,
             "retention": None,
             "schedule_seed": schedule_seed_for(self._entry_id),
             "last_run": None,
@@ -137,9 +175,15 @@ class AmberStore:
         return _day(self._data["pending"])
 
     @property
+    def retention_boundary(self) -> date | None:
+        """The earliest NEM day with usage data, or None before discovery."""
+        return _day(self._data["retention_boundary"])
+
+    @property
     def retention_days(self) -> int | None:
-        """Learned usage retention in days, or None before discovery."""
-        return self._data["retention_days"]
+        """Days from the boundary to today (derived, for display), or None."""
+        boundary = self.retention_boundary
+        return None if boundary is None else (self._today() - boundary).days
 
     @property
     def retention(self) -> dict[str, Any] | None:
@@ -199,7 +243,11 @@ class AmberStore:
 
     def as_dict(self) -> dict[str, Any]:
         """A copy for diagnostics."""
-        return {**self._data, "days": dict(self._data["days"])}
+        return {
+            **self._data,
+            "days": dict(self._data["days"]),
+            "retention_days": self.retention_days,
+        }
 
     # --- writes (each saved immediately) --------------------------------------------
 
@@ -267,9 +315,9 @@ class AmberStore:
             self._data["pending"] = None
             await self._async_save()
 
-    async def async_set_retention(self, days: int, info: dict[str, Any]) -> None:
-        """Store the learned retention."""
-        self._data["retention_days"] = days
+    async def async_set_retention(self, boundary: date, info: dict[str, Any]) -> None:
+        """Store the learned retention boundary."""
+        self._data["retention_boundary"] = boundary.isoformat()
         self._data["retention"] = info
         await self._async_save()
 

@@ -467,7 +467,10 @@ other households, so the v1 path is a first-class, safety-critical path.
   row before it, so the first imported day now continues from the copied baseline.
   Future imports continue from there. A first imported day with no earlier imported day
   continues from a row in the hour before it if one exists (the copied history), else 0.
-  If the seam is already continuous (a re-run), the rewrite is skipped.
+  If the seam is already continuous (a re-run), the rewrite is skipped. Because the range
+  rewrite fetches every day again, the migration refuses (nothing changed) when the
+  integration's first day is already older than Amber's retention (see the M6a report for
+  a proposed alternative).
 - **Sign.** The advanced version's export cost carries Amber's sign (negative when
   earned). It is **negated** into compensation (state and sum), which fixes the Energy
   dashboard sign bug. The v1 kit's HA-generated compensation already uses HA's sign and is
@@ -486,6 +489,10 @@ overlap window (days both the legacy and the new statistics have), compare daily
 - v1 kit: kWh within 0.01 kWh per day; cost differences are reported but never fail.
   v1 lumps are assigned to their local date.
 - A manual pick uses the advanced rules if its overlap data is hourly, else the v1 rules.
+- Each legacy statistic is compared inside its own span: from the day after its first row
+  (that day has no earlier total) to its last row. A cost series that starts later than the
+  kWh series (as on VM 101, where cost tracking started fresh at the rebuild) is therefore
+  not a mismatch before it starts; a missing day inside the span is.
 - At least 3 comparable days are required. On failure the migration stops with a clear
   report and changes nothing.
 
@@ -502,12 +509,14 @@ example as device consumption) are reported, not changed.
 **Cleanup, cautious.** The layout's automations are **disabled** (turned off), never
 deleted; each one's prior state is recorded, and one already off stays off. Everything
 else is **listed** for the user to remove (helpers, scripts, YAML blocks, recorder
-excludes, or, for package users, the single package file), in the result and in a Repairs
-issue. Old statistics are kept by default; a separate, explicit service deletes them later
+excludes, or, for package users, the single package file), in the result and in a
+persistent Repairs issue (kept across restarts while the migration is completed; removed by
+undo). Old statistics are kept by default; a separate, explicit service deletes them later
 (after which undo is no longer possible).
 
 **Undo.** Every change is recorded in the Store. "Undo migration" restores the saved
-energy preferences and re-enables only the automations the migration turned off. Copied
+energy preferences and re-enables only the automations the migration turned off. A later
+run keeps the undone runs' records in its history. Copied
 pre-window history and the re-based sums stay; this is documented. After an undo the
 migration may be run again.
 

@@ -40,6 +40,7 @@ from .const import (
     ATTR_DATE,
     ATTR_DRY_RUN,
     ATTR_END_DATE,
+    ATTR_EXCLUDE_FLAGGED,
     ATTR_START_DATE,
     CONF_CHANNEL,
     CONF_CHANNELS,
@@ -103,6 +104,7 @@ MIGRATE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_DRY_RUN, default=True): cv.boolean,
         vol.Optional(ATTR_CONFIRM_BACKUP, default=False): cv.boolean,
+        vol.Optional(ATTR_EXCLUDE_FLAGGED, default=False): cv.boolean,
         **{vol.Optional(role): cv.string for role in ROLES},
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
@@ -278,6 +280,7 @@ def _register_migration_services(hass: HomeAssistant) -> None:
                 dry_run=call.data[ATTR_DRY_RUN],
                 confirm_backup=call.data[ATTR_CONFIRM_BACKUP],
                 picks={role: call.data.get(role) for role in ROLES},
+                exclude_flagged=call.data[ATTR_EXCLUDE_FLAGGED],
             )
         except MigrationRefused as err:
             raise ServiceValidationError(str(err)) from err

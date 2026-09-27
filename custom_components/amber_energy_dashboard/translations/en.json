@@ -116,6 +116,16 @@
           "confirm_backup": "Required. Nothing has been changed yet; submitting runs the migration."
         }
       },
+      "migrate_flagged": {
+        "title": "Migrate from the YAML kit: implausible legacy rows",
+        "description": "{report}",
+        "data": {
+          "exclude_flagged": "Leave the flagged rows out and re-derive the sums around them"
+        },
+        "data_description": {
+          "exclude_flagged": "Nothing has been changed yet. Ticked: a new dry run without those rows is shown before anything runs. Not ticked: the migration stops."
+        }
+      },
       "migrate_result": {
         "title": "Migration",
         "description": "{result}"
@@ -272,6 +282,10 @@
         "confirm_backup": {
           "name": "Backup confirmed",
           "description": "Required for a real run: you have a current Home Assistant backup."
+        },
+        "exclude_flagged": {
+          "name": "Leave out implausible rows",
+          "description": "Leave out legacy rows the scan flags as implausible (such as a 99999 test spike) and re-derive the sums around them. Without it, flagged rows stop a real run."
         },
         "import_energy": {
           "name": "Grid import kWh",

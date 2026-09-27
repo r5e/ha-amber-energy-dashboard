@@ -29,10 +29,9 @@ import voluptuous as vol
 
 from custom_components.amber_energy_dashboard import (
     importer,
-    manager as manager_mod,
     migration,
 )
-from custom_components.amber_energy_dashboard.api import RunBudget, _parse_usage
+from custom_components.amber_energy_dashboard.api import _parse_usage
 from custom_components.amber_energy_dashboard.const import (
     CONF_SCHEDULE_MODE,
     CONF_USAGE_MODE,
@@ -319,12 +318,17 @@ async def test_advanced_migration(
         hass, aioclient_mock, hass_storage
     )
 
+    calls_before = len(fake.calls)
     report = await _migrate(hass, dry_run=False, confirm_backup=True)
 
     assert report["migration_status"] == "completed"
     result = report["result"]
-    assert result["rebase"]["rewritten_days"] == RETENTION
-    assert result["rebase"]["calls"] == {"sites_usage": 1}
+    assert result["rebase"] == {
+        "source": "stored hourly amounts",
+        "calls": {},
+        "rewritten_days": RETENTION,
+    }
+    assert len(fake.calls) == calls_before  # the migration makes no Amber calls
     rows = await _rows(hass)
     for sid in (E1, E1_COST, B1, B1_COMP, NET):
         _assert_continuous(rows[sid])
@@ -769,11 +773,6 @@ async def test_preconditions(
     assert "interrupted" in (await _migrate(hass))["problems"][0]
     await store.async_clear_pending()
 
-    clock.now += timedelta(days=2)
-    report = await _migrate(hass)
-    assert "older than Amber's retention" in report["problems"][0]
-    clock.now -= timedelta(days=2)
-
     flow = await hass.config_entries.options.async_init(entry.entry_id)
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "settings"}
@@ -849,26 +848,33 @@ async def test_backup_check_failure_changes_nothing(
 async def test_interrupted_rebase_resumes(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """The re-base stops on the call budget: the copy is recorded, the rewrite progress is
-    stored, nothing else changes; running the migration again finishes it."""
+    """A write that fails part-way through the re-base pauses it: the copy and the per-day
+    progress are recorded, the dashboard and automation are untouched; running the
+    migration again resumes from the stored day and running sums."""
     await _entry(hass, aioclient_mock, hass_storage)
     legacy = await _advanced(hass)
     await _prefs(hass, ADV[ROLE_IMPORT_ENERGY], ADV[ROLE_EXPORT_ENERGY])
     await _adv_automation(hass)
+    real_write = importer.async_write_amounts
+    writes: list[date] = []
 
-    def tiny_budget() -> RunBudget:
-        return RunBudget(max_calls_per_counter=0)
+    async def failing(hass_: HomeAssistant, day: date, *args: Any, **kwargs: Any) -> Any:
+        writes.append(day)
+        if len(writes) == 3:
+            raise importer.VerificationFailedError("verification_failed", "injected")
+        return await real_write(hass_, day, *args, **kwargs)
 
-    with patch.object(manager_mod, "RunBudget", tiny_budget):
+    with patch.object(importer, "async_write_amounts", failing):
         report = await _migrate(hass, dry_run=False, confirm_backup=True)
     assert "paused" in report["result"]["paused"]
     record = _record(hass_storage)
     assert record["status"] == "in_progress"
-    assert set(record["steps"]) == {"copy"}
+    assert set(record["steps"]) == {"copy", "rebase_progress"}
+    assert record["steps"]["rebase_progress"]["next"] == WINDOW[2].isoformat()
+    assert record["steps"]["rebase_progress"]["days"] == 2
     assert hass.states.get(ADV_AUTOMATION).state == "on"
     energy = await async_get_manager(hass)
     assert energy.data["energy_sources"][0]["stat_energy_from"] == ADV[ROLE_IMPORT_ENERGY]
-    assert entry_tail(hass) is not None
 
     with pytest.raises(ServiceValidationError, match="other statistics is in progress"):
         await _migrate(hass, **{ROLE_IMPORT_ENERGY: V1[ROLE_IMPORT_ENERGY]})
@@ -877,36 +883,65 @@ async def test_interrupted_rebase_resumes(
     report = await _migrate(hass, dry_run=False, confirm_backup=True)
     assert report["migration_status"] == "completed"
     assert report["result"]["rebase"]["rewritten_days"] == RETENTION
+    assert "rebase_progress" not in _record(hass_storage)["steps"]
     rows = await _rows(hass)
-    _assert_continuous(rows[E1])
+    for sid in (E1, E1_COST, B1, B1_COMP, NET):
+        _assert_continuous(rows[sid])
     assert rows[E1][-1]["sum"] == pytest.approx(legacy[ROLE_IMPORT_ENERGY][-1]["sum"], abs=1e-5)
-    assert entry_tail(hass) is None
 
 
-def entry_tail(hass: HomeAssistant) -> Any:
-    return hass.config_entries.async_get_entry(ENTRY_ID).runtime_data.manager.store.tail_rewrite
-
-
-async def test_rebase_waiting_and_seam_failure(
+async def test_first_day_older_than_retention(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """A waiting re-base pauses; a seam that still breaks after re-basing is reported."""
+    """Days Amber no longer serves are re-based from their stored amounts, without calls."""
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    await _entry(hass, aioclient_mock, hass_storage, fake)
+    legacy = await _advanced(hass)
+    clock.now += timedelta(days=10)
+    fake.earliest = TODAY + timedelta(days=5)  # the window's days are gone from Amber
+    calls_before = len(fake.calls)
+
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+
+    assert report["problems"] == []
+    assert report["migration_status"] == "completed"
+    assert report["result"]["rebase"]["rewritten_days"] == RETENTION
+    assert len(fake.calls) == calls_before
+    rows = await _rows(hass)
+    for sid in (E1, B1, B1_COMP):
+        _assert_continuous(rows[sid])
+    assert rows[E1][-1]["sum"] == pytest.approx(legacy[ROLE_IMPORT_ENERGY][-1]["sum"], abs=1e-5)
+
+
+async def test_rebase_partial_day_and_seam_failure(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A day without all 24 hours pauses the re-base; a seam that still breaks after
+    re-basing is reported."""
     entry = await _entry(hass, aioclient_mock, hass_storage)
     await _advanced(hass)
-    manager = entry.runtime_data.manager
+    spec = next(s for s in entry.runtime_data.manager.ctx.specs if s.statistic_id == E1)
+    real_read = migration._read
 
-    async def waiting(first: date) -> dict:
-        return {"outcome": {"reason": "no usage yet"}, "calls": {}, "rewritten_days": 0}
+    async def drop_hour(hass_: HomeAssistant, ids: Any, *args: Any) -> Any:
+        rows = await real_read(hass_, ids, *args)
+        if E1 in rows and len(rows[E1]) > 30:
+            rows[E1] = [r for r in rows[E1] if r["start"] != BOUNDARY + 30 * HOUR]
+        return rows
 
-    with patch.object(manager, "async_rebase", waiting):
+    with patch.object(migration, "_read", drop_hour):
         report = await _migrate(hass, dry_run=False, confirm_backup=True)
-    assert report["result"]["paused"] == "re-base waiting: no usage yet"
+    assert "does not have all 24 hours" in report["result"]["paused"]
+    assert spec.statistic_id == E1
 
-    async def no_op(first: date) -> dict:
-        return {"outcome": None, "calls": {}, "rewritten_days": 0}
+    async def no_op(*args: Any) -> dict:
+        return {"source": "stored hourly amounts", "calls": {}, "rewritten_days": 0}
 
+    record = _record(hass_storage)
+    record["steps"].pop("rebase_progress", None)
     with (
-        patch.object(manager, "async_rebase", no_op),
+        patch.object(migration, "_async_rebase_stored", no_op),
+        patch.object(migration, "_seam_continuous", return_value=False),
         pytest.raises(ServiceValidationError, match="do not continue at the seam"),
     ):
         await _migrate(hass, dry_run=False, confirm_backup=True)
@@ -1332,3 +1367,25 @@ async def test_cleanup_issue_survives_a_restart(
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}") is not None
+
+
+async def test_v1_empty_cost_history_is_not_copied(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """v1 cost driven by a sensor frozen at 0 moves (almost) nothing: reported, not copied.
+    Provisional until a real v1 install confirms it (M6b)."""
+    await _entry(hass, aioclient_mock, hass_storage)
+    ids = dict(V1)
+    rows = _legacy_rows(ids, hourly_days=[], lump_days=PRE + WINDOW, export_cost_sign=1.0)
+    for role in (ROLE_IMPORT_COST, ROLE_EXPORT_COST):
+        rows[role] = [{**r, "state": 1.5, "sum": 1.5 + i * 0.001} for i, r in enumerate(rows[role])]
+    await _import_legacy(hass, ids, rows)
+
+    report = await _migrate(hass)
+
+    assert "v1 cost history appears empty; not copied." in report["notes"]
+    assert set(report["copy"]) == {E1, B1}
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    stored = await _rows(hass)
+    assert stored[E1_COST][0]["start"] == BOUNDARY.timestamp()

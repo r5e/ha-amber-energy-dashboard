@@ -1286,3 +1286,33 @@ async def test_options_flow_undo_refused(
     )
     flow = await hass.config_entries.options.async_configure(flow["flow_id"], {"confirm": True})
     assert flow["description_placeholders"]["result"].startswith("Undo did not run:")
+
+
+async def test_cost_series_starting_at_the_boundary(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """VM 101's shape: the legacy cost statistics start fresh on the integration's first
+    day, so that day has no earlier total. It is not compared (not a mismatch), no cost
+    history is copied, and the kWh history is."""
+    await _entry(hass, aioclient_mock, hass_storage)
+    rows = _legacy_rows(ADV, hourly_days=WINDOW, lump_days=PRE)
+    for role in (ROLE_IMPORT_COST, ROLE_EXPORT_COST):
+        rows[role] = [r for r in rows[role] if r["start"] >= BOUNDARY]
+    await _import_legacy(hass, ADV, rows)
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is True
+    assert parity["compared"] == {
+        "grid import kWh": RETENTION,
+        "grid export kWh": RETENTION,
+        "import cost": RETENTION - 1,
+        "export cost": RETENTION - 1,
+    }
+    assert set(report["copy"]) == {E1, B1}
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    stored = await _rows(hass)
+    assert stored[E1_COST][0]["start"] == BOUNDARY.timestamp()
+    _assert_continuous(stored[E1])

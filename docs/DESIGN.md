@@ -395,15 +395,16 @@ help and the README say so. Afterwards it shares each run's fetch at no extra co
 A **reauth flow** handles key rotation (triggered on 401/403).
 
 **Options flow:** usage mode, schedule, revision window, patience days, optional price
-series, own-sensor mappings, lower-precision fallback behaviour, and (from Milestone 6)
-"Migrate from the v1 kit".
+series, own-sensor mappings, lower-precision fallback behaviour, and (from Milestone 6a)
+"Migrate from the YAML kit" and "Undo migration" (section 14).
 
 **Services:**
 - `backfill(start_date, end_date)`
 - `rebuild_from_anchor(anchor_date, anchors)`: port of the YAML `amber_window_rebuild`,
   keeping its strict-stop semantics.
 - `probe_retention()`
-- `migrate_v1(dry_run)` (Milestone 6)
+- `migrate_v1(dry_run, confirm_backup, …)`, `undo_migration()` and
+  `delete_legacy_statistics(confirm)` (Milestone 6a, section 14)
 
 ## 13. Error handling
 
@@ -415,30 +416,113 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 - Every stop is recorded in the Store with a reason, and exposed via the status sensor
   and diagnostics.
 
-## 14. Migration and cleanup (Milestone 6)
+## 14. Migration from the YAML kits (Milestone 6a)
 
-- **Detects** the published v1 kit's known entities, helpers, scripts, automations and
-  statistic IDs.
-- **Removes automatically**, with confirmation: UI-created helpers, and automations and
-  scripts that have an `id` (via HA's config API).
-- **Never edits** `configuration.yaml`. YAML-defined blocks (`rest:`, templates,
-  `rest_command`, `recorder: exclude`) are listed in a Repairs issue with exact
-  file-and-block instructions.
-- **Old statistics**, one of: keep frozen; delete; or (recommended) copy the history into
-  the new external IDs so the dashboard shows one continuous series, then retire the old IDs.
-- **Compensation sign.** The v1 kit's compensation statistic carries Amber's sign: feed-in
-  earnings are **negative**. As a result, the Energy dashboard adds feed-in earnings to
-  cost instead of subtracting them, so v1's net cost is wrong. Confirmed against
-  production for 2026-09-23 to 25. The new statistic is positive-when-earned (section 6).
-  - When copying history, the migration must **negate** the legacy compensation values:
-    both each hourly `state` and the cumulative `sum`.
-  - The parity check must compare compensation **by magnitude** (`|v1| == |v2|`).
-    Energy and import cost are still compared exactly.
-- **Order:** backup check, dry-run report, parity verification over the overlap window
-  (exact-match test, as in the YAML rebuild, with compensation compared by magnitude),
-  switch Energy dashboard sources, disable old automations, remove.
-- Robert's own dev leftovers (`_v2` names, debug scripts, backup files) are a one-off
-  cleanup task, not part of the public tool.
+Decisions agreed for Milestone 6a. The published v1 kit (`legacy/v1/`) is in use by
+other households, so the v1 path is a first-class, safety-critical path.
+
+**Layouts recognised** (by name; recorded from `legacy/v1/` and, read-only, from VM 101):
+
+| Role | v1 kit | Advanced YAML version |
+|---|---|---|
+| Grid import kWh | `sensor.amber_energy_import` | `sensor.amber_cumulative_grid_import_v2` |
+| Grid export kWh | `sensor.amber_energy_export` | `sensor.amber_cumulative_grid_export_v2` |
+| Import cost AUD | `sensor.amber_energy_import_cost` (HA-generated, optional) | `sensor.amber_hourly_cost_import` |
+| Export cost AUD | `sensor.amber_energy_export_compensation` (HA-generated, optional) | `sensor.amber_hourly_cost_export` (Amber sign) |
+| Automations | `automation.amber_usage_daily_statistics_import` | `automation.amber_daily_statistics_import` |
+| Helpers | `input_number.amber_energy_{import,export}_running_total` | `input_number.amber_lifetime_grid_{import,export}_v2`, `input_number.amber_lifetime_cost_{import,export}`, `input_number.amber_retention_days`, `input_number.amber_nodata_patience_days`, `input_text.amber_last_imported_date`, `input_text.amber_nodata_tracker` |
+| Scripts | none | `script.amber_daily_import`, `script.amber_retention_probe`, `script.amber_window_rebuild` |
+| YAML blocks | `rest:` sensors `sensor.amber_daily_grid_{import,export}`, template sensors, `recorder: exclude` | `rest_command.amber_fetch_usage`, template sensors, `recorder: exclude` |
+
+- Both layouts write recorder statistics under the frozen template sensors' entity IDs.
+  History older than the retention window is **daily lumps**: one row at local midnight
+  of day D holding the cumulative total through the end of D. The advanced version is
+  hourly inside its rebuilt window. The v1 kit is daily lumps throughout, and its cost
+  (the Energy dashboard's own cost sensors driven by a live price) is approximate.
+- Automations are also found by content: any automation whose configuration mentions a
+  layout's helpers, scripts or statistics belongs to that layout.
+- **Choosing the layout.** A layout is a candidate when its import kWh statistic has
+  data. It is complete when all its required statistics have data (v1: both kWh; advanced:
+  all four). If one candidate is complete and its data is at least 2 days newer than any
+  other candidate's, it is chosen, and the others are reported as ignored with the reason
+  (older last data, missing statistics). Sources are never mixed between layouts.
+  Otherwise, including partial detection (for example renamed entities) and two equally
+  recent layouts, the user picks the legacy statistics for grid import kWh (required),
+  grid export kWh, import cost and export cost from lists (manual step). Anything else
+  (debug scripts, orphaned entities) is out of scope.
+- The new integration must already hold data (its first run done), and the site must
+  have one general channel (import) and at most one feed-in channel (export). Legacy data
+  has **no controlled-load channel**; a controlled-load channel's statistics simply start
+  with the integration's own data.
+
+**History.**
+- Legacy rows are copied into the new statistic IDs **only before the new integration's
+  own data begins** (its first imported day, the *boundary*). Inside the window the new
+  data wins; nothing there is copied.
+- Sums are copied unchanged; each copied row's state is recomputed as the change from the
+  previous row (the new statistics' convention). The copy ends with a row in the hour
+  before the boundary (a carry row with state 0 if the legacy data has none there).
+- The integration's existing rows are then **re-based** with the existing range-rewrite
+  path (section 8): from the boundary to the last written day, each day continues from the
+  row before it, so the first imported day now continues from the copied baseline.
+  Future imports continue from there. A first imported day with no earlier imported day
+  continues from a row in the hour before it if one exists (the copied history), else 0.
+  If the seam is already continuous (a re-run), the rewrite is skipped.
+- **Sign.** The advanced version's export cost carries Amber's sign (negative when
+  earned). It is **negated** into compensation (state and sum), which fixes the Energy
+  dashboard sign bug. The v1 kit's HA-generated compensation already uses HA's sign and is
+  copied as is. For a manual pick, the sign is taken from the overlap window (the sign
+  that matches the new compensation), and shown in the dry run.
+- `net_cost` for the copied period is rebuilt as import cost minus compensation.
+- v1 history is copied as is and recorded as **approximate** (daily lumps; approximate
+  cost).
+- Energy kWh sums in the copied period must never decrease; otherwise the migration
+  refuses (possible corruption, such as a test spike).
+
+**Parity check** (before any change; local statistics only, no API calls). Over the
+overlap window (days both the legacy and the new statistics have), compare daily totals:
+- advanced version: kWh exact (equal to 3 decimals); import cost and export cost by
+  magnitude within 0.01 AUD per day;
+- v1 kit: kWh within 0.01 kWh per day; cost differences are reported but never fail.
+  v1 lumps are assigned to their local date.
+- A manual pick uses the advanced rules if its overlap data is hourly, else the v1 rules.
+- At least 3 comparable days are required. On failure the migration stops with a clear
+  report and changes nothing.
+
+**Energy dashboard.** A full copy of the current energy preferences is saved in the Store
+and read back from disk (the backup check). With explicit confirmation, after a dry-run
+preview of the exact before and after, grid sources that use the legacy statistics are
+switched to the new ones: import kWh and cost (stat_cost; price entity and number
+cleared), export kWh and compensation (stat_compensation; export price cleared). The
+update goes through HA's energy manager, validated against its schema and read back. If
+that cannot be done safely (no preferences, schema failure, read-back mismatch), the
+result gives exact written instructions instead. Legacy statistics used elsewhere (for
+example as device consumption) are reported, not changed.
+
+**Cleanup, cautious.** The layout's automations are **disabled** (turned off), never
+deleted; each one's prior state is recorded, and one already off stays off. Everything
+else is **listed** for the user to remove (helpers, scripts, YAML blocks, recorder
+excludes, or, for package users, the single package file), in the result and in a Repairs
+issue. Old statistics are kept by default; a separate, explicit service deletes them later
+(after which undo is no longer possible).
+
+**Undo.** Every change is recorded in the Store. "Undo migration" restores the saved
+energy preferences and re-enables only the automations the migration turned off. Copied
+pre-window history and the re-based sums stay; this is documented. After an undo the
+migration may be run again.
+
+**UI and safety.**
+- Options flow menu entry "Migrate from the YAML kit": dry-run report, then confirm
+  (including "I have a current Home Assistant backup"), then run, then result. "Undo
+  migration" appears once a migration has started.
+- Services: `amber_energy_dashboard.migrate_v1(dry_run, confirm_backup, …manual picks)`
+  (dry run by default), `undo_migration`, and `delete_legacy_statistics(confirm)`.
+- Idempotent and resumable: progress and the plan are in the Store; a real run while a
+  migration is in progress resumes it (re-checking parity first); a completed migration
+  refuses to run again until undone. It refuses if the parity check or the backup check
+  fails, or without the backup confirmation.
+- Order: detect, plan, parity, backup check, copy, re-base, energy preferences, disable
+  automations, record cleanup.
 
 ## 15. Testing strategy
 
@@ -467,7 +551,8 @@ Each milestone ends with a written report and Robert's sign-off before the next 
 3. **Catch-up and first guards:** scheduler, catch-up loop, Store, Guards 1 and 3.
 4. **Recovery:** retention, patience, revisions and tail rewrite, Repairs issues.
 5. **Usage modes and own-sensor cost:** plus reconciliation and the optional price series.
-6. **Migration and release:** v1 migration and cleanup, README with credits, HACS release.
+6. **Migration and release.** 6a: migration from the YAML kits (section 14), verified on
+   VM 101. 6b: the v1-kit clone test, README with credits, HACS release.
 
 ## 17. Carried-forward lessons (do not rediscover)
 

@@ -439,3 +439,137 @@ total is now 53.
 1 call and include a daily retention re-verify:
 - `verified` (still 90 days) if Amber purged 06-29 overnight;
 - `moved back 1 day` (90 → 91) if 06-29 is still available.
+
+## Addendum 2 (2026-09-28 morning): VM 9102 overnight run and the Phase 2 check
+
+All checks were made between 08:08 and 08:10 AEST, outside the quiet windows. Values are
+read back from the recorder over the websocket API, and from the diagnostics and the Store.
+
+### B1. VM 9102: scheduled run at 07:15 AEST on 2026-09-28
+
+**`last_run`:**
+- trigger `scheduled`, started 07:15:00, finished 07:15:03 AEST;
+- status `caught_up`, imported `["2026-09-27"]`, marker and `last_written` both 2026-09-27.
+
+**Calls:** `sites_usage` 4 = **1 usage import call + 3 retention probes**.
+`rate_limit_remaining` was 45.
+
+**Daily retention re-verify:** `moved back 1 day`, **90 → 91**, at 07:15 AEST.
+- Probes: 06-30 has data, 06-29 has data, 06-28 is empty. Boundary still 06-29.
+- Store: `measured_on` and `last_verified` 2026-09-28, `needs_discovery` False.
+
+**Other state:**
+- Repairs: **none**. Status sensor `caught_up`.
+- Schedule unchanged: fixed 07:15, 10:15 and 13:15. `next_run` 10:15 AEST.
+- Options unchanged, and there are no chains.
+
+**Statistics** (all five):
+- **2184 hourly rows** each, from 2026-06-28 14:00Z to 2026-09-27 13:00Z;
+- **0 duplicates, 0 hour gaps, 0 sum breaks**;
+- all 2160 rows that existed before the upgrade are identical, and exactly 24 rows are new.
+
+The sums continue across the 09-26/09-27 boundary:
+
+| Statistic | Sum at 09-26 23:00 | 09-27 total | Final sum |
+|---|---|---|---|
+| E9 energy | 1333.435 | 19.498 | 1352.933 |
+| E9 cost | 360.36497 | 4.494185 | 364.859155 |
+| B9 energy | 977.831 | 1.229 | 979.060 |
+| B9 compensation | 23.409923 | 0.082899 | 23.492822 |
+| Net cost | 336.955047 | 4.411286 | 341.366333 |
+
+**Yesterday afternoon's scheduled runs (10:15, 13:15) made 0 calls.** Evidence: the
+integration's `requests_since_start` is 8, which is 1 setup + 3 first run (A2) + 4 this
+morning.
+
+**All was well, so snapshot `pre-m5` was deleted** at 08:08 AEST (task OK, 2 s).
+Read-back of VM 9102's snapshots: `['current']`.
+
+### B2. VM 9104: M5 Phase 2 check (section 8)
+
+Amber had published 2026-09-27 by the **07:45 AEST scheduled run**, so there was no need
+to wait for 10:45.
+- That run started 07:45:00 and finished 07:45:03 AEST, with status `caught_up`,
+  imported `["2026-09-27"]`.
+- `sites_usage` 4 = 1 usage call + 3 retention probes. Retention was also `moved back 1
+  day` (90 → 91).
+- Per chain: `price` wrote 09-27; `own:<A>` skipped 09-27; `own:<B>` wrote 09-27; no day
+  was lower precision.
+
+I ran `lab_m5.py phase2check` at 08:08 AEST (1 independent raw usage fetch for 09-27).
+
+1. **`last_run` shows 09-27 imported, and chain `own:<B>` has 09-27 `imported`** (mode
+   `catch_up`, amount 2.08149) with **`lower_precision` False**, which is the precise
+   5-minute path. **Pass.**
+2. **Chain `energy_kwh` = 9.1 kWh.** The independent Σ of 5-minute deltas of
+   `sensor.lab_meter_energy` is also **9.1**, so they are equal. **Pass.**
+   - The nominal figure is about 9.13 (0.01 kWh per minute from 08:47).
+   - The 0.03 kWh shortfall is probably ticks missed during yesterday's 09:40 staged HA
+     restart. I did not investigate further.
+3. **Per-hour cost:** all 24 hours are present, and **max |HA − independent| = 0.0**.
+   The independent value is Σ(5-minute delta × that interval's E9 `perKwh`), rounded to
+   6 dp. **Pass.**
+   - Hours 00 to 07 AEST are **0.000000**, and hour 08 is 0.021646 (a part hour from
+     08:47).
+   - Hours 09 to 23 range from 0.100639 to 0.152878.
+4. **Day totals:** HA 2.081492, independent 2.08149 (HA rounds each hour; the chain
+   stores 2.08149). **Pass.**
+   - The own-cost statistic for B has 24 rows (first sum 0.0, last sum 2.08149).
+   - It has **0 duplicates, 0 hour gaps and 0 sum breaks**. 09-27 is its first day, so
+     there is no earlier row to join.
+5. **Pass**, on all three checks:
+   - **Sensor A:** chain `own:<A>` has 09-27 `skipped_sensor_data`, reason "no complete
+     hourly statistics for 2026-09-27". Its cost statistic is unchanged (120 rows,
+     09-22 to 09-26).
+   - **Price series:** 91 days, 06-29 to 09-27. `e9_price` and `b9_price` each have
+     2184 hourly rows through 2026-09-27 13:00Z, with no gaps.
+     - Last E9 hour: mean/min/max 0.242482 / 0.239489 / 0.251463.
+     - This cost no calls beyond the usage fetch.
+   - **Repairs issues: none.**
+
+**Other observations:**
+- The **usage statistics** on 9104 have 192 rows each, with 0 duplicates, gaps or sum
+  breaks. There are 192 because of the P6 clear-and-rebuild from 09-20.
+- **The reconciliation entity for B reads −10.398 kWh.** This is expected: B is a
+  synthetic counter unrelated to real usage.
+- Yesterday's 10:45 and 13:45 runs on 9104 made 0 calls. Evidence: `requests_since_start`
+  is 5, which is 1 `/sites` at the 09:42 reload + 4 this morning.
+
+**VM 9104 was destroyed** at 08:09 AEST (stop OK, destroy OK, VM no longer present).
+
+### B3. Observation for the planning chat: the retention boundary is not rolling
+
+The earliest available day has been **2026-06-29** on each of three days: 09-26 (89
+days), 09-27 (90) and 09-28 (91, on both VMs).
+
+So on this account the limit may be a fixed start of data, not a rolling window.
+- If it is fixed, `retention_days` will grow by 1 every day, and each daily re-verify
+  will cost 3 probe calls with result `moved back 1 day`.
+- Functionally this is harmless: probes are cheap and nothing is written.
+- It is worth re-reading the section 4 assumption in DESIGN against a few more days of
+  observations.
+- A possible change: when the boundary date is unchanged, re-verify with a single probe
+  of the boundary day minus 1.
+
+**No code change was made.**
+
+### B4. Live Amber calls, 2026-09-28
+
+| Time (AEST) | Calls | What |
+|---|---|---|
+| 07:15 | 4 | 9102 scheduled run (1 usage + 3 retention probes) |
+| 07:45 | 4 | 9104 scheduled run (1 usage + 3 retention probes) |
+| 08:08 | 1 | independent raw usage fetch for 09-27 (Phase 2 check) |
+
+That makes **9 calls today**, none in a quiet window. Yesterday's afternoon scheduled
+runs on both VMs made 0 calls, so the 2026-09-27 total stays at 53.
+
+### B5. Lab state
+
+- **VM 9102 `amber-test-m3`** is running `2.0.0-dev5`, with snapshot `current` only.
+  - Next scheduled attempt: 10:15 AEST.
+  - It uses the test key: about 4 calls per morning run and 0 later in the day.
+- **VM 9104** is destroyed. **1 clone exists.**
+- VM 101 was not accessed. There are no working files on any HA instance.
+
+**M5 is closed** from the lab side. M6 was not started.

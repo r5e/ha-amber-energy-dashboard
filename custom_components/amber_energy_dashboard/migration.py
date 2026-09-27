@@ -370,15 +370,24 @@ def _legacy_daily(rows: Sequence[Mapping[str, Any]], rules: str, tz: Any) -> dic
     """
     ends: dict[date, float] = {}
     for row in rows:
-        start = row["start"]
-        day = nem_date(start) if rules == RULES_HOURLY else start.astimezone(tz).date()
-        ends[day] = row["sum"]
+        ends[_legacy_day(row["start"], rules, tz)] = row["sum"]
     days = sorted(ends)
     return {
         day: ends[day] - ends[prev]
         for prev, day in itertools.pairwise(days)
         if (day - prev).days == 1
     }
+
+
+def _legacy_day(start: datetime, rules: str, tz: Any) -> date:
+    return nem_date(start) if rules == RULES_HOURLY else start.astimezone(tz).date()
+
+
+def _legacy_span(rows: Sequence[Mapping[str, Any]], rules: str, tz: Any) -> tuple[date, date]:
+    """The days a legacy series can be compared on: from the day after its first row (the
+    first day has no earlier total to start from) to its last row's day."""
+    first = _legacy_day(rows[0]["start"], rules, tz)
+    return first + timedelta(days=1), _legacy_day(rows[-1]["start"], rules, tz)
 
 
 def _new_daily(rows: Sequence[Mapping[str, Any]], first: date, last: date) -> dict[date, float]:
@@ -407,14 +416,19 @@ def _parity(
     new: Mapping[str, dict[date, float]],
     rules: str,
     sign: float,
+    spans: Mapping[str, tuple[date, date]],
 ) -> dict[str, Any]:
+    """Compare daily totals. Each statistic is compared inside its own legacy span (a cost
+    series that starts later is not a mismatch before it starts); a gap inside is."""
     days = sorted(set(legacy[ROLE_IMPORT_ENERGY]) & set(new[ROLE_IMPORT_ENERGY]))
     mismatches: list[dict[str, Any]] = []
     cost_totals: dict[str, list[float]] = {}
+    compared: dict[str, int] = defaultdict(int)
     for day in days:
         for role in ROLES:
-            if role not in legacy or role not in new:
+            if role not in legacy or not spans[role][0] <= day <= spans[role][1]:
                 continue
+            compared[_ROLE_LABELS[role]] += 1
             old, ours = legacy[role].get(day), new[role].get(day)
             energy = role in _ENERGY_ROLES
             if old is None or ours is None:
@@ -459,6 +473,7 @@ def _parity(
         "first": days[0].isoformat() if days else None,
         "last": days[-1].isoformat() if days else None,
         "passed": passed,
+        "compared": dict(compared),
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:MAX_REPORTED_MISMATCHES],
         "cost_totals": {
@@ -777,7 +792,8 @@ async def _async_plan(
     new_daily = {role: _new_daily(ours[targets[role]], first_day, last_day) for role in legacy_ids}
     sign = _export_sign(sources, legacy_daily, new_daily, plan.notes)
     plan.sources = {**sources, "rules": rules, "export_cost_sign": sign}
-    plan.parity = _parity(legacy_daily, new_daily, rules, sign)
+    spans = {role: _legacy_span(legacy[sid], rules, tz) for role, sid in legacy_ids.items()}
+    plan.parity = _parity(legacy_daily, new_daily, rules, sign, spans)
     _plan_copy(plan, legacy, legacy_ids)
     if rules == RULES_DAILY:
         plan.notes.append("The copied history is approximate: daily totals, approximate cost.")

@@ -91,8 +91,10 @@ Out of scope:
 - Usage retention: on 2026-09-26 the earliest date with usage data was **2026-06-29,
   89 days back** (2026-06-28 and earlier return `[]`; the boundary day was complete).
   The earlier figure of 86 days was the YAML kit's configured value, not Amber's
-  boundary. Whether and how the boundary rolls forward is still being observed, so it
-  is discovered and re-verified at runtime (section 8).
+  boundary. On 09-27 and 09-28 the earliest date was **still 2026-06-29** (90 and 91
+  days back, on two lab VMs): on this account the boundary is a fixed date, not a
+  rolling window. Other accounts may differ, so the boundary date is discovered and
+  re-verified at runtime (section 8).
 - Rate limit: 50 calls per 300 seconds, in **fixed** windows, reported in IETF
   `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (seconds to window end) and
   `RateLimit-Policy: 50;w=300` headers. There are **two independent counters**: one for
@@ -231,18 +233,29 @@ rather than adding rows).
 
 ## 8. Guards 2 and revisions
 
-**Retention boundary.** A learned `retention_days`, stored in Store.
+**Retention boundary (by date, M6b).** The Store keeps the boundary **date**
+(`retention_boundary`): the earliest NEM day with usage data. `retention_days` is
+derived from it (today − boundary) and is a display value only. The M5 lab showed a
+boundary that stayed on the same date while the day count grew, which a stored day
+count reported as a daily "move".
 - **At setup**, discover it by bisection with single-day usage requests: at most 8
-  calls. If discovery cannot finish (budget, errors), fall back to 89 days.
-- **Daily**, re-verify with 2 calls: the boundary day (expected to have data) and the
-  day before (expected empty). Self-correct in either direction: if the boundary day
+  calls. If discovery cannot finish (budget, errors), fall back to today − 89 days.
+- **Daily**, re-verify with exactly 2 calls: the boundary date (expected to have data)
+  and the day before (expected empty). If both hold, the result is **"verified"**,
+  whatever the day count, so a boundary that stays fixed costs no more than 2 calls a
+  day. Only when the probes disagree does the check step or bisect: if the boundary day
   is empty, the boundary moved forward; if the day before has data, it moved back.
 - **When the daily check detects a move (M4):** if the move is one day, step one day
   (confirmed with one more probe). If it moved further, bisect within a **15-day
   bracket** beyond the step probe, so the whole check stays within 8 calls (2 checks +
-  1 step + 1 bracket + 4 bisection). A move too large for the bracket is *unresolved*:
-  the old value is kept, and full discovery (30-day bracket, 8 calls) runs on the next
-  day (accepted in M4).
+  1 step + 1 bracket + 4 bisection). A forward move beyond the bracket (for example a
+  rolling boundary after a long outage) also tries today − the day count seen at the
+  last verification, with 2 probes (at most 6 calls in all) (M6b). A move that is still
+  not found is *unresolved*: the old date is kept, and full discovery (30-day bracket,
+  8 calls) runs on the next day (accepted in M4).
+- **Store migration (1.2 → 1.3):** the boundary date recorded with the last
+  measurement is kept; without one, the day count is taken back from its measurement
+  day (or today), and the count is dropped.
 - **Boundary day empty, day before has data:** treated as a gap on the boundary day,
   not a boundary move. The retention value is kept (accepted in M4).
 - Days older than the boundary that return empty are marked `skipped_unavailable`, and
@@ -403,7 +416,7 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 - `rebuild_from_anchor(anchor_date, anchors)`: port of the YAML `amber_window_rebuild`,
   keeping its strict-stop semantics.
 - `probe_retention()`
-- `migrate_v1(dry_run, confirm_backup, …)`, `undo_migration()` and
+- `migrate_v1(dry_run, confirm_backup, exclude_flagged, …)`, `undo_migration()` and
   `delete_legacy_statistics(confirm)` (Milestone 6a, section 14)
 
 ## 13. Error handling
@@ -488,8 +501,25 @@ other households, so the v1 path is a first-class, safety-critical path.
   rows to copy move less than 0.05 AUD in total (the sum of the hourly changes over the copy
   period), the dry run reports "v1 cost history appears empty; not copied" and they are not
   copied (nor net cost); otherwise they are copied as is.
-- Energy kWh sums in the copied period must never decrease; otherwise the migration
-  refuses (possible corruption, such as a test spike).
+- **Implausible legacy rows (M6b).** Before anything is copied, every legacy series of
+  the chosen sources is scanned. A row's step is its sum minus the last good row's sum.
+  - Energy: a step above **100 kWh** per row (times the days between the rows when they
+    are more than a day apart), or any decrease (more than 0.0005 kWh), is flagged.
+  - Cost (which can fall legitimately, with negative prices): a step whose size is above
+    **100** (currency) is flagged.
+  - One row of lookahead names the kind. A *spike* is a single bad row after which the
+    series is plausible again from the last good row, as with the v1 README's 99999
+    recorder test. A *jump* or *reset* is a series that continues from the new level.
+  - The dry run lists every flagged row (statistic, hour, sum, step, kind, and whether it
+    lies in the copy period, the overlap, or after the integration's data).
+  - A real run **refuses by default**. With the explicit option `exclude_flagged`
+    (service field, or a checkbox in the options flow that re-runs the dry run first),
+    flagged rows are left out and the sums around them are re-derived. A spike's row is
+    simply dropped; after a jump or reset every later sum is shifted by the step. Parity
+    and the copy then use the cleaned series. The choice is stored with the run's
+    sources, so a resumed run keeps it.
+  - This replaces the M6a rule "copied kWh sums must never decrease", which the scan
+    covers.
 
 **Parity check** (before any change; local statistics only, no API calls). Over the
 overlap window (days both the legacy and the new statistics have), compare daily totals:

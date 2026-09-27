@@ -407,3 +407,51 @@ scratchpad logs.
    - the re-base change if accepted;
    - README credits;
    - the HACS release.
+
+## Addendum (2026-09-27 evening): M6a review decisions
+
+This was offline work only: no lab contact and no live Amber calls. VMs 101, 9102 and
+9104 were not touched.
+
+**Decisions implemented (commits `7e7ed1a` and `1b09c27`, recorded in DESIGN section
+14):**
+
+**Re-base from stored hourly amounts (adopted).**
+- `migration._async_rebase_stored` replaces the re-fetching re-base, and
+  `manager.async_rebase` is removed.
+- It reads the integration's own rows from the boundary, then rewrites each day's 24
+  stored hourly amounts through `importer.async_write_amounts`, the same write-and-verify
+  path as an import.
+- Each day continues from the previous day's written sums; the first day continues from
+  the copied carry row.
+- After each day it stores `rebase_progress` (next day, running sums, day count) in the
+  migration record. A paused re-base (for example a verification failure, or a day
+  without all 24 hours) resumes from there.
+- **0 API calls.** The "first day older than retention" refusal is removed.
+- The "range rewrite in progress" precondition now always applies, since the migration
+  no longer uses that progress.
+
+**v1 cost (provisional until M6b).** For the v1 layout, if the cost and compensation rows
+to copy move less than 0.05 AUD in total over the copy period, the dry run notes "v1 cost
+history appears empty; not copied" and they (and net cost) are not copied. Otherwise they
+are copied as is.
+
+**Section 5 details 1 to 6** are accepted and recorded as the settled design.
+
+**VM 101** stays in the migrated state with its legacy automation off permanently. No
+further changes were made to it.
+
+**Tests: 355 passed, 100 % coverage** (3096 statements); ruff clean. There are 40
+migration tests. New or changed:
+- `test_first_day_older_than_retention`: the migration completes after Amber has dropped
+  every imported day, with no calls; sums are continuous and end at the legacy total.
+- `test_interrupted_rebase_resumes`: an injected verification failure on the third day
+  pauses the re-base with progress `next` = the third day and 2 days done; the next run
+  resumes and finishes exactly.
+- `test_rebase_partial_day_and_seam_failure`.
+- `test_v1_empty_cost_history_is_not_copied`.
+- The end-to-end advanced test now asserts the re-base source "stored hourly amounts",
+  `calls {}`, and no Amber calls during the migration.
+
+Manifest version `2.0.0-dev7`. VM 101 still runs `2.0.0-dev6`, as it was to be left
+unchanged.

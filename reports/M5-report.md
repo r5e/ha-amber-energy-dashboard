@@ -437,5 +437,5 @@ total is now 53.
 
 **What to check on 9102 tomorrow.** The 07:15 scheduled run should import 2026-09-27 in
 1 call and include a daily retention re-verify:
-- `verified` if nothing changed;
-- `moved forward 1 day` if Amber purged 06-29 overnight.
+- `verified` (still 90 days) if Amber purged 06-29 overnight;
+- `moved back 1 day` (90 → 91) if 06-29 is still available.

@@ -68,9 +68,14 @@ FIVE = timedelta(minutes=5)
 HOUR = timedelta(hours=1)
 
 
-def _sub(entity_id: str, channel: str, sub_id: str = "sub_house") -> dict[str, Any]:
+def _sub(
+    entity_id: str, channel: str, sub_id: str = "sub_house", name: str | None = None
+) -> dict[str, Any]:
+    data = {"entity_id": entity_id, "channel": channel}
+    if name is not None:
+        data["name"] = name
     return {
-        "data": {"entity_id": entity_id, "channel": channel},
+        "data": data,
         "subentry_id": sub_id,
         "subentry_type": "own_sensor",
         "title": entity_id,
@@ -308,13 +313,16 @@ async def test_reconciliation_shows_own_minus_amber(
     fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
     days = [TODAY - timedelta(days=2), YESTERDAY]
     await _import_sensor(hass, SENSOR, {d: _energy_like(d, "E1", 1.02) for d in days})
-    entry = await _setup_entry(hass, aioclient_mock, fake, subentries=[_sub(SENSOR, "E1")])
+    entry = await _setup_entry(
+        hass, aioclient_mock, fake, subentries=[_sub(SENSOR, "E1", name="House meter")]
+    )
     await _run(hass)
     await hass.async_block_till_done()
 
     states = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
     assert len(states) == 1
     state = states[0]
+    assert state.attributes["friendly_name"].endswith("Reconciliation: House meter")
     amber = math.fsum(r["kwh"] for r in make_usage_day(YESTERDAY) if r["channelIdentifier"] == "E1")
     assert float(state.state) == pytest.approx(amber * 0.02, abs=1e-3)
     assert state.attributes["difference_percent"] == pytest.approx(2.0, abs=0.01)
@@ -605,11 +613,23 @@ async def test_subentry_flow_validation_and_removal(
         flow["flow_id"], {"entity_id": "sensor.missing", "channel": "E1"}
     )
     assert flow["errors"] == {"entity_id": "sensor_not_found"}
+    attrs = dict(hass.states.get(SENSOR).attributes, friendly_name="House meter")
+    hass.states.async_set(SENSOR, "0", attrs)
     flow = await hass.config_entries.subentries.async_configure(
         flow["flow_id"], {"entity_id": SENSOR, "channel": "E1"}
     )
     assert flow["type"] is FlowResultType.CREATE_ENTRY
+    assert flow["data"] == {"entity_id": SENSOR, "channel": "E1", "name": "House meter"}
     await hass.async_block_till_done()
+    # The name is fixed at creation: renaming the source later does not rename the entity.
+    hass.states.async_set(SENSOR, "0", dict(attrs, friendly_name="Renamed"))
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.manager.own_sensors[0].name == "House meter"
+    recon = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
+    assert [s.attributes["friendly_name"].split(" Reconciliation: ")[1] for s in recon] == [
+        "House meter"
+    ]
     mgr = entry.runtime_data.manager
     assert [s.entity_id for s in mgr.own_sensors] == [SENSOR]  # reloaded with the mapping
     dup = await start()
@@ -1171,3 +1191,17 @@ async def test_new_sensor_partial_first_day_counts_from_its_start(
     expected = _expected_own(YESTERDAY, "E1", measured)
     assert [r["state"] for r in own] == pytest.approx(expected, abs=1e-6)
     assert sum(1 for h in expected[:12] if h) == 0
+
+
+async def test_reconciliation_name_falls_back_to_entity_id(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A mapping created before names were stored is named after its entity ID."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    await _import_sensor(hass, SENSOR, {YESTERDAY: _energy_like(YESTERDAY, "E1")})
+    entry = await _setup_entry(hass, aioclient_mock, fake, subentries=[_sub(SENSOR, "E1")])
+    assert entry.runtime_data.manager.own_sensors[0].name == SENSOR
+    await hass.async_block_till_done()
+    [state] = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
+    assert state.attributes["friendly_name"].endswith(f"Reconciliation: {SENSOR}")

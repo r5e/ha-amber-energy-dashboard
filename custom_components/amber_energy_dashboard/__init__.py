@@ -10,7 +10,7 @@ from datetime import date
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import CONF_API_KEY, Platform
+from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
@@ -135,6 +135,7 @@ def own_sensors_from_entry(
                 entity_id,
                 channel,
                 own_cost_spec(entry.data[CONF_SITE_ID], entity_id, channel),
+                subentry.data.get(CONF_NAME, entity_id),
             )
         )
     return sensors

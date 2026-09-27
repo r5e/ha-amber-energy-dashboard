@@ -13,7 +13,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
     SubentryFlowResult,
 )
-from homeassistant.const import CONF_API_KEY
+from homeassistant.const import CONF_API_KEY, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -438,7 +438,11 @@ class OwnSensorSubentryFlow(ConfigSubentryFlow):
                 name = attrs.get("friendly_name") or entity_id
                 return self.async_create_entry(
                     title=f"{name} ({_CHANNEL_LABELS[channel['type']]} {channel['identifier']})",
-                    data={CONF_SENSOR: entity_id, CONF_CHANNEL: channel["identifier"]},
+                    data={
+                        CONF_SENSOR: entity_id,
+                        CONF_CHANNEL: channel["identifier"],
+                        CONF_NAME: name,  # fixed at creation; names the reconciliation entity
+                    },
                     unique_id=entity_id,
                 )
         schema = vol.Schema(

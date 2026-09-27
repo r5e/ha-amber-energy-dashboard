@@ -78,6 +78,9 @@ billed five-minute prices). It is useful for charts, but an hourly **mean price 
 cost rate**: your usage is not spread evenly across the hour, so multiplying hourly energy
 by the mean price does not give your bill. Use the cost statistics for that.
 
+Enabling the option fetches Amber's full retention window once to fill the history (about
+13 API calls for 90 days); after that it costs no extra calls.
+
 ## Requirements
 
 - Home Assistant 2026.9 or later.

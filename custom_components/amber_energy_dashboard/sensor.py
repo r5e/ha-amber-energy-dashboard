@@ -155,7 +155,7 @@ async def async_setup_entry(
         description = AmberSensorDescription(
             key=f"reconciliation_{sensor.subentry_id}",
             translation_key="reconciliation",
-            translation_placeholders={"sensor": sensor.entity_id},
+            translation_placeholders={"sensor": sensor.name},
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             suggested_display_precision=3,
             value_fn=_reconciliation_value(sensor.subentry_id),

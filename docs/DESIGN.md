@@ -367,12 +367,17 @@ earliest changed day.
 **Reconciliation** (Full mode, for each sensor mapped to a general channel): a display
 sensor (no `state_class`) for the last NEM day that both Amber and the sensor have. Its
 state is own kWh − Amber general kWh; the percentage and both totals are attributes. It
-catches CT calibration drift and dropped sensors. In other modes it is unknown.
+catches CT calibration drift and dropped sensors. In other modes it is unknown. It is named
+"Reconciliation: <source friendly name>", using the friendly name when the mapping was
+created. That name is stored in the sub-entry and not re-derived later, so renaming the
+source sensor does not rename it (mappings without a stored name use the entity ID).
 
 **Price series** (optional, default off): `amber_energy_dashboard:{site}_{chan}_price`,
 AUD/kWh, hourly mean with min and max, `mean_type` arithmetic, `unit_class` None. It follows
 Amber's sign (feed-in prices are negative). An hourly mean price is **not** a cost rate:
 cost follows usage, which is not spread evenly over the hour; use the cost statistics.
+Enabling it fetches the full retention window once (about 13 calls for 90 days); the option
+help and the README say so. Afterwards it shares each run's fetch at no extra cost.
 
 ## 12. Configuration
 

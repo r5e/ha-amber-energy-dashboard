@@ -81,7 +81,7 @@
           "patience_days": "A day that stays empty on this many separate days, while later days have data, is skipped as a gap (default 7).",
           "revision_days": "Days with estimated data are re-checked daily for this many days; if Amber revises them, history is rewritten from that day on (default 14, 0 turns it off).",
           "usage_mode": "Full imports usage every day. Recovery-only imports nothing on a schedule (use the backfill service). Pricing-only writes no usage statistics, only prices and own-sensor cost. Switching never deletes statistics; ones no longer updated simply stop.",
-          "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate.",
+          "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate. Enabling it fetches the full retention window once (about 13 API calls for 90 days).",
           "own_fallback": "When 5-minute sensor data is no longer available (after about 10 days), price hourly energy at the hour's mean price and flag the day as lower precision. If off, such days are skipped."
         }
       }
@@ -140,7 +140,7 @@
         "name": "Yesterday {channel} compensation"
       },
       "reconciliation": {
-        "name": "Reconciliation {sensor}"
+        "name": "Reconciliation: {sensor}"
       }
     }
   },

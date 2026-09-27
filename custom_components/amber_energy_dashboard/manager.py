@@ -139,6 +139,8 @@ class OwnSensor:
     entity_id: str
     channel: ChannelConfig
     spec: StatisticSpec
+    name: str
+    """The source sensor's friendly name when the mapping was created."""
 
     @property
     def key(self) -> str:

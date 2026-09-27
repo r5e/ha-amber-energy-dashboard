@@ -341,3 +341,101 @@ After that:
 - Robert to take the section 5 proposals to the planning chat.
 - VM 9102's in-place upgrade (separate prompt).
 - M6 only after sign-off.
+
+## Addendum (2026-09-27 afternoon): accepted decisions and the VM 9102 upgrade
+
+### A1. Planning-chat decisions implemented
+
+The planning chat accepted section 5 items 1 to 6 as they stand. Two changes were made
+(commit `c74cb91`, recorded in DESIGN section 11):
+
+- **Reconciliation entity name** is now "Reconciliation: <source friendly name>".
+  - The friendly name is taken when the mapping is created and stored in the sub-entry
+    data (`name`). It is not re-derived later.
+  - A mapping created before this change, with no stored name, uses the entity ID.
+  - Tests:
+    - the flow stores the name;
+    - renaming the source sensor and reloading keeps the entity name;
+    - the entity is named "…Reconciliation: House meter";
+    - the entity-ID fallback applies when no name is stored.
+- **Price series first fill.**
+  - The option help (`strings.json` / `en.json`) says that enabling it fetches the full
+    retention window once, about 13 API calls for 90 days.
+  - The README has the same line, plus the note that it costs no extra calls afterwards.
+
+Version bumped to `2.0.0-dev5` (`64591bd`). **315 tests pass, with 100 % coverage** (2255
+statements). ruff is clean.
+
+VM 9104 was not touched, so it still runs `2.0.0-dev4` with the old entity name.
+
+### A2. In-place upgrade of VM 9102: M3 (`2.0.0-dev2`) to v2 HEAD `64591bd` (`2.0.0-dev5`)
+
+I followed M4 report section 9. It ran from 14:29 to 14:30 AEST: outside the quiet
+windows, and more than 10 minutes from 9102's attempts. The script enforced both limits.
+
+**Before** (14:29):
+- manifest `2.0.0-dev2`, Store file 1.1;
+- `marker` 2026-09-26 (no `last_written`), `retention_days` 89 (measured 2026-09-26,
+  boundary 06-29);
+- `last_run`: scheduled at 07:15 AEST, imported `["2026-09-26"]`, 1 call;
+- schedule fixed 07:15, 10:15 and 13:15, `next_run` 2026-09-27T21:15Z;
+- options hold only the schedule, and there are no sub-entries;
+- no Repairs issues; status sensor `caught_up` (not running);
+- statistics: 2160 hourly rows per statistic, 2026-06-28 14:00Z to 2026-09-26 13:00Z,
+  E9 final sum 1333.435, no duplicates or discontinuities;
+- `local-lvm` 91.9 % free.
+
+**1. Snapshot `pre-m5`:** task OK in 2 s. Snapshots are now `pre-m5` and `current`.
+
+**2. Install:** 17 files over SSH. The sha256 of every file matches the local tree at
+`64591bd`, and the working tree was clean.
+
+**3. Restart:** HA was `RUNNING` again after 12 s and the integration loaded. Setup made
+1 `/sites` call (`requests_since_start` 1).
+
+**4. Migration check:**
+- Store file `minor_version` 2;
+- `last_written` 2026-09-26, equal to the previous marker;
+- `retention.last_verified` absent;
+- no Repairs issues;
+- schedule and `next_run` unchanged.
+
+**5. First run** (`run_now` at 14:30:11 AEST):
+- status `caught_up`;
+- **retention `moved back 1 day` (89 → 90)**, 3 calls: probes 06-30 has data, 06-29 has
+  data, 06-28 is empty; boundary 06-29;
+- revisions checked `[]`;
+- no new day (2026-09-27 is not complete yet);
+- `rate_limit_remaining` 42;
+- Guard 1 passed.
+
+**6. After compared with before:**
+- **all 2160 pre-existing rows per statistic are identical**, with 0 new rows and no
+  problems;
+- schedule unchanged (fixed 07:15, 10:15 and 13:15, `next_run` 2026-09-27T21:15Z);
+- options unchanged, and there are no sub-entries;
+- so the mode is Full, with the price series off and patience and revision at their
+  defaults (7 and 14);
+- no chains, no Repairs issues.
+
+**Result: upgrade successful, so no rollback was needed.**
+
+### A3. Live Amber calls this afternoon
+
+**4 calls** (9102): 1 `/sites` at setup (14:30) and 3 in the first run (14:30). Today's
+total is now 53.
+
+### A4. Lab state
+
+- **VM 9102** is running `2.0.0-dev5`.
+  - Its schedule is unchanged, and the next attempt is 07:15 AEST on 2026-09-28.
+  - It is in Full mode, with no own sensors and no price series.
+  - **Snapshot `pre-m5` is kept until Robert signs off.** Delete it afterwards with
+    `DELETE /nodes/<node>/qemu/9102/snapshot/pre-m5`.
+- **VM 9104** is untouched and still running for the Phase 2 check (section 8).
+- 2 clones in total.
+
+**What to check on 9102 tomorrow.** The 07:15 scheduled run should import 2026-09-27 in
+1 call and include a daily retention re-verify:
+- `verified` if nothing changed;
+- `moved forward 1 day` if Amber purged 06-29 overnight.

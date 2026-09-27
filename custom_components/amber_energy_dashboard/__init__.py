@@ -70,7 +70,13 @@ from .const import (
 )
 from .importer import ImportContext
 from .manager import AmberManager, OwnSensor
-from .migration import MigrationRefused, async_delete_legacy, async_migrate, async_undo
+from .migration import (
+    MigrationRefused,
+    async_delete_legacy,
+    async_migrate,
+    async_undo,
+    cleanup_issue,
+)
 from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs, own_cost_spec
 from .storage import AmberStore, async_forget_chain
@@ -372,6 +378,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         **extra,
     )
     entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
+    cleanup_issue(hass, manager)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     manager.async_start()

@@ -72,6 +72,12 @@ COST_TOLERANCE: Final = 0.01
 DAILY_KWH_TOLERANCE: Final = 0.01
 MAX_REPORTED_MISMATCHES: Final = 10
 V1_EMPTY_COST: Final = 0.05
+ENERGY_ROW_CAP: Final = 100.0
+"""Implausible: more kWh than this in one legacy row (per day of row spacing)."""
+COST_ROW_CAP: Final = 100.0
+"""Implausible: a cost change larger than this (in the currency) in one legacy row."""
+ENERGY_DROP_TOLERANCE: Final = 0.0005
+MAX_REPORTED_FLAGS: Final = 20
 """v1 cost and compensation moving less than this in total (AUD) over the copy period are
 treated as empty and not copied (provisional until a real v1 install confirms it)."""
 ROLE_NET: Final = "net_cost"
@@ -660,6 +666,95 @@ class _Plan:
     cleanup: list[str]
     problems: list[str]
     notes: list[str]
+    flagged: list[dict[str, Any]] | None = None
+
+
+# --- implausible legacy rows (DESIGN section 14) -----------------------------------------
+
+
+def _scan_series(
+    rows: Sequence[Mapping[str, Any]], energy: bool
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Flag implausible rows of one legacy series; return (flags, cleaned rows).
+
+    Each row's step is its sum minus the last good row's sum. Energy: a step above
+    ENERGY_ROW_CAP per day of row spacing (at least one day's cap), or any decrease.
+    Cost (which can legitimately fall, with negative prices): a step whose size is
+    above COST_ROW_CAP. One row of lookahead tells the kinds apart:
+    - a *spike* (the next row is plausible again from the last good row, as with the v1
+      README's 99999 test value): the row is left out and nothing else changes;
+    - a *jump* or *reset* (the series continues from the new level): the row is left
+      out and every later sum is shifted by the step, so the history is re-derived
+      around it.
+    The first row has no earlier total and is never flagged.
+    """
+    flags: list[dict[str, Any]] = []
+    cleaned: list[dict[str, Any]] = []
+    if not rows:
+        return flags, cleaned
+    base = rows[0]
+    offset = 0.0
+    cleaned.append(dict(rows[0]))
+
+    def bad(step: float, spacing: timedelta) -> str | None:
+        cap = (ENERGY_ROW_CAP if energy else COST_ROW_CAP) * max(1.0, spacing / timedelta(days=1))
+        if energy and step < -ENERGY_DROP_TOLERANCE:
+            return "decrease"
+        if (step if energy else abs(step)) > cap:
+            return "above cap"
+        return None
+
+    for i, row in enumerate(rows[1:], start=1):
+        step = row["sum"] - base["sum"]
+        problem = bad(step, row["start"] - base["start"])
+        if problem is None:
+            base = row
+            cleaned.append({**row, "sum": row["sum"] + offset})
+            continue
+        following = rows[i + 1] if i + 1 < len(rows) else None
+        spike = following is None or (
+            bad(following["sum"] - base["sum"], following["start"] - base["start"]) is None
+        )
+        if spike:
+            kind = "spike"
+        else:
+            kind = "reset" if problem == "decrease" else "jump"
+            offset -= step
+            base = row
+        flags.append(
+            {
+                "start": row["start"].isoformat(),
+                "sum": round(row["sum"], 6),
+                "step": round(step, 6),
+                "kind": kind,
+                "problem": (
+                    f"sum decreases by {round(-step, 6)}"
+                    if problem == "decrease"
+                    else f"step of {round(step, 6)} in one row"
+                ),
+            }
+        )
+    return flags, cleaned
+
+
+def _scan_legacy(
+    legacy: Mapping[str, list[dict[str, Any]]],
+    legacy_ids: Mapping[str, str],
+    boundary: datetime,
+    last_day: date,
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Scan every legacy series; return the flags (with where each row lies) and the
+    cleaned series."""
+    flags: list[dict[str, Any]] = []
+    cleaned: dict[str, list[dict[str, Any]]] = {}
+    end = nem_day_start(last_day + timedelta(days=1))
+    for role, sid in legacy_ids.items():
+        found, cleaned[sid] = _scan_series(legacy[sid], role in _ENERGY_ROLES)
+        for flag in found:
+            start = datetime.fromisoformat(flag["start"])
+            where = "copy" if start < boundary else "overlap" if start < end else "after"
+            flags.append({"statistic": sid, "role": _ROLE_LABELS[role], "where": where, **flag})
+    return flags, cleaned
 
 
 def _preconditions(
@@ -737,12 +832,6 @@ def _plan_copy(
     sign = plan.sources["export_cost_sign"]
     for role, sid in legacy_ids.items():
         rows = _copy_rows(legacy[sid], sign if role == ROLE_EXPORT_COST else 1.0, plan.boundary)
-        drop = next((r for r in rows if r["state"] < -1e-6), None)
-        if role in _ENERGY_ROLES and drop is not None:
-            plan.problems.append(
-                f"{sid} decreases by {-drop['state']} at {drop['start'].isoformat()} "
-                "(possible corruption); the history cannot be copied."
-            )
         if rows:
             plan.copy[plan.targets[role]] = rows
     if plan.layout is V1_KIT:
@@ -786,6 +875,21 @@ async def _async_plan(
     tz = dt_util.get_time_zone(hass.config.time_zone)
     legacy = await _read(hass, legacy_ids.values())
     ours = await _read(hass, targets.values(), plan.boundary)
+    last_written = manager.store.last_written
+    assert last_written is not None
+    plan.flagged, cleaned = _scan_legacy(legacy, legacy_ids, plan.boundary, last_written)
+    if plan.flagged and sources.get("exclude_flagged"):
+        legacy = cleaned
+        plan.notes.append(
+            f"{len(plan.flagged)} implausible legacy rows are left out; the sums around "
+            "them are re-derived."
+        )
+    elif plan.flagged:
+        problems.append(
+            f"{len(plan.flagged)} implausible legacy rows (see 'flagged'), possible "
+            "corruption such as a test spike. Nothing was changed. Run the migration with "
+            "exclude_flagged to leave them out and re-derive the sums around them."
+        )
     rules = sources.get("rules") or _detect_rules(
         legacy[legacy_ids[ROLE_IMPORT_ENERGY]], plan.boundary, tz
     )
@@ -843,6 +947,12 @@ def _report(
             "cleanup": _cleanup_lines(plan.automations, plan.cleanup),
             "problems": plan.problems,
             "notes": plan.notes,
+            "flagged": {
+                "count": len(plan.flagged or []),
+                "excluded": bool(plan.sources.get("exclude_flagged")) and bool(plan.flagged),
+                "blocking": bool(plan.flagged) and not plan.sources.get("exclude_flagged"),
+                "rows": (plan.flagged or [])[:MAX_REPORTED_FLAGS],
+            },
         }
     )
     return report
@@ -877,8 +987,13 @@ async def async_migrate(
     dry_run: bool = True,
     confirm_backup: bool = False,
     picks: Mapping[str, str | None] | None = None,
+    exclude_flagged: bool = False,
 ) -> dict[str, Any]:
-    """Dry-run or run the migration. Raises MigrationRefused when it will not run."""
+    """Dry-run or run the migration. Raises MigrationRefused when it will not run.
+
+    ``exclude_flagged`` leaves implausible legacy rows out (see ``_scan_series``);
+    without it, any such row stops the real run. A run in progress keeps its choice.
+    """
     store = manager.store
     record = copy.deepcopy(store.migration)
     status = record["status"] if record else None
@@ -910,6 +1025,8 @@ async def async_migrate(
             return report
         raise MigrationRefused("needs_manual_pick", detection["reason"], report)
 
+    if status != STATUS_IN_PROGRESS:
+        sources = {**sources, "exclude_flagged": exclude_flagged}
     plan = await _async_plan(hass, manager, sources, record)
     report = _report(plan, detection, dry_run=dry_run, status=status)
     if dry_run:
@@ -1305,6 +1422,21 @@ async def async_delete_legacy(
 # --- text for the options flow -----------------------------------------------------------
 
 
+def _flagged_lines(flagged: Mapping[str, Any]) -> list[str]:
+    if not flagged.get("count"):
+        return []
+    lines = [
+        f"Implausible legacy rows: {flagged['count']}"
+        + (" (left out; sums re-derived)." if flagged["excluded"] else ".")
+    ]
+    lines.extend(
+        f"- {flag['statistic']} at {flag['start']}: {flag['problem']} "
+        f"({flag['kind']}, in the {flag['where']} period), sum {flag['sum']}"
+        for flag in flagged["rows"]
+    )
+    return lines
+
+
 def format_report(report: Mapping[str, Any]) -> str:
     """A readable summary of a dry-run or run report (markdown)."""
     lines: list[str] = [f"**{report['warning']}**", ""]
@@ -1321,6 +1453,7 @@ def format_report(report: Mapping[str, Any]) -> str:
             lines.append(f"- {_ROLE_LABELS[role]}: {sources[role]} -> {targets.get(role)}")
     for problem in report.get("problems", []):
         lines.append(f"Problem: {problem}")
+    lines.extend(_flagged_lines(report.get("flagged") or {}))
     parity = report.get("parity")
     if parity:
         lines.append(

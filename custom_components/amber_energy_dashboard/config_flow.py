@@ -46,6 +46,7 @@ from .api import (
 from .const import (
     ATTR_CONFIRM,
     ATTR_CONFIRM_BACKUP,
+    ATTR_EXCLUDE_FLAGGED,
     CHANNEL_CONTROLLED_LOAD,
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
@@ -378,6 +379,7 @@ class AmberOptionsFlow(OptionsFlow):
     def __init__(self) -> None:
         """Start with no migration picks or report."""
         self._picks: dict[str, str | None] | None = None
+        self._exclude_flagged = False
         self._report: dict[str, Any] | None = None
         self._result = ""
 
@@ -506,11 +508,14 @@ class AmberOptionsFlow(OptionsFlow):
         """Show the dry run; on confirmation (with the backup box ticked), run it."""
         report = self._report or {}
         parity = report.get("parity") or {}
+        flagged = report.get("flagged") or {}
         blocked = report.get("problems") or not parity.get("passed")
         if report.get("migration_status") == STATUS_COMPLETED:
             return self._show_result(
                 "The migration was already completed. Use Undo migration to run it again."
             )
+        if flagged.get("blocking") and len(report.get("problems") or []) == 1:
+            return await self.async_step_migrate_flagged()
         if blocked:
             return self._show_result(
                 "The migration cannot run; nothing was changed.\n\n" + format_report(report)
@@ -527,6 +532,7 @@ class AmberOptionsFlow(OptionsFlow):
                         dry_run=False,
                         confirm_backup=True,
                         picks=self._picks,
+                        exclude_flagged=self._exclude_flagged,
                     )
                 except MigrationRefused as err:
                     return self._show_result(f"The migration did not run: {err}")
@@ -537,6 +543,29 @@ class AmberOptionsFlow(OptionsFlow):
                 {vol.Required(ATTR_CONFIRM_BACKUP, default=False): BooleanSelector()}
             ),
             errors=errors,
+            description_placeholders={"report": format_report(report)},
+        )
+
+    async def async_step_migrate_flagged(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Implausible legacy rows: stop, or dry-run again with them left out."""
+        report = self._report or {}
+        if user_input is not None:
+            if not user_input.get(ATTR_EXCLUDE_FLAGGED):
+                return self._show_result(
+                    "The migration did not run; nothing was changed.\n\n" + format_report(report)
+                )
+            self._exclude_flagged = True
+            self._report = await async_migrate(
+                self.hass, self._manager(), dry_run=True, picks=self._picks, exclude_flagged=True
+            )
+            return await self.async_step_migrate_confirm()
+        return self.async_show_form(
+            step_id="migrate_flagged",
+            data_schema=vol.Schema(
+                {vol.Required(ATTR_EXCLUDE_FLAGGED, default=False): BooleanSelector()}
+            ),
             description_placeholders={"report": format_report(report)},
         )
 

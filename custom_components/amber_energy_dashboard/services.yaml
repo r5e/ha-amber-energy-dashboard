@@ -46,6 +46,11 @@ migrate_v1:
       default: false
       selector:
         boolean:
+    exclude_flagged:
+      required: false
+      default: false
+      selector:
+        boolean:
     import_energy:
       required: false
       selector:

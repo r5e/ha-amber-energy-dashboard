@@ -48,6 +48,7 @@ from .synthetic import SITE_ID, make_usage_day
 from .test_manager import (  # noqa: F401 - fixtures are used by name
     ALL_IDS,
     ENTRY_ID,
+    NOW,
     TODAY,
     YESTERDAY,
     Clock,
@@ -747,7 +748,9 @@ async def test_decreasing_legacy_energy_is_refused(
     await _import_legacy(hass, ADV, rows)
 
     report = await _migrate(hass)
-    assert any("decreases" in p for p in report["problems"])
+    # The scan flags the spike (M6b); the older "decreases" check is only a backstop now.
+    assert [f["kind"] for f in report["flagged"]["rows"]] == ["spike"]
+    assert len(report["problems"]) == 1
     with pytest.raises(ServiceValidationError, match="possible corruption"):
         await _migrate(hass, dry_run=False, confirm_backup=True)
     assert _record(hass_storage) is None
@@ -1389,3 +1392,174 @@ async def test_v1_empty_cost_history_is_not_copied(
     assert report["migration_status"] == "completed"
     stored = await _rows(hass)
     assert stored[E1_COST][0]["start"] == BOUNDARY.timestamp()
+
+
+# --- implausible legacy rows (M6b) ---------------------------------------------------------
+
+
+def _row(start: datetime, value: float) -> dict[str, Any]:
+    return {"start": start, "state": value, "sum": value}
+
+
+def test_scan_series_kinds_and_rederived_sums() -> None:
+    """Spike, jump, reset and dip; cost may fall but not jump; spacing scales the cap."""
+    t0 = datetime(2026, 5, 1, 14, tzinfo=UTC)
+    day = timedelta(days=1)
+    sums = [100, 110, 99999, 120, 720, 730, 5, 15, 14, 25]
+    rows = [_row(t0 + i * day, float(v)) for i, v in enumerate(sums)]
+    flags, cleaned = migration._scan_series(rows, energy=True)
+    assert [(f["sum"], f["kind"]) for f in flags] == [
+        (99999.0, "spike"),  # the next row is plausible again: left out, nothing shifted
+        (720.0, "jump"),  # the series continues from the new level
+        (5.0, "reset"),  # ... and from the reset
+        (14.0, "spike"),  # a one-row dip
+    ]
+    assert flags[1]["step"] == 600.0 and flags[2]["problem"] == "sum decreases by 725.0"
+    # Every kept row continues with its own increment; the flagged rows are gone.
+    assert [r["sum"] for r in cleaned] == [100, 110, 120, 130, 140, 150]
+    assert [r["start"] for r in cleaned] == [rows[i]["start"] for i in (0, 1, 3, 5, 7, 9)]
+
+    # Cost can legitimately fall (negative prices); only a step above the cap is flagged.
+    cost = [_row(t0 + i * HOUR, v) for i, v in enumerate([10.0, 9.5, 9.0, 160.0, 9.2])]
+    flags, cleaned = migration._scan_series(cost, energy=False)
+    assert [(f["sum"], f["kind"]) for f in flags] == [(160.0, "spike")]
+    assert [r["sum"] for r in cleaned] == [10.0, 9.5, 9.0, 9.2]
+
+    # Rows 3 days apart may hold up to 3 days' cap; the last row has no lookahead.
+    spaced = [_row(t0, 0.0), _row(t0 + 3 * day, 250.0), _row(t0 + 4 * day, 99999.0)]
+    flags, _ = migration._scan_series(spaced, energy=True)
+    assert [(f["sum"], f["kind"]) for f in flags] == [(99999.0, "spike")]
+    assert migration._scan_series([], energy=True) == ([], [])
+
+
+async def _v1_scenario(hass, aioclient_mock, hass_storage) -> tuple[Any, dict[str, list]]:
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    ids = {ROLE_IMPORT_ENERGY: V1[ROLE_IMPORT_ENERGY], ROLE_EXPORT_ENERGY: V1[ROLE_EXPORT_ENERGY]}
+    rows = _legacy_rows(ids, hourly_days=[], lump_days=PRE + WINDOW)
+    return entry, ids, rows
+
+
+async def test_v1_readme_spike_is_listed_and_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The v1 README's recorder test: 99999 imported at the current hour. The dry run lists
+    it, a real run refuses, and with exclude_flagged the migration runs without it."""
+    _, ids, rows = await _v1_scenario(hass, aioclient_mock, hass_storage)
+    now_hour = NOW.replace(minute=0, second=0, microsecond=0)
+    rows[ROLE_IMPORT_ENERGY].append(_row(now_hour, 99999.0))
+    await _import_legacy(hass, ids, rows)
+
+    report = await _migrate(hass)
+    flagged = report["flagged"]
+    assert flagged["count"] == 1 and flagged["blocking"] is True and not flagged["excluded"]
+    assert flagged["rows"][0] == {
+        "statistic": V1[ROLE_IMPORT_ENERGY],
+        "role": "grid import kWh",
+        "where": "after",
+        "start": now_hour.isoformat(),
+        "sum": 99999.0,
+        "step": round(99999.0 - rows[ROLE_IMPORT_ENERGY][-2]["sum"], 6),
+        "kind": "spike",
+        "problem": f"step of {round(99999.0 - rows[ROLE_IMPORT_ENERGY][-2]['sum'], 6)} in one row",
+    }
+    assert any("implausible legacy rows" in p for p in report["problems"])
+    assert "Implausible legacy rows: 1." in migration.format_report(report)
+    with pytest.raises(ServiceValidationError, match="exclude_flagged"):
+        await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert _record(hass_storage) is None
+
+    report = await _migrate(hass, exclude_flagged=True)
+    assert report["problems"] == [] and report["parity"]["passed"] is True
+    assert report["flagged"]["excluded"] is True and report["flagged"]["blocking"] is False
+    assert any("left out" in n for n in report["notes"])
+    report = await _migrate(hass, dry_run=False, confirm_backup=True, exclude_flagged=True)
+    assert report["migration_status"] == "completed"
+    assert _record(hass_storage)["sources"]["exclude_flagged"] is True
+    stored = await _rows(hass)
+    carry = _by_start(stored[E1])[BOUNDARY - HOUR]
+    assert carry["sum"] == pytest.approx(rows[ROLE_IMPORT_ENERGY][len(PRE) - 1]["sum"])
+    assert max(r["sum"] for r in stored[E1]) < 99999
+    _assert_continuous(stored[E1])
+
+
+async def test_spike_in_copied_history_is_left_out(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A spike in the history to copy: listed (copy period); with exclude_flagged it is not
+    copied and the other copied sums are unchanged, so the seam still matches."""
+    _, ids, rows = await _v1_scenario(hass, aioclient_mock, hass_storage)
+    original = [dict(r) for r in rows[ROLE_IMPORT_ENERGY]]
+    rows[ROLE_IMPORT_ENERGY][2] = {**original[2], "sum": 99999.0, "state": 99999.0}
+    await _import_legacy(hass, ids, rows)
+
+    report = await _migrate(hass)
+    assert [(f["where"], f["kind"]) for f in report["flagged"]["rows"]] == [("copy", "spike")]
+
+    report = await _migrate(hass, dry_run=False, confirm_backup=True, exclude_flagged=True)
+    assert report["migration_status"] == "completed"
+    stored = _by_start((await _rows(hass))[E1])
+    assert original[2]["start"] not in stored
+    for row in original[:2] + original[3 : len(PRE)]:
+        assert stored[row["start"]]["sum"] == pytest.approx(row["sum"])
+    _assert_continuous(list(stored.values()))
+
+
+async def test_jump_in_copied_history_rederives_later_sums(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A persistent jump before the boundary shifts every later legacy sum; excluding it
+    re-derives them, and parity inside the overlap still passes."""
+    _, ids, rows = await _v1_scenario(hass, aioclient_mock, hass_storage)
+    clean = [dict(r) for r in rows[ROLE_IMPORT_ENERGY]]
+    for row in rows[ROLE_IMPORT_ENERGY][2:]:
+        row["sum"] += 5000.0
+        row["state"] = row["sum"]
+    await _import_legacy(hass, ids, rows)
+
+    report = await _migrate(hass, exclude_flagged=True)
+    assert [(f["kind"], f["step"]) for f in report["flagged"]["rows"]] == [
+        ("jump", round(clean[2]["sum"] - clean[1]["sum"] + 5000.0, 6))
+    ]
+    assert report["parity"]["passed"] is True
+    report = await _migrate(hass, dry_run=False, confirm_backup=True, exclude_flagged=True)
+    stored = _by_start((await _rows(hass))[E1])
+    # The jump row itself is left out; later rows continue from the rows before it.
+    assert clean[2]["start"] not in stored
+    delta = clean[3]["sum"] - clean[2]["sum"]
+    assert stored[clean[3]["start"]]["sum"] == pytest.approx(clean[1]["sum"] + delta)
+
+
+async def test_options_flow_flagged_rows(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Flagged rows lead to their own step: stop, or dry-run again without them."""
+    entry, ids, rows = await _v1_scenario(hass, aioclient_mock, hass_storage)
+    rows[ROLE_IMPORT_ENERGY][2] = {**rows[ROLE_IMPORT_ENERGY][2], "sum": 99999.0}
+    await _import_legacy(hass, ids, rows)
+
+    async def start() -> dict:
+        flow = await hass.config_entries.options.async_init(entry.entry_id)
+        return await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"next_step_id": "migrate"}
+        )
+
+    flow = await start()
+    assert flow["step_id"] == "migrate_flagged"
+    assert "Implausible legacy rows: 1." in flow["description_placeholders"]["report"]
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"exclude_flagged": False}
+    )
+    assert flow["description_placeholders"]["result"].startswith("The migration did not run")
+    assert _record(hass_storage) is None
+
+    flow = await start()
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"exclude_flagged": True}
+    )
+    assert flow["step_id"] == "migrate_confirm"
+    assert "(left out; sums re-derived)" in flow["description_placeholders"]["report"]
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"confirm_backup": True}
+    )
+    assert "Migration status: completed." in flow["description_placeholders"]["result"]
+    assert _record(hass_storage)["sources"]["exclude_flagged"] is True

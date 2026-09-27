@@ -34,3 +34,55 @@ backfill:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+migrate_v1:
+  fields:
+    dry_run:
+      required: false
+      default: true
+      selector:
+        boolean:
+    confirm_backup:
+      required: false
+      default: false
+      selector:
+        boolean:
+    import_energy:
+      required: false
+      selector:
+        statistic:
+    export_energy:
+      required: false
+      selector:
+        statistic:
+    import_cost:
+      required: false
+      selector:
+        statistic:
+    export_cost:
+      required: false
+      selector:
+        statistic:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard
+undo_migration:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard
+delete_legacy_statistics:
+  fields:
+    confirm:
+      required: true
+      default: false
+      selector:
+        boolean:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard

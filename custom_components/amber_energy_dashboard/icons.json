@@ -8,6 +8,15 @@
     },
     "backfill": {
       "service": "mdi:history"
+    },
+    "migrate_v1": {
+      "service": "mdi:database-arrow-right"
+    },
+    "undo_migration": {
+      "service": "mdi:undo"
+    },
+    "delete_legacy_statistics": {
+      "service": "mdi:delete-clock"
     }
   },
   "entity": {

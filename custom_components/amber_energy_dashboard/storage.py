@@ -103,6 +103,7 @@ class AmberStore:
             "tail_rewrite": None,
             "channel_since": {},
             "chains": {},
+            "migration": None,
         }
 
     async def async_load(self) -> None:
@@ -169,6 +170,11 @@ class AmberStore:
     def tail_rewrite(self) -> dict[str, Any] | None:
         """A tail rewrite in progress: {from, next, to}, or None."""
         return self._data["tail_rewrite"]
+
+    @property
+    def migration(self) -> dict[str, Any] | None:
+        """The YAML-kit migration record (section 14), or None if never started."""
+        return self._data["migration"]
 
     def channel_since(self, identifier: str) -> date | None:
         """First NEM day a channel added after setup is imported for (None = always)."""
@@ -296,6 +302,22 @@ class AmberStore:
         """Record tail-rewrite progress, or None when it is complete."""
         self._data["tail_rewrite"] = progress
         await self._async_save()
+
+    async def async_set_migration(self, record: dict[str, Any] | None) -> None:
+        """Replace the migration record (saved immediately)."""
+        self._data["migration"] = record
+        await self._async_save()
+
+    async def async_read_back_migration(self) -> dict[str, Any] | None:
+        """The migration record as stored on disk, read through a fresh handle."""
+        fresh = _VersionedStore(
+            self._store.hass,
+            STORAGE_VERSION,
+            f"{DOMAIN}.{self._entry_id}",
+            minor_version=STORAGE_MINOR_VERSION,
+        )
+        data = await fresh.async_load()
+        return (data or {}).get("migration")
 
     async def async_set_channel_since(self, identifiers: Iterable[str], since: date) -> None:
         """Record the first import day for channels added after setup."""

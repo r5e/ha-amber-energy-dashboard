@@ -643,6 +643,9 @@ async def test_options_patience_and_revision_applied_without_reload(
     mgr = entry.runtime_data.manager
     flow = await hass.config_entries.options.async_init(entry.entry_id)
     flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "settings"}
+    )
+    flow = await hass.config_entries.options.async_configure(
         flow["flow_id"],
         {CONF_SCHEDULE_MODE: "automatic", CONF_PATIENCE_DAYS: 3, CONF_REVISION_DAYS: 0},
     )

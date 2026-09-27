@@ -381,6 +381,7 @@ async def test_advanced_migration(
     issue = ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
     assert issue is not None
     assert "script.amber_daily_import" in issue.translation_placeholders["items"]
+    assert issue.is_persistent is True
     assert entry.runtime_data.manager.store.tail_rewrite is None
 
     # Imports continue from the re-based sums.
@@ -1319,3 +1320,15 @@ async def test_cost_series_starting_at_the_boundary(
     stored = await _rows(hass)
     assert stored[E1_COST][0]["start"] == BOUNDARY.timestamp()
     _assert_continuous(stored[E1])
+
+
+async def test_cleanup_issue_survives_a_restart(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    await _advanced(hass)
+    await _migrate(hass, dry_run=False, confirm_backup=True)
+    ir.async_delete_issue(hass, DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}") is not None

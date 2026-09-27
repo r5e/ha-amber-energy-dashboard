@@ -1074,19 +1074,29 @@ async def _async_finish(
     record["cleanup"] = _cleanup_lines(record["automations"], plan.cleanup)
     _change(record, "completed", None)
     await manager.store.async_set_migration(record)
+    cleanup_issue(hass, manager)
+    _LOGGER.info("Migration from the %s completed", plan.sources["layout"])
+
+
+def cleanup_issue(hass: HomeAssistant, manager: AmberManager) -> None:
+    """Show the Repairs issue listing the leftovers while a migration is completed (also
+    after a restart; it is removed by undo)."""
+    record = manager.store.migration
+    if record is None or record["status"] != STATUS_COMPLETED:
+        return
     ir.async_create_issue(
         hass,
         DOMAIN,
         f"{ISSUE_LEGACY_CLEANUP}_{manager.entry.entry_id}",
         is_fixable=False,
+        is_persistent=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_LEGACY_CLEANUP,
         translation_placeholders={
             "entry": manager.entry.title,
-            "items": "\n".join(f"- {line}" for line in record["cleanup"]),
+            "items": "\n".join(f"- {line}" for line in record.get("cleanup", [])),
         },
     )
-    _LOGGER.info("Migration from the %s completed", plan.sources["layout"])
 
 
 async def _async_copy(hass: HomeAssistant, manager: AmberManager, plan: _Plan) -> None:

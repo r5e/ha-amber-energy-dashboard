@@ -65,6 +65,14 @@
   "options": {
     "step": {
       "init": {
+        "title": "Amber Energy Dashboard options",
+        "menu_options": {
+          "settings": "Import settings",
+          "migrate": "Migrate from the YAML kit",
+          "undo_migration": "Undo migration"
+        }
+      },
+      "settings": {
         "title": "Import schedule",
         "description": "Automatic picks a stable time each morning (between 06:30 and 08:30), with retries 3 and 6 hours later.",
         "data": {
@@ -84,10 +92,50 @@
           "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate. Enabling it fetches the full retention window once (about 13 API calls for 90 days).",
           "own_fallback": "When 5-minute sensor data is no longer available (after about 10 days), price hourly energy at the hour's mean price and flag the day as lower precision. If off, such days are skipped."
         }
+      },
+      "migrate_pick": {
+        "title": "Choose the legacy statistics",
+        "description": "{reason}\n\nPick the statistics your YAML kit wrote. Only the grid import is required; statistics are never mixed with a detected layout.",
+        "data": {
+          "import_energy": "Grid import kWh (required)",
+          "export_energy": "Grid export kWh",
+          "import_cost": "Import cost",
+          "export_cost": "Export cost (compensation)"
+        },
+        "data_description": {
+          "export_cost": "The migration works out the sign from the days both the kit and this integration have."
+        }
+      },
+      "migrate_confirm": {
+        "title": "Migrate from the YAML kit: dry run",
+        "description": "{report}",
+        "data": {
+          "confirm_backup": "I have a current Home Assistant backup"
+        },
+        "data_description": {
+          "confirm_backup": "Required. Nothing has been changed yet; submitting runs the migration."
+        }
+      },
+      "migrate_result": {
+        "title": "Migration",
+        "description": "{result}"
+      },
+      "undo_migration": {
+        "title": "Undo migration",
+        "description": "Restores the Energy dashboard settings saved before the migration, and turns back on only the automations the migration turned off. Copied history and the re-based sums stay.",
+        "data": {
+          "confirm": "Undo the migration"
+        }
       }
     },
     "error": {
-      "invalid_times": "Enter one to six times as HH:MM, separated by commas."
+      "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
+      "backup_not_confirmed": "Confirm that you have a current Home Assistant backup.",
+      "invalid_pick": "{error}",
+      "not_confirmed": "Tick the box to confirm."
+    },
+    "abort": {
+      "not_loaded": "The integration is not loaded; migration and undo need it running."
     }
   },
   "selector": {
@@ -164,6 +212,10 @@
     "behind": {
       "title": "Amber import is behind",
       "description": "After the last scheduled attempt today, {entry} has only reached {last_date} ({days_behind} days behind yesterday). Last run: {status} {reason}\n\nThis clears by itself once the import catches up. If it persists for several days, check the status sensor and diagnostics."
+    },
+    "legacy_cleanup": {
+      "title": "Finish removing the YAML kit ({entry})",
+      "description": "The migration is complete. Remove these leftovers of the YAML kit when you are satisfied:\n\n{items}\n\nThis notice only lists them; nothing here is removed automatically."
     }
   },
   "services": {
@@ -202,6 +254,64 @@
         "end_date": {
           "name": "End date",
           "description": "Last NEM date to import (at most yesterday)."
+        },
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    },
+    "migrate_v1": {
+      "name": "Migrate from the YAML kit",
+      "description": "Dry run (default) or run the migration from the v1 kit or the advanced YAML version: parity check, copy of older history, Energy dashboard switch and legacy automations turned off. Take a Home Assistant backup first.",
+      "fields": {
+        "dry_run": {
+          "name": "Dry run",
+          "description": "Only report what would happen (default on)."
+        },
+        "confirm_backup": {
+          "name": "Backup confirmed",
+          "description": "Required for a real run: you have a current Home Assistant backup."
+        },
+        "import_energy": {
+          "name": "Grid import kWh",
+          "description": "Legacy grid import statistic (only when the kit is not detected automatically)."
+        },
+        "export_energy": {
+          "name": "Grid export kWh",
+          "description": "Legacy grid export statistic (manual pick)."
+        },
+        "import_cost": {
+          "name": "Import cost",
+          "description": "Legacy import cost statistic (manual pick)."
+        },
+        "export_cost": {
+          "name": "Export cost",
+          "description": "Legacy export cost or compensation statistic (manual pick)."
+        },
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    },
+    "undo_migration": {
+      "name": "Undo migration",
+      "description": "Restore the Energy dashboard settings saved by the migration and turn back on the automations it turned off. Copied history stays.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    },
+    "delete_legacy_statistics": {
+      "name": "Delete legacy statistics",
+      "description": "After a completed migration, permanently delete the YAML kit's statistics. The migration can no longer be undone afterwards.",
+      "fields": {
+        "confirm": {
+          "name": "Confirm",
+          "description": "Must be on; the deletion cannot be reversed."
         },
         "config_entry_id": {
           "name": "Site",

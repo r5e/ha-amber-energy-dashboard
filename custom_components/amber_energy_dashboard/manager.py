@@ -467,7 +467,10 @@ class AmberManager:
             prev = self.store.last_imported_before(day)
         ids = [spec.statistic_id for spec in ctx.specs]
         if prev is None:
-            return dict.fromkeys(ids, 0.0)
+            # No earlier imported day: continue from a row in the hour before, if there is
+            # one (history copied from a YAML kit, section 14), else start at 0.
+            seam = await importer.async_sums_at(self.hass, ids, nem_day_start(day) - HOUR)
+            return {sid: seam[sid] or 0.0 for sid in ids}
         sums = await importer.async_sums_at(self.hass, ids, _day_last_hour(prev))
         baselines: dict[str, float] = {}
         for sid in ids:
@@ -882,6 +885,29 @@ class AmberManager:
         await self.store.async_set_tail_rewrite(None)
         self._last_rewrite_count = count
         return None
+
+    async def async_rebase(self, first: date) -> dict[str, Any]:
+        """Rewrite ``first``..last_written so the sums continue from the row before
+        ``first`` (the migration re-base, section 14). The caller holds ``ctx.lock``.
+
+        Resumes a stored range rewrite if one is in progress. Returns the outcome (None
+        when done), the calls made and the number of days rewritten; API errors propagate
+        with the progress stored.
+        """
+        budget = self.ctx.client.start_run(RunBudget())
+        self._cache = {}
+        self._last_rewrite_count = 0
+        try:
+            progress = self.store.tail_rewrite
+            start = date.fromisoformat(progress["next"]) if progress else first
+            outcome = await self._async_range_rewrite(start)
+        finally:
+            self.ctx.client.end_run()
+        return {
+            "outcome": outcome,
+            "calls": dict(budget.calls),
+            "rewritten_days": self._last_rewrite_count,
+        }
 
     # --- retention ----------------------------------------------------------------
 

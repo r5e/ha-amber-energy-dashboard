@@ -320,7 +320,10 @@ async def test_options_flow_changes_schedule_without_reload(
     manager = entry.runtime_data.manager
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
+    assert result["step_id"] == "settings"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: "x"}
     )
@@ -345,6 +348,9 @@ async def test_options_flow_changes_schedule_without_reload(
 
     # And back to automatic, with the current fixed times offered as the suggestion.
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
     schema_fields = {str(k): k for k in result["data_schema"].schema}
     assert schema_fields[CONF_FIXED_TIMES].description == {"suggested_value": "07:15, 10:15"}
     result = await hass.config_entries.options.async_configure(

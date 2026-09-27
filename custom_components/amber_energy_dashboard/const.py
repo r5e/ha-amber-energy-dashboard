@@ -74,3 +74,16 @@ CONF_CHANNEL: Final = "channel"
 SERVICE_BACKFILL: Final = "backfill"
 ATTR_START_DATE: Final = "start_date"
 ATTR_END_DATE: Final = "end_date"
+
+# Migration from the YAML kits (DESIGN section 14)
+SERVICE_MIGRATE: Final = "migrate_v1"
+SERVICE_UNDO_MIGRATION: Final = "undo_migration"
+SERVICE_DELETE_LEGACY: Final = "delete_legacy_statistics"
+ATTR_DRY_RUN: Final = "dry_run"
+ATTR_CONFIRM_BACKUP: Final = "confirm_backup"
+ATTR_CONFIRM: Final = "confirm"
+ROLE_IMPORT_ENERGY: Final = "import_energy"
+ROLE_EXPORT_ENERGY: Final = "export_energy"
+ROLE_IMPORT_COST: Final = "import_cost"
+ROLE_EXPORT_COST: Final = "export_cost"
+ROLES: Final = (ROLE_IMPORT_ENERGY, ROLE_EXPORT_ENERGY, ROLE_IMPORT_COST, ROLE_EXPORT_COST)

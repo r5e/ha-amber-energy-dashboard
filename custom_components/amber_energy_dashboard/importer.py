@@ -519,10 +519,35 @@ async def _async_verify(
         await asyncio.sleep(VERIFY_INTERVAL)
 
 
+async def async_verify_range(
+    hass: HomeAssistant,
+    expected: Mapping[str, Sequence[Mapping[str, Any]]],
+    start: datetime,
+    end: datetime,
+    *,
+    tolerance: float = _TOLERANCE,
+) -> None:
+    """Read ``start``..``end`` back until every statistic holds exactly ``expected``."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + VERIFY_TIMEOUT
+    while True:
+        rows = await _async_read_rows(hass, expected, start, end)
+        problem = _compare(expected, rows, tolerance=tolerance)
+        if problem is None:
+            return
+        if loop.time() >= deadline:
+            raise VerificationFailedError(
+                "verification_failed", f"written rows do not read back: {problem}"
+            )
+        await asyncio.sleep(VERIFY_INTERVAL)
+
+
 def _compare(
     expected: Mapping[str, Sequence[Mapping[str, Any]]],
     actual: Mapping[str, Sequence[Mapping[str, Any]]],
     keys: tuple[str, ...] = ("state", "sum"),
+    *,
+    tolerance: float = _TOLERANCE,
 ) -> str | None:
     for sid, want in expected.items():
         got = actual.get(sid, [])
@@ -532,7 +557,7 @@ def _compare(
             if abs(g["start"] - w["start"].timestamp()) > 0.5:
                 return f"{sid}: row at {g['start']} expected {w['start'].isoformat()}"
             for key in keys:
-                if g.get(key) is None or abs(float(g[key]) - w[key]) > _TOLERANCE:
+                if g.get(key) is None or abs(float(g[key]) - w[key]) > tolerance:
                     return f"{sid} {w['start'].isoformat()}: {key} {g.get(key)} != {w[key]}"
     return None
 

@@ -44,6 +44,8 @@ from .api import (
     Site,
 )
 from .const import (
+    ATTR_CONFIRM,
+    ATTR_CONFIRM_BACKUP,
     CHANNEL_CONTROLLED_LOAD,
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
@@ -63,11 +65,23 @@ from .const import (
     DEFAULT_REVISION_DAYS,
     DOMAIN,
     MODE_FULL,
+    ROLE_IMPORT_ENERGY,
+    ROLES,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
     SUBENTRY_OWN_SENSOR,
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
+)
+from .migration import (
+    STATUS_COMPLETED,
+    STATUS_IN_PROGRESS,
+    MigrationRefused,
+    async_migrate,
+    async_pick_options,
+    async_undo,
+    format_report,
+    format_result,
 )
 from .schedule import format_times, parse_times
 from .storage import AmberStore
@@ -359,10 +373,31 @@ async def _async_record_new_channels(
 
 
 class AmberOptionsFlow(OptionsFlow):
-    """Change the schedule. Applied without a reload, so no API call is made."""
+    """Import settings (applied without a reload), and the YAML-kit migration."""
+
+    def __init__(self) -> None:
+        """Start with no migration picks or report."""
+        self._picks: dict[str, str | None] | None = None
+        self._report: dict[str, Any] | None = None
+        self._result = ""
+
+    def _manager(self) -> Any:
+        runtime = getattr(self.config_entry, "runtime_data", None)
+        return runtime.manager if runtime is not None else None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show and validate the schedule form."""
+        """Menu: settings, migration, and undo once a migration has started."""
+        options = ["settings", "migrate"]
+        manager = self._manager()
+        record = manager.store.migration if manager is not None else None
+        if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
+            options.append("undo_migration")
+        return self.async_show_menu(step_id="init", menu_options=options)
+
+    async def async_step_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show and validate the settings form."""
         errors: dict[str, str] = {}
         if user_input is not None:
             options, error = _schedule_options(user_input)
@@ -403,10 +438,145 @@ class AmberOptionsFlow(OptionsFlow):
             CONF_OWN_FALLBACK: current.get(CONF_OWN_FALLBACK, True),
         }
         return self.async_show_form(
-            step_id="init",
+            step_id="settings",
             data_schema=self.add_suggested_values_to_schema(_OPTIONS_SCHEMA, suggested),
             errors=errors,
         )
+
+    async def async_step_migrate(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Detect the YAML kit and show the dry run (or ask for the statistics)."""
+        manager = self._manager()
+        if manager is None:
+            return self.async_abort(reason="not_loaded")
+        report = await async_migrate(self.hass, manager, dry_run=True)
+        self._report = report
+        if report["needs_manual_pick"]:
+            return await self.async_step_migrate_pick()
+        return await self.async_step_migrate_confirm()
+
+    async def async_step_migrate_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manual step: the user picks the legacy statistics."""
+        manager = self._manager()
+        errors: dict[str, str] = {}
+        placeholders = {"error": ""}
+        if user_input is not None:
+            self._picks = {role: user_input.get(role) for role in ROLES}
+            try:
+                self._report = await async_migrate(
+                    self.hass, manager, dry_run=True, picks=self._picks
+                )
+            except MigrationRefused as err:
+                errors["base"] = "invalid_pick"
+                placeholders["error"] = str(err)
+            else:
+                return await self.async_step_migrate_confirm()
+        energy, cost = await async_pick_options(self.hass)
+        detection = (self._report or {}).get("detection") or {}
+        reason = detection.get("reason") or "The YAML kit was not recognised automatically."
+
+        def select(values: list[str]) -> SelectSelector:
+            return SelectSelector(
+                SelectSelectorConfig(options=values, mode=SelectSelectorMode.DROPDOWN)
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(ROLE_IMPORT_ENERGY): select(energy),
+                **{
+                    vol.Optional(role): select(cost if "cost" in role else energy)
+                    for role in ROLES
+                    if role != ROLE_IMPORT_ENERGY
+                },
+            }
+        )
+        return self.async_show_form(
+            step_id="migrate_pick",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input or {}),
+            errors=errors,
+            description_placeholders={"reason": reason, **placeholders},
+        )
+
+    async def async_step_migrate_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the dry run; on confirmation (with the backup box ticked), run it."""
+        report = self._report or {}
+        parity = report.get("parity") or {}
+        blocked = report.get("problems") or not parity.get("passed")
+        if report.get("migration_status") == STATUS_COMPLETED:
+            return self._show_result(
+                "The migration was already completed. Use Undo migration to run it again."
+            )
+        if blocked:
+            return self._show_result(
+                "The migration cannot run; nothing was changed.\n\n" + format_report(report)
+            )
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get(ATTR_CONFIRM_BACKUP):
+                errors["base"] = "backup_not_confirmed"
+            else:
+                try:
+                    result = await async_migrate(
+                        self.hass,
+                        self._manager(),
+                        dry_run=False,
+                        confirm_backup=True,
+                        picks=self._picks,
+                    )
+                except MigrationRefused as err:
+                    return self._show_result(f"The migration did not run: {err}")
+                return self._show_result(format_result(result))
+        return self.async_show_form(
+            step_id="migrate_confirm",
+            data_schema=vol.Schema(
+                {vol.Required(ATTR_CONFIRM_BACKUP, default=False): BooleanSelector()}
+            ),
+            errors=errors,
+            description_placeholders={"report": format_report(report)},
+        )
+
+    async def async_step_undo_migration(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm, then undo the migration."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get(ATTR_CONFIRM):
+                errors["base"] = "not_confirmed"
+            else:
+                try:
+                    result = await async_undo(self.hass, self._manager())
+                except MigrationRefused as err:
+                    return self._show_result(f"Undo did not run: {err}")
+                return self._show_result(
+                    f"Energy dashboard restored: {result['energy_restored']}. "
+                    f"Automations turned back on: {result['automations_enabled'] or 'none'}. "
+                    f"Left as they were: {result['left_unchanged'] or 'none'}. {result['kept']}"
+                )
+        return self.async_show_form(
+            step_id="undo_migration",
+            data_schema=vol.Schema({vol.Required(ATTR_CONFIRM, default=False): BooleanSelector()}),
+            errors=errors,
+        )
+
+    def _show_result(self, text: str) -> ConfigFlowResult:
+        self._result = text
+        return self.async_show_form(
+            step_id="migrate_result",
+            data_schema=vol.Schema({}),
+            description_placeholders={"result": text},
+        )
+
+    async def async_step_migrate_result(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Close the flow, leaving the options unchanged."""
+        return self.async_create_entry(data=dict(self.config_entry.options))
 
 
 class OwnSensorSubentryFlow(ConfigSubentryFlow):

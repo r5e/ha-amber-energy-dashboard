@@ -35,7 +35,10 @@ from .api import (
 )
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
+    ATTR_CONFIRM,
+    ATTR_CONFIRM_BACKUP,
     ATTR_DATE,
+    ATTR_DRY_RUN,
     ATTR_END_DATE,
     ATTR_START_DATE,
     CONF_CHANNEL,
@@ -54,15 +57,20 @@ from .const import (
     DOMAIN,
     MODE_FULL,
     MODE_PRICING,
+    ROLES,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
     SERVICE_BACKFILL,
+    SERVICE_DELETE_LEGACY,
     SERVICE_IMPORT_DAY,
+    SERVICE_MIGRATE,
     SERVICE_RUN_NOW,
+    SERVICE_UNDO_MIGRATION,
     SUBENTRY_OWN_SENSOR,
 )
 from .importer import ImportContext
 from .manager import AmberManager, OwnSensor
+from .migration import MigrationRefused, async_delete_legacy, async_migrate, async_undo
 from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs, own_cost_spec
 from .storage import AmberStore, async_forget_chain
@@ -82,6 +90,20 @@ BACKFILL_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_START_DATE): cv.date,
         vol.Required(ATTR_END_DATE): cv.date,
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+MIGRATE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_DRY_RUN, default=True): cv.boolean,
+        vol.Optional(ATTR_CONFIRM_BACKUP, default=False): cv.boolean,
+        **{vol.Optional(role): cv.string for role in ROLES},
+        vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+DELETE_LEGACY_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIRM): cv.boolean,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
 )
@@ -233,7 +255,54 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=RUN_NOW_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
+
+    _register_migration_services(hass)
     return True
+
+
+def _register_migration_services(hass: HomeAssistant) -> None:
+    """The YAML-kit migration services (section 14)."""
+
+    async def _migrate(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        try:
+            report = await async_migrate(
+                hass,
+                entry.runtime_data.manager,
+                dry_run=call.data[ATTR_DRY_RUN],
+                confirm_backup=call.data[ATTR_CONFIRM_BACKUP],
+                picks={role: call.data.get(role) for role in ROLES},
+            )
+        except MigrationRefused as err:
+            raise ServiceValidationError(str(err)) from err
+        return report if call.return_response else None
+
+    async def _undo(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        try:
+            result = await async_undo(hass, entry.runtime_data.manager)
+        except MigrationRefused as err:
+            raise ServiceValidationError(str(err)) from err
+        return result if call.return_response else None
+
+    async def _delete_legacy(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        try:
+            result = await async_delete_legacy(
+                hass, entry.runtime_data.manager, confirm=call.data[ATTR_CONFIRM]
+            )
+        except MigrationRefused as err:
+            raise ServiceValidationError(str(err)) from err
+        return result if call.return_response else None
+
+    for name, handler, schema in (
+        (SERVICE_MIGRATE, _migrate, MIGRATE_SCHEMA),
+        (SERVICE_UNDO_MIGRATION, _undo, RUN_NOW_SCHEMA),
+        (SERVICE_DELETE_LEGACY, _delete_legacy, DELETE_LEGACY_SCHEMA),
+    ):
+        hass.services.async_register(
+            DOMAIN, name, handler, schema=schema, supports_response=SupportsResponse.OPTIONAL
+        )
 
 
 def _resolve_entry(hass: HomeAssistant, entry_id: str | None) -> AmberConfigEntry:

@@ -81,6 +81,32 @@ by the mean price does not give your bill. Use the cost statistics for that.
 Enabling the option fetches Amber's full retention window once to fill the history (about
 13 API calls for 90 days); after that it costs no extra calls.
 
+## Migrating from the YAML kits
+
+If you used the earlier YAML kit (the published v1 kit, or the advanced YAML version),
+take a full Home Assistant backup, let this integration finish its first import, then use
+**Settings > Devices & services > Amber Energy Dashboard > Configure > Migrate from the
+YAML kit** (or the `amber_energy_dashboard.migrate_v1` action, which is a dry run unless
+you set `dry_run: false` and `confirm_backup: true`).
+
+- It recognises the kit by its names and uses the one with recent data. If it cannot tell
+  (renamed entities, or two kits with recent data), you pick the old statistics yourself.
+- Before changing anything it compares daily totals over the days both have. The advanced
+  version must match exactly (cost within 1 cent a day); the v1 kit within 0.01 kWh a day
+  (its cost was approximate, so cost differences are only reported). If they do not
+  match, nothing is changed.
+- It copies your older history (from before this integration's first day) into the new
+  statistics, so the Energy dashboard shows one continuous series. The advanced version's
+  feed-in cost is flipped to positive-when-earned, which fixes the old dashboard sign
+  problem. v1 history stays daily and its cost approximate. The kits had no controlled
+  load channel, so there is no older controlled-load history.
+- It saves your Energy dashboard settings, switches the grid source to the new statistics,
+  and turns off (never deletes) the kit's automation. Everything else it lists for you to
+  remove by hand; the old statistics are kept unless you delete them later with
+  `amber_energy_dashboard.delete_legacy_statistics`.
+- **Undo migration** restores the saved Energy dashboard settings and turns the automation
+  back on. The copied older history stays.
+
 ## Requirements
 
 - Home Assistant 2026.9 or later.

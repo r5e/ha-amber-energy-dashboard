@@ -332,6 +332,9 @@ async def test_reconciliation_shows_own_minus_amber(
     assert "state_class" not in state.attributes
     # Only in Full mode.
     flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "settings"}
+    )
     await hass.config_entries.options.async_configure(
         flow["flow_id"], {CONF_SCHEDULE_MODE: "automatic", CONF_USAGE_MODE: "pricing"}
     )
@@ -354,6 +357,9 @@ async def test_price_series_optional_hourly_mean(
     assert E1_PRICE not in meta
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "settings"}
+    )
     await hass.config_entries.options.async_configure(
         flow["flow_id"], {CONF_SCHEDULE_MODE: "automatic", CONF_PRICE_SERIES: True}
     )
@@ -393,6 +399,9 @@ async def test_price_series_optional_hourly_mean(
 
 async def _set_mode(hass: HomeAssistant, entry, mode: str, **extra: Any) -> None:
     flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "settings"}
+    )
     await hass.config_entries.options.async_configure(
         flow["flow_id"], {CONF_SCHEDULE_MODE: "automatic", CONF_USAGE_MODE: mode, **extra}
     )

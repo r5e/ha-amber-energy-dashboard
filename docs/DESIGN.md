@@ -418,7 +418,10 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 
 ## 14. Migration from the YAML kits (Milestone 6a)
 
-Decisions agreed for Milestone 6a. The published v1 kit (`legacy/v1/`) is in use by
+Decisions agreed for Milestone 6a, with the M6a review decisions (re-base from stored
+amounts, empty v1 cost, and M6a report section 5 details 1 to 6 accepted). VM 101 stays
+in the migrated state with its legacy automation off permanently.
+The published v1 kit (`legacy/v1/`) is in use by
 other households, so the v1 path is a first-class, safety-critical path.
 
 **Layouts recognised** (by name; recorded from `legacy/v1/` and, read-only, from VM 101):
@@ -462,15 +465,16 @@ other households, so the v1 path is a first-class, safety-critical path.
 - Sums are copied unchanged; each copied row's state is recomputed as the change from the
   previous row (the new statistics' convention). The copy ends with a row in the hour
   before the boundary (a carry row with state 0 if the legacy data has none there).
-- The integration's existing rows are then **re-based** with the existing range-rewrite
-  path (section 8): from the boundary to the last written day, each day continues from the
-  row before it, so the first imported day now continues from the copied baseline.
-  Future imports continue from there. A first imported day with no earlier imported day
-  continues from a row in the hour before it if one exists (the copied history), else 0.
-  If the seam is already continuous (a re-run), the rewrite is skipped. Because the range
-  rewrite fetches every day again, the migration refuses (nothing changed) when the
-  integration's first day is already older than Amber's retention (see the M6a report for
-  a proposed alternative).
+- The integration's existing rows are then **re-based from their stored hourly amounts**
+  (adopted at the M6a review, replacing a re-fetching range rewrite): from the boundary to
+  the last written day, each day's stored hourly amounts are written again through the same
+  write-and-verify path as an import, continuing from the day before, the first day from
+  the copied carry row. Progress (next day and running sums) is stored after each day, so
+  an interrupted re-base resumes. It makes **no API calls**, so it also works when the
+  integration's first day is older than Amber's retention. If the seam is already
+  continuous (a re-run), the re-base is skipped. Future imports continue from the re-based
+  sums; a later range rewrite (revision, backfill) of a first imported day with no earlier
+  imported day continues from a row in the hour before it (the copied history), else 0.
 - **Sign.** The advanced version's export cost carries Amber's sign (negative when
   earned). It is **negated** into compensation (state and sum), which fixes the Energy
   dashboard sign bug. The v1 kit's HA-generated compensation already uses HA's sign and is
@@ -478,7 +482,12 @@ other households, so the v1 path is a first-class, safety-critical path.
   that matches the new compensation), and shown in the dry run.
 - `net_cost` for the copied period is rebuilt as import cost minus compensation.
 - v1 history is copied as is and recorded as **approximate** (daily lumps; approximate
-  cost).
+  cost). **v1 cost** (provisional until a real v1 install in M6b confirms it): the kit's
+  cost and compensation come from the Energy dashboard's own cost sensors driven by a
+  sensor frozen at 0, so they are expected to be empty. If the v1 cost and compensation
+  rows to copy move less than 0.05 AUD in total (the sum of the hourly changes over the copy
+  period), the dry run reports "v1 cost history appears empty; not copied" and they are not
+  copied (nor net cost); otherwise they are copied as is.
 - Energy kWh sums in the copied period must never decrease; otherwise the migration
   refuses (possible corruption, such as a test spike).
 

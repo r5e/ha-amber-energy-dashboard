@@ -416,7 +416,7 @@ class AmberManager:
             if outcome is not None:
                 return outcome
         retention = self.store.retention or {}
-        if self.store.retention_days is None or retention.get("needs_discovery"):
+        if self.store.retention_boundary is None or retention.get("needs_discovery"):
             await self._async_discover_retention()
             info["retention"] = "discovered"
         elif retention.get("last_verified") != nem_today().isoformat():
@@ -574,7 +574,8 @@ class AmberManager:
     ) -> dict[str, Any]:
         today = nem_today()
         yesterday = today - timedelta(days=1)
-        boundary = today - timedelta(days=self.store.retention_days)
+        boundary = self.store.retention_boundary
+        assert boundary is not None
         marker = self.store.marker
         if recovery is not None:
             start = recovery
@@ -917,25 +918,32 @@ class AmberManager:
             boundary = None
             method = f"fallback ({type(err).__name__})"
             if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
-                await self._store_retention(RETENTION_FALLBACK_DAYS, method, counter[0], probes)
+                await self._store_retention(
+                    today - timedelta(days=RETENTION_FALLBACK_DAYS), method, counter[0], probes
+                )
                 raise
         if boundary is None and method == "bisection":
             method = "fallback (not bracketed)"
-        days = (today - boundary).days if boundary else RETENTION_FALLBACK_DAYS
-        await self._store_retention(days, method, counter[0], probes)
+        if boundary is None:
+            boundary = today - timedelta(days=RETENTION_FALLBACK_DAYS)
+        await self._store_retention(boundary, method, counter[0], probes)
 
     async def _async_verify_retention(self) -> dict[str, Any]:
-        """Daily check: the boundary day has data and the day before does not.
+        """Daily check of the stored boundary date (DESIGN section 8).
 
-        Self-corrects in either direction: a one-day move is confirmed with one more
-        probe; a larger move is bisected within a 15-day bracket, keeping the whole
-        check within 8 calls. If it cannot be resolved, the old value is kept and full
-        discovery runs on the next day.
+        Two probes: the boundary day has data and the day before does not. Then the
+        boundary is "verified", whatever the day count, so a boundary that stays fixed
+        costs nothing more. Only when the probes disagree does it step (a one-day move,
+        confirmed with one more probe) or bisect within a 15-day bracket. A forward move
+        beyond the bracket (a long outage with a rolling boundary) also tries the day
+        count seen at the last verification, today - that count, with 2 probes. The whole
+        check stays within 8 calls. If it cannot be resolved, the old date is kept and
+        full discovery runs on the next day.
         """
         today = nem_today()
-        previous = self.store.retention_days
-        assert previous is not None
-        boundary = today - timedelta(days=previous)
+        boundary = self.store.retention_boundary
+        assert boundary is not None
+        previous_days = (today - boundary).days
         probes: dict[str, bool] = {}
         counter = [0]
         has_data = self._prober(probes, counter)
@@ -955,7 +963,13 @@ class AmberManager:
                     new = await self._bisect(boundary + one, boundary + one + bracket, has_data)
                     method = f"moved forward {(new - boundary).days} days (bisected)"
                 else:
-                    method = "unresolved (moved forward beyond the bracket)"
+                    new = await self._rolling_candidate(boundary + one + bracket, has_data)
+                    method = (
+                        f"moved forward {(new - boundary).days} days (same day count as at "
+                        "the last verification)"
+                        if new
+                        else "unresolved (moved forward beyond the bracket)"
+                    )
             elif not await has_data(boundary - 2 * one):
                 new, method = boundary - one, "moved back 1 day"
             elif not await has_data(boundary - 2 * one - bracket):
@@ -967,11 +981,35 @@ class AmberManager:
             method = f"unresolved ({type(err).__name__})"
             if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
                 raise
-        days = (today - new).days if new else previous
         await self._store_retention(
-            days, method, counter[0], probes, previous=previous, needs_discovery=new is None
+            new or boundary,
+            method,
+            counter[0],
+            probes,
+            previous=boundary,
+            needs_discovery=new is None,
         )
-        return {"method": method, "calls": counter[0], "retention_days": days, "previous": previous}
+        return {
+            "method": method,
+            "calls": counter[0],
+            "boundary": (new or boundary).isoformat(),
+            "previous_boundary": boundary.isoformat(),
+            "retention_days": (today - (new or boundary)).days,
+            "previous_days": previous_days,
+        }
+
+    async def _rolling_candidate(self, known_empty: date, has_data: Callable) -> date | None:
+        """today - (the day count at the last verification), if it is exactly the boundary."""
+        boundary = self.store.retention_boundary
+        assert boundary is not None
+        verified = (self.store.retention or {}).get("last_verified")
+        count = (date.fromisoformat(verified) - boundary).days if verified else 0
+        candidate = nem_today() - timedelta(days=count)
+        if candidate <= known_empty:
+            return None
+        if await has_data(candidate) and not await has_data(candidate - timedelta(days=1)):
+            return candidate
+        return None
 
     async def _search_boundary(self, today: date, has_data: Callable) -> date | None:
         """Probe around the expected boundary, then bisect. None if it cannot bracket it."""
@@ -1015,12 +1053,12 @@ class AmberManager:
 
     async def _store_retention(
         self,
-        days: int,
+        boundary: date,
         method: str,
         calls: int,
         probes: dict,
         *,
-        previous: int | None = None,
+        previous: date | None = None,
         needs_discovery: bool = False,
     ) -> None:
         today = nem_today()
@@ -1030,16 +1068,22 @@ class AmberManager:
             "method": method,
             "calls": calls,
             "probes": probes,
-            "boundary": (today - timedelta(days=days)).isoformat(),
-            "previous_days": previous,
+            "boundary": boundary.isoformat(),
+            "previous_boundary": None if previous is None else previous.isoformat(),
             "needs_discovery": needs_discovery,
         }
-        if previous is not None and previous != days:
+        if previous is not None and previous != boundary:
             _LOGGER.warning(
-                "Usage retention changed from %d to %d days (%s)", previous, days, method
+                "Usage retention boundary moved from %s to %s (%s)", previous, boundary, method
             )
-        _LOGGER.info("Usage retention: %d days (%s, %d calls)", days, method, calls)
-        await self.store.async_set_retention(days, info)
+        _LOGGER.info(
+            "Usage retention: from %s, %d days (%s, %d calls)",
+            boundary,
+            (today - boundary).days,
+            method,
+            calls,
+        )
+        await self.store.async_set_retention(boundary, info)
 
     # --- backfill (Recovery-only mode, or rewriting history in Full mode) ------------
 
@@ -1056,7 +1100,8 @@ class AmberManager:
         """
         today = nem_today()
         yesterday = today - timedelta(days=1)
-        boundary = today - timedelta(days=self.store.retention_days)
+        boundary = self.store.retention_boundary
+        assert boundary is not None
         end = min(end, yesterday)
         if start > end:
             raise ImportRefusedError(
@@ -1249,7 +1294,8 @@ class AmberManager:
     ) -> date | None:
         """The day a chain continues from; days older than retention are skipped first."""
         state = chain.state
-        boundary = nem_today() - timedelta(days=self.store.retention_days)
+        boundary = self.store.retention_boundary
+        assert boundary is not None
         if recovery is not None:
             start: date | None = recovery
         elif state.marker is not None:

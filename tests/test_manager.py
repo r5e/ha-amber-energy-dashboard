@@ -108,19 +108,21 @@ def _store_key() -> str:
 
 
 def _preload_store(hass_storage: dict, **data: Any) -> None:
+    """Preload the store. A ``retention_days`` count is written in the 1.2 layout, so
+    the store migration turns it into a boundary date (today - count) when it loads."""
     if data.get("retention_days") and "retention" not in data:
         # Treat retention as already verified today, so no re-verify calls are made.
         data["retention"] = {"last_verified": TODAY.isoformat(), "method": "preset"}
+    minor = 2 if "retention_days" in data else STORAGE_MINOR_VERSION
     hass_storage[_store_key()] = {
         "version": STORAGE_VERSION,
-        "minor_version": STORAGE_MINOR_VERSION,
+        "minor_version": minor,
         "key": _store_key(),
         "data": {
             "marker": None,
             "last_written": None,
             "pending": None,
             "days": {},
-            "retention_days": None,
             "retention": None,
             "schedule_seed": schedule_seed_for(ENTRY_ID),
             "last_run": None,
@@ -1143,14 +1145,89 @@ async def test_store_edge_cases(
         await store.async_mark_day(date(2020, 1, 1) + timedelta(days=i), "empty", "no_data")
     assert len(store.as_dict()["days"]) == MAX_DAY_ENTRIES
 
-    migrator = _VersionedStore(hass, 1, "x")
+    migrator = _VersionedStore(hass, 1, "x", today=lambda: date(2026, 9, 28))
     assert await migrator._async_migrate_func(1, 1, {"marker": "2026-09-25"}) == {
         "marker": "2026-09-25",
         "last_written": "2026-09-25",
+        "retention_boundary": None,
     }
-    assert await migrator._async_migrate_func(1, 2, {"a": 1}) == {"a": 1}
+    assert await migrator._async_migrate_func(1, 3, {"a": 1}) == {"a": 1}
     with pytest.raises(NotImplementedError):
         await migrator._async_migrate_func(2, 0, {})
+
+
+@pytest.mark.parametrize(
+    ("old", "boundary"),
+    [
+        # M4+ layout: the measured boundary date is kept as is.
+        (
+            {
+                "retention_days": 90,
+                "retention": {"measured_on": "2026-09-27", "boundary": "2026-06-29"},
+            },
+            "2026-06-29",
+        ),
+        # No boundary recorded: the count is taken from its measurement day.
+        ({"retention_days": 89, "retention": {"measured_on": "2026-09-26"}}, "2026-06-29"),
+        # No measurement day either: counted back from today.
+        ({"retention_days": 10, "retention": None}, "2026-09-18"),
+        # Never discovered.
+        ({"retention_days": None, "retention": None}, None),
+    ],
+    ids=["boundary-kept", "from-measured-on", "from-today", "none"],
+)
+async def test_store_migration_to_boundary_date(
+    hass: HomeAssistant, old: dict, boundary: str | None
+) -> None:
+    """Layout 1.2 held a day count; 1.3 holds the boundary date and drops the count."""
+    from custom_components.amber_energy_dashboard.storage import (  # noqa: PLC0415
+        _VersionedStore,
+    )
+
+    migrator = _VersionedStore(hass, 1, "x", today=lambda: date(2026, 9, 28))
+    data = await migrator._async_migrate_func(1, 2, {"marker": "2026-09-27", **old})
+    assert data["retention_boundary"] == boundary
+    assert "retention_days" not in data
+    assert data["marker"] == "2026-09-27"
+
+
+async def test_store_migration_on_disk_and_derived_days(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A real 1.2 file (as on VM 9102 after M5) loads as 1.3; the day count is derived."""
+    hass_storage[_store_key()] = {
+        "version": 1,
+        "minor_version": 2,
+        "key": _store_key(),
+        "data": {
+            "marker": YESTERDAY.isoformat(),
+            "last_written": YESTERDAY.isoformat(),
+            "pending": None,
+            "days": {},
+            "retention_days": 20,
+            "retention": {
+                "measured_on": (TODAY - timedelta(days=1)).isoformat(),
+                "last_verified": TODAY.isoformat(),
+                "boundary": (TODAY - timedelta(days=21)).isoformat(),
+            },
+            "schedule_seed": schedule_seed_for(ENTRY_ID),
+            "last_run": None,
+        },
+    }
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+    assert store.retention_boundary == TODAY - timedelta(days=21)
+    assert store.retention_days == 21
+    assert store.as_dict()["retention_days"] == 21
+    saved = hass_storage[_store_key()]
+    assert saved["minor_version"] == STORAGE_MINOR_VERSION == 3
+    assert saved["data"]["retention_boundary"] == (TODAY - timedelta(days=21)).isoformat()
+    assert "retention_days" not in saved["data"]
+    # The day count follows the calendar; the boundary date does not move.
+    clock.now += timedelta(days=5)
+    assert store.retention_days == 26
+    assert store.retention_boundary == TODAY - timedelta(days=21)
 
 
 async def test_removing_entry_deletes_store(

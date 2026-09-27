@@ -163,6 +163,89 @@ async def test_retention_checked_once_per_day(
     assert len(fake.calls) == calls
 
 
+async def test_fixed_boundary_many_days_costs_two_probes(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A boundary date that stays fixed is "verified" every day with exactly 2 probes,
+    however far the day count grows (the account observed in M5)."""
+    boundary = TODAY - timedelta(days=20)
+    _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
+    fake = FakeAmber(boundary, YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+    await _run(hass)
+    for i in range(1, 41):
+        clock.now += timedelta(days=1)
+        fake.latest += timedelta(days=1)
+        before = len(fake.calls)
+        result = await _run(hass)
+        calls = fake.calls[before:]
+        assert result["retention"] == {
+            "method": "verified",
+            "calls": 2,
+            "boundary": boundary.isoformat(),
+            "previous_boundary": boundary.isoformat(),
+            "retention_days": 20 + i,
+            "previous_days": 20 + i,
+        }
+        assert calls[:2] == [(boundary, boundary), (boundary - timedelta(days=1),) * 2]
+        # Nothing else is probed: the only other call fetches the new day.
+        assert calls[2:] == [(fake.latest, fake.latest)]
+        assert result["imported_days"] == [fake.latest.isoformat()]
+    assert store.retention_boundary == boundary
+    assert store.retention_days == 60
+
+
+@pytest.mark.parametrize(
+    ("move", "method", "calls"),
+    [
+        (1, "moved forward 1 day", 3),
+        (-1, "moved back 1 day", 3),
+        (9, "moved forward 9 days (bisected)", 8),
+        (-9, "moved back 9 days (bisected)", 8),
+    ],
+    ids=["forward-1", "back-1", "forward-9", "back-9"],
+)
+async def test_fixed_boundary_real_move(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    move: int,
+    method: str,
+    calls: int,
+) -> None:
+    """After many verified days, a real move of the boundary date is followed in
+    either direction, and the next day is back to 2 probes."""
+    boundary = TODAY - timedelta(days=20)
+    _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
+    fake = FakeAmber(boundary, YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+    await _run(hass)
+    for _ in range(10):
+        clock.now += timedelta(days=1)
+        fake.latest += timedelta(days=1)
+        assert (await _run(hass))["retention"]["calls"] == 2
+
+    clock.now += timedelta(days=1)
+    fake.latest += timedelta(days=1)
+    fake.earliest = boundary + timedelta(days=move)
+    result = await _run(hass)
+    assert result["retention"]["method"] == method
+    assert result["retention"]["calls"] <= calls
+    assert store.retention_boundary == fake.earliest
+    assert store.retention_days == (TODAY + timedelta(days=11) - fake.earliest).days
+    assert store.retention["previous_boundary"] == boundary.isoformat()
+    assert result["status"] == "caught_up"
+
+    clock.now += timedelta(days=1)
+    fake.latest += timedelta(days=1)
+    result = await _run(hass)
+    assert result["retention"]["method"] == "verified"
+    assert result["retention"]["calls"] == 2
+
+
 # --- long outage --------------------------------------------------------------------------
 
 
@@ -186,7 +269,13 @@ async def test_marker_behind_boundary_after_eight_month_outage(
     result = await _run(hass)
 
     assert result["status"] == "caught_up"
-    assert result["retention"]["method"] == "verified"
+    # The stored date is 240 days stale: the 2 probes and the step and bracket probes
+    # are empty, so the day count from the last verification (3) is tried and fits.
+    assert result["retention"]["method"] == (
+        "moved forward 240 days (same day count as at the last verification)"
+    )
+    assert result["retention"]["calls"] == 6
+    assert mgr.store.retention_boundary == TODAY - timedelta(days=3)
     skipped = result["skipped_unavailable"]
     assert skipped == {
         "from": then.isoformat(),
@@ -208,6 +297,36 @@ async def test_marker_behind_boundary_after_eight_month_outage(
     # And the next run's Guard 1 accepts the resolved state.
     assert (await _run(hass))["status"] == "caught_up"
     assert _issue(hass, "marker_mismatch") is None
+
+
+async def test_long_outage_with_changed_day_count_is_unresolved_then_discovered(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """After a long outage the day count has changed too (3 -> 80 days): the old date is
+    kept, and full discovery on the next day finds the new boundary."""
+    _preload_store(hass_storage, retention_days=3)
+    clock.now = NOW - timedelta(days=200)
+    then = TODAY - timedelta(days=200)
+    fake = FakeAmber(then - timedelta(days=3), then - timedelta(days=1))
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    await _run(hass)
+    mgr = entry.runtime_data.manager
+
+    clock.now = NOW
+    fake.earliest, fake.latest = TODAY - timedelta(days=80), YESTERDAY
+    mgr.ctx.client.start_run(manager_mod.RunBudget())
+    result = await mgr._async_verify_retention()
+    # 2 checks, 1 step, 1 bracket, and the old day count (today - 3) does not fit.
+    assert result["method"] == "unresolved (moved forward beyond the bracket)"
+    assert result["calls"] == 6
+    assert mgr.store.retention_boundary == then - timedelta(days=3)
+    assert mgr.store.retention["needs_discovery"] is True
+
+    clock.now += timedelta(days=1)
+    fake.latest = TODAY
+    summary = await _run(hass)
+    assert summary["retention"] == "discovered"
+    assert mgr.store.retention_boundary == TODAY - timedelta(days=80)
 
 
 # --- patience ------------------------------------------------------------------------------
@@ -614,8 +733,10 @@ async def test_store_minor_version_1_is_migrated(
         "revisions_checked",
         "tail_rewrite",
         "channel_since",
+        "retention_boundary",
     ):
         data.pop(key)
+    data["retention_days"] = 5  # M3 kept a day count
     hass_storage[_store_key()] = {
         "version": 1,
         "minor_version": 1,
@@ -627,7 +748,8 @@ async def test_store_minor_version_1_is_migrated(
 
     store = entry.runtime_data.manager.store
     assert store.last_written.isoformat() == marker
-    assert hass_storage[_store_key()]["minor_version"] == 2
+    assert hass_storage[_store_key()]["minor_version"] == 3
+    assert store.retention_boundary == TODAY - timedelta(days=5)
     result = await _run(hass)
     assert result["status"] == "caught_up"
     _assert_contiguous(await _rows(hass), TODAY - timedelta(days=5), YESTERDAY)

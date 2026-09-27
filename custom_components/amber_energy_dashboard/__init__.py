@@ -69,7 +69,7 @@ from .const import (
     SUBENTRY_OWN_SENSOR,
 )
 from .importer import ImportContext
-from .manager import AmberManager, OwnSensor
+from .manager import AmberManager, OwnSensor, nem_today
 from .migration import (
     MigrationRefused,
     async_delete_legacy,
@@ -350,7 +350,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     if site is None:
         raise ConfigEntryAuthFailed("The API key no longer has access to this site")
 
-    store = AmberStore(hass, entry.entry_id)
+    store = AmberStore(hass, entry.entry_id, today=nem_today)
     await store.async_load()
     ctx = ImportContext(
         client=client,

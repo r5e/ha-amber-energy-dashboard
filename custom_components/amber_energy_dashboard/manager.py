@@ -886,29 +886,6 @@ class AmberManager:
         self._last_rewrite_count = count
         return None
 
-    async def async_rebase(self, first: date) -> dict[str, Any]:
-        """Rewrite ``first``..last_written so the sums continue from the row before
-        ``first`` (the migration re-base, section 14). The caller holds ``ctx.lock``.
-
-        Resumes a stored range rewrite if one is in progress. Returns the outcome (None
-        when done), the calls made and the number of days rewritten; API errors propagate
-        with the progress stored.
-        """
-        budget = self.ctx.client.start_run(RunBudget())
-        self._cache = {}
-        self._last_rewrite_count = 0
-        try:
-            progress = self.store.tail_rewrite
-            start = date.fromisoformat(progress["next"]) if progress else first
-            outcome = await self._async_range_rewrite(start)
-        finally:
-            self.ctx.client.end_run()
-        return {
-            "outcome": outcome,
-            "calls": dict(budget.calls),
-            "rewritten_days": self._last_rewrite_count,
-        }
-
     # --- retention ----------------------------------------------------------------
 
     def _prober(self, probes: dict[str, bool], counter: list[int]) -> Callable:

@@ -36,7 +36,6 @@ from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
 from . import importer
-from .api import AmberError
 from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
@@ -48,8 +47,7 @@ from .const import (
     ROLE_IMPORT_ENERGY,
     ROLES,
 )
-from .importer import HOUR, ImportDayError, nem_date, nem_day_start
-from .manager import nem_today
+from .importer import HOUR, ImportDayError, ImportRefusedError, nem_date, nem_day_start
 from .statistics import CURRENCY, Metric
 
 if TYPE_CHECKING:
@@ -73,6 +71,9 @@ KWH_DIGITS: Final = 3
 COST_TOLERANCE: Final = 0.01
 DAILY_KWH_TOLERANCE: Final = 0.01
 MAX_REPORTED_MISMATCHES: Final = 10
+V1_EMPTY_COST: Final = 0.05
+"""v1 cost and compensation moving less than this in total (AUD) over the copy period are
+treated as empty and not copied (provisional until a real v1 install confirms it)."""
 ROLE_NET: Final = "net_cost"
 ISSUE_LEGACY_CLEANUP: Final = "legacy_cleanup"
 _EPOCH: Final = datetime(2000, 1, 1, tzinfo=UTC)
@@ -662,7 +663,7 @@ class _Plan:
 
 
 def _preconditions(
-    manager: AmberManager, sources: Mapping[str, Any], targets: Mapping[str, str], resuming: bool
+    manager: AmberManager, sources: Mapping[str, Any], targets: Mapping[str, str]
 ) -> list[str]:
     store = manager.store
     problems = []
@@ -672,7 +673,7 @@ def _preconditions(
         problems.append("The integration has not imported any data yet; wait for its first run.")
     if store.pending is not None:
         problems.append(f"A write of {store.pending} was interrupted; let a run recover it first.")
-    if store.tail_rewrite is not None and not resuming:
+    if store.tail_rewrite is not None:
         problems.append("A range rewrite is in progress; let a run finish it first.")
     if any(sources.get(role) and role not in targets for role in ROLES):
         problems.append("The legacy data has grid export, but the site has no feed-in channel.")
@@ -695,7 +696,6 @@ async def _boundary(
     manager: AmberManager,
     targets: Mapping[str, str],
     record: Mapping[str, Any] | None,
-    resuming: bool,
 ) -> tuple[datetime, list[str]]:
     """Where the integration's own data begins: stored by an earlier run, else its first row."""
     if record is not None and record.get("boundary"):
@@ -705,13 +705,6 @@ async def _boundary(
     problems = []
     if boundary != nem_day_start(nem_date(boundary)):
         problems.append(f"The integration's first row ({boundary}) is not a NEM day start.")
-    retention = manager.store.retention_days
-    oldest = nem_today() - timedelta(days=retention or 0)
-    if not resuming and retention and nem_date(boundary) < oldest:
-        problems.append(
-            f"The integration's first day ({nem_date(boundary)}) is older than Amber's "
-            f"retention (oldest available {oldest}); re-basing needs to fetch it again."
-        )
     return boundary, problems
 
 
@@ -752,6 +745,17 @@ def _plan_copy(
             )
         if rows:
             plan.copy[plan.targets[role]] = rows
+    if plan.layout is V1_KIT:
+        cost_ids = [
+            plan.targets[role]
+            for role in (ROLE_IMPORT_COST, ROLE_EXPORT_COST)
+            if plan.targets.get(role) in plan.copy
+        ]
+        magnitude = math.fsum(abs(r["state"]) for sid in cost_ids for r in plan.copy[sid])
+        if cost_ids and magnitude < V1_EMPTY_COST:
+            for sid in cost_ids:
+                del plan.copy[sid]
+            plan.notes.append("v1 cost history appears empty; not copied.")
     net = _net_rows(
         plan.copy.get(plan.targets.get(ROLE_IMPORT_COST, ""), []),
         plan.copy.get(plan.targets.get(ROLE_EXPORT_COST, ""), []),
@@ -768,14 +772,13 @@ async def _async_plan(
 ) -> _Plan:
     layout = _BY_KEY.get(sources["layout"])
     targets, problems = _targets(manager)
-    resuming = record is not None and record.get("status") == STATUS_IN_PROGRESS
-    problems += _preconditions(manager, sources, targets, resuming)
+    problems += _preconditions(manager, sources, targets)
     plan = _Plan(sources, layout, targets, None, {}, None, None, [], [], problems, [])
     if problems:
         return plan
     legacy_ids = {role: sources[role] for role in ROLES if sources.get(role)}
     problems += await _unit_problems(hass, legacy_ids)
-    plan.boundary, more = await _boundary(hass, manager, targets, record, resuming)
+    plan.boundary, more = await _boundary(hass, manager, targets, record)
     problems += more
     if problems:
         return plan
@@ -1014,29 +1017,84 @@ async def _async_rebase_step(
     hass: HomeAssistant, manager: AmberManager, plan: _Plan, record: dict[str, Any]
 ) -> str | None:
     """Re-base the integration's rows onto the copied history. Returns a pause message."""
-    assert plan.boundary is not None
     steps = record["steps"]
-    if await _seam_continuous(hass, plan):
+    if "rebase_progress" not in steps and await _seam_continuous(hass, plan):
         steps["rebase"] = {"skipped": "already continuous"}
     else:
         try:
-            rebase = await manager.async_rebase(nem_date(plan.boundary))
-        except (AmberError, ImportDayError) as err:
+            steps["rebase"] = await _async_rebase_stored(hass, manager, plan, record)
+        except ImportDayError as err:
             _change(record, "rebase_paused", str(err))
             await manager.store.async_set_migration(record)
             return f"re-base paused: {err}. Run the migration again to resume."
-        if rebase["outcome"] is not None:
-            _change(record, "rebase_paused", rebase["outcome"]["reason"])
-            await manager.store.async_set_migration(record)
-            return f"re-base waiting: {rebase['outcome']['reason']}"
+        steps.pop("rebase_progress", None)
         if not await _seam_continuous(hass, plan):
             raise MigrationRefused(
                 "rebase_failed", "The sums do not continue at the seam after re-basing."
             )
-        steps["rebase"] = {"calls": rebase["calls"], "rewritten_days": rebase["rewritten_days"]}
     _change(record, "rebase", steps["rebase"])
     await manager.store.async_set_migration(record)
     return None
+
+
+async def _async_rebase_stored(
+    hass: HomeAssistant, manager: AmberManager, plan: _Plan, record: dict[str, Any]
+) -> dict[str, Any]:
+    """Rewrite the integration's own rows from the boundary on, from their stored hourly
+    amounts, so each day continues from the one before (the first from the copied carry
+    row). The same write-and-verify path as an import, day by day, with the progress
+    (next day and running sums) stored after each day. No API calls, so days older than
+    Amber's retention are re-based too."""
+    assert plan.boundary is not None
+    boundary = plan.boundary
+    specs = list(manager.ctx.specs)
+    ids = [spec.statistic_id for spec in specs]
+    rows = await _read(hass, ids, boundary - HOUR)
+    progress = record["steps"].get("rebase_progress")
+    if progress is not None:
+        sums = dict(progress["sums"])
+        start = date.fromisoformat(progress["next"])
+        count = progress["days"]
+    else:
+        sums = {
+            sid: next((r["sum"] for r in rows[sid] if r["start"] == boundary - HOUR), 0.0)
+            for sid in ids
+        }
+        start, count = nem_date(boundary), 0
+    by_day: dict[date, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for sid in ids:
+        for row in rows[sid]:
+            if row["start"] >= boundary:
+                by_day[nem_date(row["start"])][sid].append(row)
+    for day in sorted(d for d in by_day if d >= start):
+        day_specs = [spec for spec in specs if spec.statistic_id in by_day[day]]
+        amounts: dict[str, list[float]] = {}
+        for spec in day_specs:
+            day_rows = by_day[day][spec.statistic_id]
+            if len(day_rows) != importer.DAY_HOURS:
+                raise ImportRefusedError(
+                    "partial_history",
+                    f"{spec.statistic_id} does not have all 24 hours of {day}; cannot re-base.",
+                )
+            amounts[spec.statistic_id] = [float(r["state"] or 0.0) for r in day_rows]
+        written = await importer.async_write_amounts(
+            hass,
+            day,
+            day_specs,
+            amounts,
+            {spec.statistic_id: sums[spec.statistic_id] for spec in day_specs},
+            expect_latest=False,
+        )
+        for sid, day_rows in written.items():
+            sums[sid] = day_rows[-1]["sum"]
+        count += 1
+        record["steps"]["rebase_progress"] = {
+            "next": (day + timedelta(days=1)).isoformat(),
+            "sums": sums,
+            "days": count,
+        }
+        await manager.store.async_set_migration(record)
+    return {"source": "stored hourly amounts", "calls": {}, "rewritten_days": count}
 
 
 async def _async_turn_off_automations(

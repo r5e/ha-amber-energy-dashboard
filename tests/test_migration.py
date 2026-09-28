@@ -1406,15 +1406,14 @@ def _row(start: datetime, value: float) -> dict[str, Any]:
 
 
 def test_scan_series_kinds_and_rederived_sums() -> None:
-    """Spike, jump, reset and dip; cost may fall but not jump; spacing scales the cap."""
+    """Spike, jump, reset and dip in hourly rows; cost may fall but not jump."""
     t0 = datetime(2026, 5, 1, 14, tzinfo=UTC)
-    day = timedelta(days=1)
     sums = [100, 110, 99999, 120, 720, 730, 5, 15, 14, 25]
-    rows = [_row(t0 + i * day, float(v)) for i, v in enumerate(sums)]
+    rows = [_row(t0 + i * HOUR, float(v)) for i, v in enumerate(sums)]
     flags, cleaned = migration._scan_series(rows, energy=True)
     assert [(f["sum"], f["kind"]) for f in flags] == [
         (99999.0, "spike"),  # the next row is plausible again: left out, nothing shifted
-        (720.0, "jump"),  # the series continues from the new level
+        (720.0, "jump"),  # 600 kWh in one hour; the series continues from the new level
         (5.0, "reset"),  # ... and from the reset
         (14.0, "spike"),  # a one-row dip
     ]
@@ -1428,12 +1427,48 @@ def test_scan_series_kinds_and_rederived_sums() -> None:
     flags, cleaned = migration._scan_series(cost, energy=False)
     assert [(f["sum"], f["kind"]) for f in flags] == [(160.0, "spike")]
     assert [r["sum"] for r in cleaned] == [10.0, 9.5, 9.0, 9.2]
-
-    # Rows 3 days apart may hold up to 3 days' cap; the last row has no lookahead.
-    spaced = [_row(t0, 0.0), _row(t0 + 3 * day, 250.0), _row(t0 + 4 * day, 99999.0)]
-    flags, _ = migration._scan_series(spaced, energy=True)
-    assert [(f["sum"], f["kind"]) for f in flags] == [(99999.0, "spike")]
     assert migration._scan_series([], energy=True) == ([], [])
+
+
+def test_scan_energy_cap_is_per_elapsed_hour() -> None:
+    """The energy cap is 100 kWh per elapsed hour between rows (M6c): a large
+    household's 150 kWh daily lump is plausible; 150 kWh in one hour is not; the
+    99999 spike is flagged either way; the last row has no lookahead."""
+    t0 = datetime(2026, 5, 1, 14, tzinfo=UTC)
+    day = timedelta(days=1)
+    daily = [_row(t0 + i * day, v) for i, v in enumerate([1000.0, 1150.0, 1170.0])]
+    assert migration._scan_series(daily, energy=True)[0] == []
+    hourly = [_row(t0 + i * HOUR, v) for i, v in enumerate([1000.0, 1150.0, 1151.0])]
+    assert [f["step"] for f in migration._scan_series(hourly, energy=True)[0]] == [150.0]
+    spike = [*daily, _row(t0 + 3 * day, 99999.0)]
+    flags, _ = migration._scan_series(spike, energy=True)
+    assert [(f["sum"], f["kind"]) for f in flags] == [(99999.0, "spike")]
+    # Across a gap of 3 days, up to 7200 kWh is accepted.
+    gap = [_row(t0, 0.0), _row(t0 + 3 * day, 7000.0)]
+    assert migration._scan_series(gap, energy=True)[0] == []
+
+
+async def test_v1_large_household_day_is_not_flagged(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A real-shaped v1 history with a 150 kWh day before the boundary: nothing flagged,
+    and the day is copied as it is."""
+    await _entry(hass, aioclient_mock, hass_storage)
+    ids = {ROLE_IMPORT_ENERGY: V1[ROLE_IMPORT_ENERGY], ROLE_EXPORT_ENERGY: V1[ROLE_EXPORT_ENERGY]}
+    rows = _legacy_rows(
+        ids, hourly_days=[], lump_days=PRE + WINDOW, tweak={(ROLE_IMPORT_ENERGY, PRE[2]): 138.0}
+    )
+    big = rows[ROLE_IMPORT_ENERGY][2]["sum"] - rows[ROLE_IMPORT_ENERGY][1]["sum"]
+    assert big == pytest.approx(150.0)
+    await _import_legacy(hass, ids, rows)
+
+    report = await _migrate(hass)
+    assert report["flagged"]["count"] == 0
+    assert report["problems"] == [] and report["parity"]["passed"] is True
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    stored = _by_start((await _rows(hass))[E1])
+    assert stored[rows[ROLE_IMPORT_ENERGY][2]["start"]]["state"] == pytest.approx(150.0)
 
 
 async def _v1_scenario(hass, aioclient_mock, hass_storage) -> tuple[Any, dict[str, list]]:

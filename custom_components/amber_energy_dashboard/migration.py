@@ -73,7 +73,8 @@ DAILY_KWH_TOLERANCE: Final = 0.01
 MAX_REPORTED_MISMATCHES: Final = 10
 V1_EMPTY_COST: Final = 0.05
 ENERGY_ROW_CAP: Final = 100.0
-"""Implausible: more kWh than this in one legacy row (per day of row spacing)."""
+"""Implausible: more kWh than this per elapsed hour between two legacy rows (M6c), so a
+large household's daily lump is never flagged."""
 COST_ROW_CAP: Final = 100.0
 """Implausible: a cost change larger than this (in the currency) in one legacy row."""
 ENERGY_DROP_TOLERANCE: Final = 0.0005
@@ -678,7 +679,8 @@ def _scan_series(
     """Flag implausible rows of one legacy series; return (flags, cleaned rows).
 
     Each row's step is its sum minus the last good row's sum. Energy: a step above
-    ENERGY_ROW_CAP per day of row spacing (at least one day's cap), or any decrease.
+    ENERGY_ROW_CAP per elapsed hour between the two rows (at least one hour's cap), or
+    any decrease.
     Cost (which can legitimately fall, with negative prices): a step whose size is
     above COST_ROW_CAP. One row of lookahead tells the kinds apart:
     - a *spike* (the next row is plausible again from the last good row, as with the v1
@@ -697,7 +699,10 @@ def _scan_series(
     cleaned.append(dict(rows[0]))
 
     def bad(step: float, spacing: timedelta) -> str | None:
-        cap = (ENERGY_ROW_CAP if energy else COST_ROW_CAP) * max(1.0, spacing / timedelta(days=1))
+        if energy:
+            cap = ENERGY_ROW_CAP * max(1.0, spacing / timedelta(hours=1))
+        else:
+            cap = COST_ROW_CAP * max(1.0, spacing / timedelta(days=1))
         if energy and step < -ENERGY_DROP_TOLERANCE:
             return "decrease"
         if (step if energy else abs(step)) > cap:

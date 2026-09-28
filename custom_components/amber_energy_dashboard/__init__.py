@@ -65,6 +65,7 @@ from .const import (
     SERVICE_DELETE_LEGACY,
     SERVICE_IMPORT_DAY,
     SERVICE_MIGRATE,
+    SERVICE_PROBE_RETENTION,
     SERVICE_RUN_NOW,
     SERVICE_UNDO_MIGRATION,
     SUBENTRY_OWN_SENSOR,
@@ -264,8 +265,35 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
+    _register_retention_service(hass)
     _register_migration_services(hass)
     return True
+
+
+def _register_retention_service(hass: HomeAssistant) -> None:
+    """probe_retention: force a fresh discovery of the retention boundary."""
+
+    async def _probe_retention(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        try:
+            result = await entry.runtime_data.manager.async_probe_retention()
+        except AmberAuthError as err:
+            raise HomeAssistantError(
+                "Amber rejected the API key; re-authenticate the integration"
+            ) from err
+        except AmberError as err:
+            raise HomeAssistantError(
+                f"Retention probe failed ({err}); the stored boundary was kept"
+            ) from err
+        return result if call.return_response else None
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PROBE_RETENTION,
+        _probe_retention,
+        schema=RUN_NOW_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
 
 def _register_migration_services(hass: HomeAssistant) -> None:

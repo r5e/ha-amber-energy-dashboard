@@ -6,6 +6,9 @@
     "run_now": {
       "service": "mdi:play-circle-outline"
     },
+    "probe_retention": {
+      "service": "mdi:calendar-search"
+    },
     "backfill": {
       "service": "mdi:history"
     },

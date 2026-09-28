@@ -148,3 +148,124 @@ Unchanged from M6b:
 3. Run `probe_retention` once on 9102, outside the quiet windows. Expect boundary
    2026-06-29 if Amber still holds it.
 4. The HACS install test from the custom repository (M6b report section 8).
+
+---
+
+## Addendum: M6c review decisions, 9102 upgrade to rc2, and the v2.0.0-rc2 tag
+
+Date: 2026-09-28, 13:20 to 13:50 AEST. The review decisions on section 5: items 1 and 3
+accepted, item 2 changed (below).
+
+### A.1 Cost cap: 500 per elapsed hour (commit `e416022`)
+
+- **`migration.py`:** `COST_ROW_CAP` is now **500 per elapsed hour** between the row and
+  the last good row, with at least one hour's cap, the same rule shape as energy. A cost
+  step is flagged only when it is an **increase** above the cap. **A cost decrease is
+  never flagged**; before, a fall of more than 100 in one row was.
+- **Tests:**
+  - New `test_scan_cost_cap_is_per_elapsed_hour`:
+    - a real-shaped hourly series (about 0.30 an hour, then one **150.50 spike hour**,
+      8.6 kWh at 17.50/kWh): **not flagged**, and the rows are unchanged;
+    - 500.01 in one hour is flagged; 999 over two hours is not;
+    - **the 99999 spike is flagged**, in hourly rows and in daily rows (a daily cap is
+      12000);
+    - **decreases are never flagged**: negative-price hours, a long fall, a drop of 520
+      in one hour, and 30 hours of Amber-sign compensation falling.
+  - New `test_advanced_price_spike_hour_is_copied`: advanced-layout hourly history
+    before the boundary with **+150 import cost in one hour** and a **negative-price hour
+    (−40)**. 0 flagged, parity passes, the migration completes, and both hours are copied
+    with their exact states.
+  - Updated `test_scan_series_kinds_and_rederived_sums`: its cost spike is now 99999 (a
+    160 hour is now plausible).
+- **Docs:**
+  - DESIGN section 14: the cost rule, with the reason (wholesale spikes) and the
+    decrease rule;
+  - README scan bullet: the cost line;
+  - CHANGELOG rc2: the cost cap entry; the rc1 entry now states rc1's actual cost rule.
+- **Results:** `uv run pytest --cov=custom_components`: **381 passed**, 0 skipped, **100 %**
+  of 3255 statements. ruff check and format are clean.
+- **CI:** hassfest, HACS validation and Tests all **succeeded** on `e416022`, and again on
+  `a588474` (the release notes commit, which is the one tagged).
+
+### A.2 VM 9102: in-place upgrade 2.0.0-dev5 → 2.0.0-rc2 (M4 section 9 procedure)
+
+Run at 13:36 to 13:38 AEST: outside the quiet windows, and more than 10 minutes from
+9102's 13:15 attempt. The script enforced both.
+
+| Step | Evidence |
+|---|---|
+| Preconditions | `local-lvm` 91.8 % free; 1 clone (9102). Status sensor `caught_up` (not running). Repairs: none |
+| Snapshot | **`pre-rc2`** (no RAM), task `OK` in 2 s. Description: "M6c: 2.0.0-dev5 (store 1.2), before in-place upgrade to 2.0.0-rc2". **Kept**, as instructed |
+| Before | manifest `2.0.0-dev5`; **store file 1.2** with `retention_days` 91 and no `retention_boundary`; the retention record holds `boundary` 2026-06-29 ("moved back 1 day", 3 calls, by the 07:15 run); marker and last_written 2026-09-27; fixed schedule 07:15, 10:15 and 13:15. Statistics: 2184 hourly rows for each of the 5, from 2026-06-28T14:00Z to 09-27T13:00Z, e9 final sum 1352.933, no duplicates and no sum breaks |
+| Install | v2 HEAD `e416022`: 20 files over SSH, **checksums match**. Restart; `RUNNING` after 12 s (HA 2026.9.3); integration loaded; setup made 1 `/sites` call |
+| **Store migration 1.2 → 1.3** | The file on disk (`/config/.storage/amber_energy_dashboard.<entry>`) now reads **version 1.3**, with **`retention_boundary` "2026-06-29"** (taken from the record's boundary, as DESIGN section 8 says) and **`retention_days` removed**. The in-memory `retention_days` (derived) is 91, the same as before. The marker, last_written and retention record are unchanged. Repairs: none |
+| `run_now` | `caught_up`, **0 calls** (today's check was already done at 07:15; nothing new to import). The retention record is still `last_verified` 2026-09-28 |
+| After | **All 2184 pre-existing rows are identical** in all 5 statistics; 0 new rows; no problems. The schedule is unchanged (fixed 07:15, 10:15 and 13:15; next run 2026-09-29 07:15) |
+
+No rollback was needed.
+
+### A.3 `probe_retention` on 9102 (13:38 AEST)
+
+The response, verbatim:
+
+```
+{"boundary": "2026-06-29", "retention_days": 91, "method": "bisection",
+ "calls": {"sites_usage": 8}, "previous_boundary": "2026-06-29"}
+```
+
+- **As expected: boundary 2026-06-29**, the same as the stored one.
+- The probes, in order: 07-01 data, 06-30 data (today − 89 and the day before, both with
+  data, so it searched older), 05-31 empty (the 30-day bracket end), then bisection:
+  06-15, 06-22, 06-26 and 06-28 empty, and 06-29 with data. That makes 8 calls, the cap,
+  and it was bracketed.
+- The store file afterwards has `retention_boundary` 2026-06-29, method `bisection`,
+  `last_verified` 2026-09-28. All 2184 rows are still identical.
+
+### A.4 Tag and release notes
+
+- **`v2.0.0-rc2`** is an annotated tag on **`a588474`** ("Add v2.0.0-rc2 release notes"),
+  pushed. rc1 followed the same pattern, with the tag on the commit that holds its
+  release notes. `v2.0.0-rc1` is unchanged, and **`main` was not touched** (`cc179b7`).
+- **`reports/release-notes-v2.0.0-rc2.md`**, for the GitHub pre-release, covers:
+  - what's new since rc1 (`probe_retention`, far-back retention, the scan caps);
+  - upgrading from rc1 and from the dev builds;
+  - the known limitations;
+  - a link to the CHANGELOG at the tag.
+
+  The GitHub release itself was not created, since there is no `gh` or token here.
+
+### A.5 Notes for the planning chat
+
+1. **The discovery record keeps `previous_boundary: null`.** Discovery always writes
+   `previous_boundary: None` into the stored retention record, so after a
+   `probe_retention` the diagnostics do not show the earlier date (the service response
+   does). No warning is logged if a probe moves the boundary. This is cosmetic. A
+   possible fix is to pass the previous boundary into the record. **It is not changed
+   before the tag.**
+2. **9102's 07:15 run** moved the boundary back 1 day, to 2026-06-29 (91 days). The
+   later probe confirmed it.
+
+### A.6 Live Amber API calls
+
+**9 in this addendum**, all at 13:37 to 13:38 AEST (logged, count only):
+- 1 `/sites` at setup after the restart;
+- 0 in `run_now`;
+- 8 in `probe_retention`.
+
+The M6c total is 9.
+
+### A.7 Lab state left behind
+
+- **VM 9102** is running **`2.0.0-rc2`** (tree `e416022`, the same as the tag's), in store
+  layout 1.3. **Snapshot `pre-rc2` is kept** until you sign off; the M5 snapshot `pre-m5`
+  was already deleted. No scratch files were left on it.
+- VM 101 was not accessed. No other clones exist.
+- Repository: `v2` and the tag `v2.0.0-rc2` are pushed.
+
+### A.8 Recommended next steps
+
+1. Watch 9102's 2026-09-29 07:15 run: expect retention `verified` with 2 probes, 1 new
+   day, and continuous sums. Then delete `pre-rc2`.
+2. Create the GitHub pre-release from the tag, with the release notes.
+3. The HACS install test from the custom repository (M6b report section 8).
+4. Decide on note A.5.1.

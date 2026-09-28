@@ -239,7 +239,14 @@ derived from it (today − boundary) and is a display value only. The M5 lab sho
 boundary that stayed on the same date while the day count grew, which a stored day
 count reported as a daily "move".
 - **At setup**, discover it by bisection with single-day usage requests: at most 8
-  calls. If discovery cannot finish (budget, errors), fall back to today − 89 days.
+  calls, around today − 89 with a 30-day bracket. If the data goes back further than
+  the bracket, the **oldest day seen with data** (the bracket end) is stored, "not
+  bracketed older", and the daily check moves it back from there (M6c). If discovery
+  cannot finish (budget, errors, the call cap) or nothing newer has data, fall back to
+  today − 89 days.
+- **`probe_retention` service** (M6c): forces a fresh discovery under the run lock.
+  If it fails (an API error, the budget, the call cap), the stored boundary is kept
+  and the error is reported; an auth failure also starts reauthentication.
 - **Daily**, re-verify with exactly 2 calls: the boundary date (expected to have data)
   and the day before (expected empty). If both hold, the result is **"verified"**,
   whatever the day count, so a boundary that stays fixed costs no more than 2 calls a
@@ -248,11 +255,18 @@ count reported as a daily "move".
 - **When the daily check detects a move (M4):** if the move is one day, step one day
   (confirmed with one more probe). If it moved further, bisect within a **15-day
   bracket** beyond the step probe, so the whole check stays within 8 calls (2 checks +
-  1 step + 1 bracket + 4 bisection). A forward move beyond the bracket (for example a
-  rolling boundary after a long outage) also tries today − the day count seen at the
-  last verification, with 2 probes (at most 6 calls in all) (M6b). A move that is still
-  not found is *unresolved*: the old date is kept, and full discovery (30-day bracket,
-  8 calls) runs on the next day (accepted in M4).
+  1 step + 1 bracket + 4 bisection).
+  - **A backward move beyond the bracket** accepts the bracket end (boundary − 17
+    days, which is known to have data) as the new boundary, reported as "moved back at
+    least N days" (4 calls). The next day continues from there, so a far-back boundary
+    converges by 17 days a day, within the call cap, and is then verified with 2 probes
+    (M6c; replaces the M4 "unresolved → discovery" for this direction, which never
+    converged on a fixed, far-back boundary).
+  - **A forward move beyond the bracket** (for example a rolling boundary after a long
+    outage) also tries today − the day count seen at the last verification, with 2
+    probes (at most 6 calls in all) (M6b). If that does not fit either, the move is
+    *unresolved*: the old date is kept, and full discovery (30-day bracket, 8 calls)
+    runs on the next day (accepted in M4).
 - **Store migration (1.2 → 1.3):** the boundary date recorded with the last
   measurement is kept; without one, the day count is taken back from its measurement
   day (or today), and the count is dropped.
@@ -413,9 +427,10 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 
 **Services:**
 - `backfill(start_date, end_date)`
-- `rebuild_from_anchor(anchor_date, anchors)`: port of the YAML `amber_window_rebuild`,
-  keeping its strict-stop semantics.
-- `probe_retention()`
+- `run_now()` and `import_day(date)`
+- `probe_retention()`: a fresh retention discovery (section 8)
+- `rebuild_from_anchor` was dropped at the M6b review: `backfill` with the guarded tail
+  rewrite (section 8) covers the YAML `amber_window_rebuild` use.
 - `migrate_v1(dry_run, confirm_backup, exclude_flagged, …)`, `undo_migration()` and
   `delete_legacy_statistics(confirm)` (Milestone 6a, section 14)
 
@@ -511,8 +526,9 @@ other households, so the v1 path is a first-class, safety-critical path.
     case), nothing is copied and the note says "no cost history copied".
 - **Implausible legacy rows (M6b).** Before anything is copied, every legacy series of
   the chosen sources is scanned. A row's step is its sum minus the last good row's sum.
-  - Energy: a step above **100 kWh** per row (times the days between the rows when they
-    are more than a day apart), or any decrease (more than 0.0005 kWh), is flagged.
+  - Energy: a step above **100 kWh per elapsed hour** between the row and the last good
+    row (at least one hour's cap; M6c, so a large household's daily lump of, say,
+    150 kWh is never flagged), or any decrease (more than 0.0005 kWh), is flagged.
   - Cost (which can fall legitimately, with negative prices): a step whose size is above
     **100** (currency) is flagged.
   - One row of lookahead names the kind. A *spike* is a single bad row after which the

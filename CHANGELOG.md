@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0-rc2] - 2026-09-28
+
+### Added
+
+- `amber_energy_dashboard.probe_retention` action: finds Amber's retention boundary again
+  from scratch (at most 8 API calls). If it fails, the stored boundary is kept.
+
+### Changed
+
+- **Retention with a boundary far in the past.**
+  - Discovery that cannot bracket the boundary within 30 days now stores the oldest day it
+    saw with data, instead of today − 89.
+  - A backward move beyond the daily check's bracket is accepted up to the bracket end
+    ("moved back at least N days"), and the next days continue from there.
+  - A fixed boundary far back now converges within the call cap, and then costs 2 calls a
+    day. Before, it alternated between a failed check and a fresh discovery every day,
+    for about 3 to 4 extra calls a day.
+- **Migration scan:** the energy cap is now 100 kWh per elapsed **hour** between rows
+  (it was per row, scaled by days). A large household's daily lump, such as 150 kWh, is
+  never flagged. The `99999` test spike still is.
+
+### Removed
+
+- `rebuild_from_anchor` from the design. It was never implemented; `backfill` with the
+  guarded tail rewrite covers it.
+
 ## [2.0.0-rc1] - 2026-09-28
 
 The first release candidate of version 2: a rewrite of the v1 YAML kit as a Home
@@ -92,7 +118,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
   - The day count is now derived, for display.
   - The store upgrades itself (1.2 to 1.3).
 - **The migration scans the legacy statistics for implausible rows** before copying:
-  - a single hour or day above 100 kWh;
+  - an energy step above 100 kWh per row, scaled by the days between rows (per elapsed hour from rc2);
   - decreasing energy totals;
   - resets;
   - a cost step above 100.
@@ -111,4 +137,5 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.0.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/compare/v2.0.0-rc1...v2
 [2.0.0-rc1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0-rc1

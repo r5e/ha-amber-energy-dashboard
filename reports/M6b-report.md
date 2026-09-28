@@ -417,8 +417,12 @@ fetch at 08:08). **The day's total on the usage counter is 127.**
   - The kit's cache and the backfill output, which held real daily usage, were deleted.
 - **Repository:** `v2`, pushed; tag `v2.0.0-rc1` pushed. `main` was not touched, and no
   `v1-final` or `v2.0.0` was created.
-- **CI** for the tagged commit: see the final lines appended at the end of this section
-  when the run completes.
+- **CI for the tagged commit `3666bb7`** (runs for both the `v2` push and the tag push):
+  - Validate with hassfest: success (the tag run finished 01:06:00Z);
+  - HACS validation: success (01:06:21Z), with the brands check on;
+  - Tests: success (01:10:24Z).
+
+  This addendum is committed after the tag, so the tag stays on `3666bb7`.
 
 ## 8. Recommended next steps
 

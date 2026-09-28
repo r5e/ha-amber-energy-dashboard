@@ -24,6 +24,7 @@ CHANNEL_FEED_IN: Final = "feedIn"
 SUPPORTED_CHANNEL_TYPES: Final = (CHANNEL_GENERAL, CHANNEL_CONTROLLED_LOAD, CHANNEL_FEED_IN)
 
 SERVICE_RUN_NOW: Final = "run_now"
+SERVICE_PROBE_RETENTION: Final = "probe_retention"
 
 # Schedule options (config entry options)
 CONF_SCHEDULE_MODE: Final = "schedule_mode"

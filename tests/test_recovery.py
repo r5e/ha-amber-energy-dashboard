@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
@@ -296,6 +297,80 @@ async def test_fixed_boundary_real_move(
     result = await _run(hass)
     assert result["retention"]["method"] == "verified"
     assert result["retention"]["calls"] == 2
+
+
+# --- probe_retention service ---------------------------------------------------------------
+
+
+async def _probe(hass: HomeAssistant) -> dict:
+    return await hass.services.async_call(
+        DOMAIN, "probe_retention", {}, blocking=True, return_response=True
+    )
+
+
+async def test_probe_retention_forces_fresh_discovery(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """probe_retention discovers the boundary from scratch, whatever is stored."""
+    _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
+    fake = FakeAmber(TODAY - timedelta(days=89), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+
+    result = await _probe(hass)
+
+    assert result == {
+        "boundary": (TODAY - timedelta(days=89)).isoformat(),
+        "retention_days": 89,
+        "method": "bisection",
+        "calls": {"sites_usage": 2},
+        "previous_boundary": (TODAY - timedelta(days=20)).isoformat(),
+    }
+    assert [c for c in fake.calls if c[0] == c[1]] == [
+        (TODAY - timedelta(days=89),) * 2,
+        (TODAY - timedelta(days=90),) * 2,
+    ]
+    assert store.retention_boundary == TODAY - timedelta(days=89)
+    assert store.retention["last_verified"] == TODAY.isoformat()
+    # The next run does not probe again today.
+    assert "retention" not in await _run(hass)
+
+
+@pytest.mark.parametrize("failure", ["server", "auth", "budget", "cap"])
+async def test_probe_retention_failure_keeps_stored_boundary(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    failure: str,
+) -> None:
+    """A failed probe keeps the stored boundary and reports the error."""
+    _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
+    fake = FakeAmber(TODAY - timedelta(days=100), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+    before = dict(store.retention)
+    match = "the stored boundary was kept"
+    usage_url = f"https://api.amber.com.au/v1/sites/{SITE_ID}/usage"
+    if failure == "server":
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(usage_url, status=503)
+    elif failure == "auth":
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(usage_url, status=403)
+        match = "re-authenticate"
+    elif failure == "budget":
+        fake.remaining = 15  # the first response reports 14 (< reserve): next call refused
+    with (
+        patch.object(manager_mod, "RETENTION_DISCOVERY_MAX_CALLS", 3 if failure == "cap" else 8),
+        pytest.raises(HomeAssistantError, match=match),
+    ):
+        await _probe(hass)
+
+    assert store.retention_boundary == TODAY - timedelta(days=20)
+    assert store.retention == before
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert bool([f for f in flows if f["context"]["source"] == "reauth"]) == (failure == "auth")
 
 
 # --- long outage --------------------------------------------------------------------------

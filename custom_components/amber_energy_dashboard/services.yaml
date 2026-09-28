@@ -17,6 +17,13 @@ run_now:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+probe_retention:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard
 backfill:
   fields:
     start_date:

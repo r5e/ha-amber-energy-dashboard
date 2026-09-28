@@ -253,6 +253,16 @@
         }
       }
     },
+    "probe_retention": {
+      "name": "Probe retention",
+      "description": "Discover Amber's usage retention boundary again from scratch (at most 8 API calls), instead of waiting for the daily check. The stored boundary is kept if the probe fails.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    },
     "backfill": {
       "name": "Backfill",
       "description": "Import a range of NEM days on demand (Recovery-only mode, or to fill history before the first imported day). Days older than Amber's retention are skipped; a range before existing data rewrites the later sums.",

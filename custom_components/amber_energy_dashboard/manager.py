@@ -1449,6 +1449,49 @@ class AmberManager:
         await state.async_set_rewrite(None)
         return count
 
+    # --- probe_retention service ---------------------------------------------------
+
+    async def async_probe_retention(self) -> dict[str, Any]:
+        """Force a fresh discovery of the retention boundary (at most 8 calls).
+
+        If discovery fails (an API error, the rate-limit budget, or the call cap), the
+        stored boundary is kept and an error is raised; an auth failure also starts
+        reauthentication.
+        """
+        async with self.ctx.lock:
+            previous_boundary = self.store.retention_boundary
+            previous_info = self.store.retention
+            budget = self.ctx.client.start_run(RunBudget())
+            try:
+                await self._async_discover_retention()
+            except AmberAuthError:
+                self.entry.async_start_reauth(self.hass)
+                await self._restore_retention(previous_boundary, previous_info)
+                raise
+            except AmberError:
+                await self._restore_retention(previous_boundary, previous_info)
+                raise
+            finally:
+                self.ctx.client.end_run()
+            info = self.store.retention or {}
+            method = info.get("method", "")
+            if method.startswith("fallback (") and method != "fallback (not bracketed)":
+                await self._restore_retention(previous_boundary, previous_info)
+                raise AmberError(f"retention probe failed: {info['method']}")
+            boundary = self.store.retention_boundary
+            assert boundary is not None
+            return {
+                "boundary": boundary.isoformat(),
+                "retention_days": self.store.retention_days,
+                "method": info.get("method"),
+                "calls": dict(budget.calls),
+                "previous_boundary": previous_boundary.isoformat() if previous_boundary else None,
+            }
+
+    async def _restore_retention(self, boundary: date | None, info: dict | None) -> None:
+        if boundary is not None:
+            await self.store.async_set_retention(boundary, info or {})
+
     # --- import_day service -------------------------------------------------------
 
     async def async_import_day(self, day: date) -> dict[str, Any]:

@@ -913,7 +913,9 @@ class AmberManager:
         has_data = self._prober(probes, counter)
         method = "bisection"
         try:
-            boundary = await self._search_boundary(today, has_data)
+            boundary, bracketed = await self._search_boundary(today, has_data)
+            if boundary is not None and not bracketed:
+                method = "oldest day seen with data (not bracketed older)"
         except (_DiscoveryIncomplete, AmberError) as err:
             boundary = None
             method = f"fallback ({type(err).__name__})"
@@ -934,11 +936,12 @@ class AmberManager:
         Two probes: the boundary day has data and the day before does not. Then the
         boundary is "verified", whatever the day count, so a boundary that stays fixed
         costs nothing more. Only when the probes disagree does it step (a one-day move,
-        confirmed with one more probe) or bisect within a 15-day bracket. A forward move
-        beyond the bracket (a long outage with a rolling boundary) also tries the day
-        count seen at the last verification, today - that count, with 2 probes. The whole
-        check stays within 8 calls. If it cannot be resolved, the old date is kept and
-        full discovery runs on the next day.
+        confirmed with one more probe) or bisect within a 15-day bracket. A backward move
+        beyond the bracket accepts the bracket end (it has data) and continues from there
+        the next day. A forward move beyond the bracket (a long outage with a rolling
+        boundary) also tries the day count seen at the last verification, today - that
+        count, with 2 probes. The whole check stays within 8 calls. If a forward move
+        cannot be resolved, the old date is kept and full discovery runs the next day.
         """
         today = nem_today()
         boundary = self.store.retention_boundary
@@ -976,7 +979,10 @@ class AmberManager:
                 new = await self._bisect(boundary - 2 * one - bracket, boundary - 2 * one, has_data)
                 method = f"moved back {(boundary - new).days} days (bisected)"
             else:
-                method = "unresolved (moved back beyond the bracket)"
+                # The bracket end has data: accept it; the next days continue from there
+                # until the boundary is bracketed (M6c).
+                new = boundary - 2 * one - bracket
+                method = f"moved back at least {(boundary - new).days} days"
         except (_DiscoveryIncomplete, AmberError) as err:
             method = f"unresolved ({type(err).__name__})"
             if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
@@ -1011,25 +1017,31 @@ class AmberManager:
             return candidate
         return None
 
-    async def _search_boundary(self, today: date, has_data: Callable) -> date | None:
-        """Probe around the expected boundary, then bisect. None if it cannot bracket it."""
+    async def _search_boundary(self, today: date, has_data: Callable) -> tuple[date | None, bool]:
+        """Probe around the expected boundary, then bisect.
+
+        Returns (boundary, bracketed). If the data goes back further than the 30-day
+        bracket, the oldest day seen with data is returned unbracketed; the daily check
+        then moves it back until it is found (M6c). None if nothing newer has data.
+        """
         guess = today - timedelta(days=RETENTION_FALLBACK_DAYS)
         if self.active_from is not None and self.active_from > guess:
             # A site younger than the usual window: its data starts at activeFrom.
-            return self.active_from if await has_data(self.active_from) else None
+            return (self.active_from if await has_data(self.active_from) else None), True
         if await has_data(guess):
             return await self._search_older(guess, has_data)
-        return await self._search_newer(guess, has_data)
+        return await self._search_newer(guess, has_data), True
 
-    async def _search_older(self, guess: date, has_data: Callable) -> date | None:
-        """``guess`` has data: the boundary is ``guess`` or up to 30 days before it."""
+    async def _search_older(self, guess: date, has_data: Callable) -> tuple[date, bool]:
+        """``guess`` has data: the boundary is ``guess`` or up to 30 days before it, or
+        older still (then the bracket end, the oldest day seen with data, unbracketed)."""
         before = guess - timedelta(days=1)
         if not await has_data(before):
-            return guess
+            return guess, True
         lo = before - timedelta(days=RETENTION_BRACKET_DAYS)
         if await has_data(lo):
-            return None
-        return await self._bisect(lo, before, has_data)
+            return lo, False
+        return await self._bisect(lo, before, has_data), True
 
     async def _search_newer(self, guess: date, has_data: Callable) -> date | None:
         """``guess`` is empty: the boundary is up to 30 days after it."""

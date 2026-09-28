@@ -581,9 +581,13 @@ async def test_pricing_mode_writes_no_usage_but_prices_and_own_cost(
     assert result["imported_days"] == []
     assert await _rows(hass) == usage_before  # untouched, still there
     assert result["chains"]["own:sub_house"]["written"] == [TODAY.isoformat()]
-    # The series starts at the retention boundary date (TODAY - 2, which stays fixed).
-    assert result["chains"]["price"]["written"][0] == (TODAY - timedelta(days=2)).isoformat()
-    assert len(result["chains"]["price"]["written"]) == 3
+    # The series starts at the retention boundary. The preset TODAY - 2 had data before
+    # it (the fake starts 30 days back), so the day's check moved it back to the bracket
+    # end, TODAY - 19 ("moved back at least 17 days").
+    assert result["retention"]["method"] == "moved back at least 17 days"
+    written = result["chains"]["price"]["written"]
+    assert written[0] == (TODAY - timedelta(days=19)).isoformat()
+    assert written[-1] == TODAY.isoformat() and len(written) == 20
     meta = await hass.async_add_executor_job(get_metadata, hass)
     assert set(ALL_IDS) <= set(meta)
     # Back to Full: the usage chain resumes from its marker.

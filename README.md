@@ -102,6 +102,8 @@ approximate figures this integration exists to replace.
 
 **Services:**
 - `amber_energy_dashboard.run_now`: run the import now;
+- `probe_retention`: find Amber's retention boundary again from scratch (at most 8 API
+  calls). Normally not needed, because the daily check follows the boundary;
 - `import_day`: import one day;
 - `backfill`: import a date range; see Recovery-only below;
 - `migrate_v1`, `undo_migration` and `delete_legacy_statistics`: see the migration guide.
@@ -120,8 +122,8 @@ approximate figures this integration exists to replace.
   per API call and stays well inside Amber's rate limit (50 calls per 5 minutes, shared
   with your other Amber tools).
 - **Retention:** Amber keeps roughly three months of usage history. The integration finds
-  the earliest available date at setup, then checks it daily with 2 API calls. Days older
-  than that can no longer be fetched, and are skipped.
+  the earliest available date at setup, then checks it daily with 2 API calls. If the date
+  moves, it follows it. Days older than that can no longer be fetched, and are skipped.
 - **Revisions:** days that contain Amber *estimated* data are re-checked daily for 14 days
   (configurable). If Amber revises them, the history from that day on is rewritten, so
   every later total stays correct.
@@ -227,7 +229,7 @@ dry run unless you set `dry_run: false`. The dry run changes nothing. It shows:
   0.01 kWh a day; its cost was approximate, so cost differences are only reported. If
   they do not match, the migration will not run.
 - **Implausible rows** in the old statistics:
-  - a single hour or day above 100 kWh;
+  - more energy between two rows than 100 kWh per hour between them;
   - an energy total that goes down;
   - a sudden reset.
 

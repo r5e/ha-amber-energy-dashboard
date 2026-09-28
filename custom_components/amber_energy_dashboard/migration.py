@@ -903,7 +903,14 @@ async def _async_plan(
     plan.parity = _parity(legacy_daily, new_daily, rules, sign, spans)
     _plan_copy(plan, legacy, legacy_ids)
     if rules == RULES_DAILY:
-        plan.notes.append("The copied history is approximate: daily totals, approximate cost.")
+        cost_copied = any(
+            plan.targets.get(role) in plan.copy
+            for role in (ROLE_IMPORT_COST, ROLE_EXPORT_COST, ROLE_NET)
+        )
+        plan.notes.append(
+            "The copied history is approximate: daily totals"
+            + (", approximate cost." if cost_copied else " (no cost history copied).")
+        )
     plan.energy = await _energy_plan(hass, sources, targets)
     plan.automations = _find_automations(hass, layout, sources)
     plan.cleanup = list(layout.cleanup if layout else _MANUAL_CLEANUP) + list(_COMMON_CLEANUP)

@@ -494,13 +494,21 @@ other households, so the v1 path is a first-class, safety-critical path.
   copied as is. For a manual pick, the sign is taken from the overlap window (the sign
   that matches the new compensation), and shown in the dry run.
 - `net_cost` for the copied period is rebuilt as import cost minus compensation.
-- v1 history is copied as is and recorded as **approximate** (daily lumps; approximate
-  cost). **v1 cost** (provisional until a real v1 install in M6b confirms it): the kit's
-  cost and compensation come from the Energy dashboard's own cost sensors driven by a
-  sensor frozen at 0, so they are expected to be empty. If the v1 cost and compensation
-  rows to copy move less than 0.05 AUD in total (the sum of the hourly changes over the copy
-  period), the dry run reports "v1 cost history appears empty; not copied" and they are not
-  copied (nor net cost); otherwise they are copied as is.
+- v1 history is copied as is and recorded as **approximate** (daily lumps).
+- **v1 cost (confirmed in M6b on a real v1 install, VM 9105).**
+  - The kit's cost and compensation are the Energy dashboard's own "current price"
+    sensors (`sensor.amber_energy_import_cost`, `sensor.amber_energy_export_compensation`,
+    state class `total`), driven by a sensor frozen at 0.
+  - When the preferences are saved they read 0.0. After the next HA restart they are
+    `unknown` and stay so, because their source never changes state. Home Assistant
+    therefore compiles statistics only between the save and the next restart: on 9105, one
+    hourly row each, with sum 0.0.
+  - A real v1 install thus has **no cost history**, at most a few zero rows.
+  - The rule stays as it was: if the v1 cost and compensation rows to copy move less than
+    0.05 AUD in total (the sum of the changes over the copy period), the dry run reports
+    "v1 cost history appears empty; not copied", and they are not copied (nor net cost);
+    otherwise they are copied as is. When no cost rows lie before the boundary (the usual
+    case), nothing is copied and the note says "no cost history copied".
 - **Implausible legacy rows (M6b).** Before anything is copied, every legacy series of
   the chosen sources is scanned. A row's step is its sum minus the last good row's sum.
   - Energy: a step above **100 kWh** per row (times the days between the rows when they

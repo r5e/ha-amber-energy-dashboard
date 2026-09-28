@@ -513,7 +513,7 @@ async def test_v1_kit_daily_lumps(
     assert report["parity"]["rules"] == "daily"
     assert report["parity"]["mismatch_count"] == 0
     assert set(report["parity"]["cost_totals"]) == {"import cost", "export cost"}
-    assert "approximate" in " ".join(report["notes"])
+    assert "The copied history is approximate: daily totals, approximate cost." in report["notes"]
     assert report["energy"]["after"][0]["entity_energy_price"] is None
     assert report["energy"]["after"][0]["stat_cost"] == E1_COST
     assert report["automations"][0]["entity_id"] == V1_AUTOMATION
@@ -1387,6 +1387,10 @@ async def test_v1_empty_cost_history_is_not_copied(
     report = await _migrate(hass)
 
     assert "v1 cost history appears empty; not copied." in report["notes"]
+    assert (
+        "The copied history is approximate: daily totals (no cost history copied)."
+        in (report["notes"])
+    )
     assert set(report["copy"]) == {E1, B1}
     report = await _migrate(hass, dry_run=False, confirm_backup=True)
     assert report["migration_status"] == "completed"

@@ -269,3 +269,32 @@ The M6c total is 9.
 2. Create the GitHub pre-release from the tag, with the release notes.
 3. The HACS install test from the custom repository (M6b report section 8).
 4. Decide on note A.5.1.
+
+---
+
+## Addendum 2: VM 9102's first scheduled run on rc2 (2026-09-29 07:15)
+
+Checked at 07:49 AEST, read-only: diagnostics, the store file, the recorder statistics and
+Repairs. No Amber calls were made for the check.
+
+| Check | Expected | Observed |
+|---|---|---|
+| Run | the scheduled 07:15 run | `trigger` scheduled, started 07:15:00, finished 07:15:02, status **`caught_up`** |
+| Retention | `verified`, exactly 2 probes | **`verified`, 2 calls**: 2026-06-29 has data, 06-28 is empty. The boundary is 2026-06-29 (92 days, derived); `previous_boundary` 2026-06-29 |
+| New day | 2026-09-28, 1 day | **`imported_days` ["2026-09-28"]**; marker and last_written 2026-09-28 |
+| Calls | 2 probes + 1 window | **`sites_usage` 3**; `RateLimit-Remaining` 42. `requests_since_start` is 12: 1 setup, 8 probe, 3 this run |
+| Revisions | nothing to check | checked `[]`, changed `[]`, 0 rewritten |
+| Statistics | continuous, no gaps or duplicates | **2208** hourly rows for each of the 5 (2184 + **24**), 2026-06-28T14:00Z to 09-28T13:00Z. **0 hour gaps, 0 duplicates, 0 sum breaks.** All 2184 earlier rows are identical to the pre-upgrade read |
+| Seam and day totals | sums continue from 09-27 | e9 energy 1352.933 + 0.371 = 1353.304, day **20.826 kWh**, final 1373.759. e9 cost day 4.749026, final 369.608181. b9 energy day 3.471, final 982.531. b9 compensation day 0.192706, final 23.685528. Net cost day 4.556320 (= 4.749026 − 0.192706), final 345.922653 |
+| Repairs | none | **none**; status sensor `caught_up` |
+| Store file | 1.3 | 1.3, `retention_boundary` 2026-06-29, no `retention_days` |
+| Schedule | unchanged | fixed 07:15, 10:15 and 13:15; next run 10:15 |
+
+**All checks passed, so snapshot `pre-rc2` was deleted** (task `OK` at 07:49). VM 9102's
+only snapshot entry is now `current`.
+
+**Live Amber calls:** 0 by me. The integration's own scheduled run made 3.
+
+**Lab state:**
+- VM 9102 is running `2.0.0-rc2`, with no snapshots.
+- VM 101 was not accessed. No other clones exist.

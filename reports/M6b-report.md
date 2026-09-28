@@ -109,7 +109,7 @@ Commits (since `bb7966b`):
 
 ### Item 4: release polish
 
-- **README.md:** a full rewrite for users (details in section 5 below).
+- **README.md:** a full rewrite for users: purpose, requirements, HACS custom-repository install, setup, how importing works, usage modes, own-sensor cost with the Energy dashboard CT-clamp setup, price series, the migration guide (backups, dry run, implausible rows, undo, what is and is not removed, the compensation sign fix), troubleshooting and diagnostics, credits and prior art with links.
 - **CHANGELOG.md:** Keep a Changelog format; `2.0.0-rc1` with the changes since `dev7`.
 - **Brand icon.** `custom_components/amber_energy_dashboard/brand/icon.png` (256 px) and
   `icon@2x.png` (512 px): an original, generic design of hourly bars and a lightning

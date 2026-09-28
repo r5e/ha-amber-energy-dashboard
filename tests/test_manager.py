@@ -236,7 +236,7 @@ async def _discover(hass, aioclient_mock, fake, site=None) -> tuple[int, dict]:
         (110, 110, 8),
         (75, 75, 8),  # newer than expected
         (60, 60, 8),
-        (130, 89, 3),  # cannot bracket within 30 days: fallback 89
+        (130, 120, 3),  # older than the 30-day bracket: the oldest day seen with data
         (40, 89, 3),  # too new to bracket (no activeFrom): fallback 89
     ],
 )
@@ -256,9 +256,14 @@ async def test_retention_bisection(
     assert len(fake.calls) <= max_calls <= 8
     assert all(start == end for start, end in fake.calls)  # single-day requests only
     assert info["calls"] == len(fake.calls)
-    assert info["method"].startswith(
-        "fallback" if expected_days == 89 and boundary_days_ago != 89 else "bisection"
+    expected_method = (
+        "oldest day seen with data"
+        if boundary_days_ago > expected_days + 1
+        else "fallback"
+        if expected_days == 89 and boundary_days_ago != 89
+        else "bisection"
     )
+    assert info["method"].startswith(expected_method)
     assert info["boundary"] == (TODAY - timedelta(days=expected_days)).isoformat()
 
 

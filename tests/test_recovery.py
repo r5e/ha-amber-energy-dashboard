@@ -125,27 +125,79 @@ async def test_retention_reverify_call_cap(
     assert len(fake.calls) == result["calls"]
 
 
-async def test_retention_move_beyond_bracket_triggers_discovery(
+async def test_retention_move_back_beyond_bracket_converges(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """A move too large for the 8-call check keeps the old value; full discovery follows."""
+    """A backward move too large for the bracket accepts the bracket end (it has data) and
+    continues from there each day, until the boundary is found; no full discovery (M6c)."""
     _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
-    fake = FakeAmber(TODAY - timedelta(days=89), YESTERDAY)
+    true = TODAY - timedelta(days=89)
+    fake = FakeAmber(true, YESTERDAY)
     entry = await _setup_entry(hass, aioclient_mock, fake)
     mgr = entry.runtime_data.manager
 
     mgr.ctx.client.start_run(manager_mod.RunBudget())
     result = await mgr._async_verify_retention()
-    assert result["method"].startswith("unresolved")
-    assert mgr.store.retention_days == 20
-    assert mgr.store.retention["needs_discovery"] is True
+    assert result["method"] == "moved back at least 17 days"
+    assert result["calls"] == 4
+    assert mgr.store.retention_boundary == TODAY - timedelta(days=37)
+    assert mgr.store.retention["needs_discovery"] is False
 
-    clock.now += timedelta(days=1)
-    fake.latest = TODAY
-    summary = await _run(hass)
-    assert summary["retention"] == "discovered"
-    # The data still starts on the same day, which is now 90 days back.
-    assert mgr.store.retention_days == 90
+    methods = []
+    for _ in range(5):
+        clock.now += timedelta(days=1)
+        fake.latest += timedelta(days=1)
+        summary = await _run(hass)
+        assert summary["retention"] != "discovered"
+        assert summary["retention"]["calls"] <= 8
+        methods.append(summary["retention"]["method"])
+    assert methods == [
+        "moved back at least 17 days",  # 37 -> 54
+        "moved back at least 17 days",  # 54 -> 71
+        "moved back at least 17 days",  # 71 -> 88
+        "moved back 1 day",  # 88 -> 89, bracketed
+        "verified",
+    ]
+    assert mgr.store.retention_boundary == true
+
+
+async def test_fresh_setup_fixed_boundary_far_back_converges(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A fixed boundary 250 days back on a fresh setup: discovery stores the oldest day it
+    saw with data; the daily check moves back within the call cap until it finds the
+    boundary; from then on it costs exactly 2 probes a day."""
+    true = TODAY - timedelta(days=250)
+    fake = FakeAmber(true, YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    mgr = entry.runtime_data.manager
+    first = await _run(hass)
+    assert first["retention"] == "discovered"
+    assert mgr.store.retention["method"] == "oldest day seen with data (not bracketed older)"
+    assert mgr.store.retention["calls"] == 3
+    assert mgr.store.retention_boundary == TODAY - timedelta(days=120)
+
+    days = 0
+    while mgr.store.retention_boundary != true:
+        days += 1
+        assert days <= 10, "did not converge"
+        clock.now += timedelta(days=1)
+        fake.latest += timedelta(days=1)
+        summary = await _run(hass)
+        assert summary["retention"]["calls"] <= 8
+        assert summary["status"] == "caught_up"
+    assert days == 8  # 120 -> 137 -> ... -> 239 (7 steps of 17), then bisected to 250
+    assert summary["retention"]["method"] == "moved back 11 days (bisected)"
+
+    for _ in range(5):
+        clock.now += timedelta(days=1)
+        fake.latest += timedelta(days=1)
+        before = len(fake.calls)
+        summary = await _run(hass)
+        assert summary["retention"]["method"] == "verified"
+        assert summary["retention"]["calls"] == 2
+        assert len(fake.calls) - before == 3  # 2 probes + the new day, nothing more
+    assert mgr.store.retention_boundary == true
 
 
 async def test_retention_checked_once_per_day(

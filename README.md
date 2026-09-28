@@ -230,6 +230,9 @@ dry run unless you set `dry_run: false`. The dry run changes nothing. It shows:
   they do not match, the migration will not run.
 - **Implausible rows** in the old statistics:
   - more energy between two rows than 100 kWh per hour between them;
+  - more cost between two rows than 500 per hour between them (a real price spike hour
+    stays well below this, and a cost that goes down is never flagged, since negative
+    prices can do that);
   - an energy total that goes down;
   - a sudden reset.
 

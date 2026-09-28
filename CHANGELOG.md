@@ -24,6 +24,10 @@ All notable changes to this project are recorded here. The format follows
 - **Migration scan:** the energy cap is now 100 kWh per elapsed **hour** between rows
   (it was per row, scaled by days). A large household's daily lump, such as 150 kWh, is
   never flagged. The `99999` test spike still is.
+- **Migration scan:** the cost cap is now 500 per elapsed **hour** between rows (it was 100
+  per row, scaled by days), so a real wholesale price spike hour (around 17.50/kWh at the
+  market cap) is never flagged. A cost decrease is never flagged (before, a fall of more
+  than 100 in a row was), since negative prices make the cost fall legitimately.
 
 ### Removed
 
@@ -121,7 +125,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
   - an energy step above 100 kWh per row, scaled by the days between rows (per elapsed hour from rc2);
   - decreasing energy totals;
   - resets;
-  - a cost step above 100.
+  - a cost change larger than 100 in one row (from rc2: an increase above 500 per elapsed hour).
 
   The dry run lists them, and a real run refuses by default. The `exclude_flagged` option
   leaves them out and re-derives the totals around them.

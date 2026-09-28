@@ -529,8 +529,11 @@ other households, so the v1 path is a first-class, safety-critical path.
   - Energy: a step above **100 kWh per elapsed hour** between the row and the last good
     row (at least one hour's cap; M6c, so a large household's daily lump of, say,
     150 kWh is never flagged), or any decrease (more than 0.0005 kWh), is flagged.
-  - Cost (which can fall legitimately, with negative prices): a step whose size is above
-    **100** (currency) is flagged.
+  - Cost: a step above **500 (currency) per elapsed hour** between the row and the last
+    good row (at least one hour's cap) is flagged (M6c review). An Amber wholesale price
+    spike (about 17.50/kWh at the market cap) can legitimately make one hour cost over
+    100, and flagging it would drop a real, expensive hour. A cost **decrease is never
+    flagged**, since negative prices make the cost fall legitimately.
   - One row of lookahead names the kind. A *spike* is a single bad row after which the
     series is plausible again from the last good row, as with the v1 README's 99999
     recorder test. A *jump* or *reset* is a series that continues from the new level.

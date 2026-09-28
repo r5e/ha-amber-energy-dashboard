@@ -1423,11 +1423,45 @@ def test_scan_series_kinds_and_rederived_sums() -> None:
     assert [r["start"] for r in cleaned] == [rows[i]["start"] for i in (0, 1, 3, 5, 7, 9)]
 
     # Cost can legitimately fall (negative prices); only a step above the cap is flagged.
-    cost = [_row(t0 + i * HOUR, v) for i, v in enumerate([10.0, 9.5, 9.0, 160.0, 9.2])]
+    cost = [_row(t0 + i * HOUR, v) for i, v in enumerate([10.0, 9.5, 9.0, 99999.0, 9.2])]
     flags, cleaned = migration._scan_series(cost, energy=False)
-    assert [(f["sum"], f["kind"]) for f in flags] == [(160.0, "spike")]
+    assert [(f["sum"], f["kind"]) for f in flags] == [(99999.0, "spike")]
     assert [r["sum"] for r in cleaned] == [10.0, 9.5, 9.0, 9.2]
     assert migration._scan_series([], energy=True) == ([], [])
+
+
+def test_scan_cost_cap_is_per_elapsed_hour() -> None:
+    """The cost cap is 500 per elapsed hour between rows (M6c review): a real wholesale
+    price spike hour (8.6 kWh at the 17.50/kWh market cap, about 150) is plausible; the
+    99999 spike is flagged; a cost decrease is never flagged, however large."""
+    t0 = datetime(2026, 5, 1, 14, tzinfo=UTC)
+    # Real-shaped hourly import cost: about 0.30 an hour, then one 150.50 spike hour.
+    steps = [0.31, 0.28, 0.35, 150.50, 0.42, 0.30]
+    sums = [200.0]
+    for step in steps:
+        sums.append(round(sums[-1] + step, 6))
+    hourly = [_row(t0 + i * HOUR, v) for i, v in enumerate(sums)]
+    flags, cleaned = migration._scan_series(hourly, energy=False)
+    assert flags == [] and [r["sum"] for r in cleaned] == sums
+    # Just above the cap in one hour is flagged; the same step over two hours is not.
+    over = [_row(t0, 0.0), _row(t0 + HOUR, 500.01), _row(t0 + 2 * HOUR, 0.3)]
+    assert [f["step"] for f in migration._scan_series(over, energy=False)[0]] == [500.01]
+    two_hours = [_row(t0, 0.0), _row(t0 + 2 * HOUR, 999.0)]
+    assert migration._scan_series(two_hours, energy=False)[0] == []
+    # The 99999 spike, in hourly and in daily rows (a daily cap is 12000).
+    spike = [*hourly, _row(t0 + 6 * HOUR, 99999.0), _row(t0 + 7 * HOUR, sums[-1] + 0.3)]
+    flags, _ = migration._scan_series(spike, energy=False)
+    assert [(f["sum"], f["kind"]) for f in flags] == [(99999.0, "spike")]
+    day = timedelta(days=1)
+    daily = [_row(t0 + i * day, v) for i, v in enumerate([200.0, 210.0, 99999.0, 220.0])]
+    assert [f["sum"] for f in migration._scan_series(daily, energy=False)[0]] == [99999.0]
+    # Decreases are never flagged: negative-price hours, a long fall, a large drop.
+    falling = [_row(t0 + i * HOUR, v) for i, v in enumerate([50.0, 49.2, 47.9, 20.0, -500.0])]
+    flags, cleaned = migration._scan_series(falling, energy=False)
+    assert flags == [] and [r["sum"] for r in cleaned] == [50.0, 49.2, 47.9, 20.0, -500.0]
+    # Compensation in Amber's sign (negative when earned) falls every export hour.
+    comp = [_row(t0 + i * HOUR, -0.2 * i) for i in range(30)]
+    assert migration._scan_series(comp, energy=False)[0] == []
 
 
 def test_scan_energy_cap_is_per_elapsed_hour() -> None:
@@ -1469,6 +1503,35 @@ async def test_v1_large_household_day_is_not_flagged(
     assert report["migration_status"] == "completed"
     stored = _by_start((await _rows(hass))[E1])
     assert stored[rows[ROLE_IMPORT_ENERGY][2]["start"]]["state"] == pytest.approx(150.0)
+
+
+async def test_advanced_price_spike_hour_is_copied(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Advanced-layout hourly history before the boundary with a real wholesale price
+    spike hour (+150 import cost) and a negative-price hour (cost falls by 40): nothing
+    is flagged, and both hours are copied as they are."""
+    await _entry(hass, aioclient_mock, hass_storage)
+    spike_day, dip_day = PRE[3], PRE[4]
+    rows = _legacy_rows(
+        ADV,
+        hourly_days=[spike_day, dip_day, *WINDOW],
+        lump_days=PRE[:3],
+        tweak={(ROLE_IMPORT_COST, spike_day): 150.0, (ROLE_IMPORT_COST, dip_day): -40.0},
+    )
+    await _import_legacy(hass, ADV, rows)
+
+    report = await _migrate(hass)
+    assert report["flagged"]["count"] == 0
+    assert report["problems"] == [] and report["parity"]["passed"] is True
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    stored = _by_start((await _rows(hass))[E1_COST])
+    hour0 = {day: importer.nem_day_start(day) for day in (spike_day, dip_day)}
+    assert stored[hour0[spike_day]]["state"] == pytest.approx(
+        _amounts(spike_day)[E1_COST][0] + 150.0
+    )
+    assert stored[hour0[dip_day]]["state"] == pytest.approx(_amounts(dip_day)[E1_COST][0] - 40.0)
 
 
 async def _v1_scenario(hass, aioclient_mock, hass_storage) -> tuple[Any, dict[str, list]]:

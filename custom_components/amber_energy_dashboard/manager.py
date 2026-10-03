@@ -906,8 +906,13 @@ class AmberManager:
         return has_data
 
     async def _async_discover_retention(self) -> None:
-        """Find the earliest NEM day with usage by bisection (at most 8 calls)."""
+        """Find the earliest NEM day with usage by bisection (at most 8 calls).
+
+        The record keeps the boundary stored before discovery as previous_boundary
+        (None on a first discovery), so a probe_retention move shows in diagnostics.
+        """
         today = nem_today()
+        previous = self.store.retention_boundary
         probes: dict[str, bool] = {}
         counter = [0]
         has_data = self._prober(probes, counter)
@@ -921,14 +926,18 @@ class AmberManager:
             method = f"fallback ({type(err).__name__})"
             if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
                 await self._store_retention(
-                    today - timedelta(days=RETENTION_FALLBACK_DAYS), method, counter[0], probes
+                    today - timedelta(days=RETENTION_FALLBACK_DAYS),
+                    method,
+                    counter[0],
+                    probes,
+                    previous=previous,
                 )
                 raise
         if boundary is None and method == "bisection":
             method = "fallback (not bracketed)"
         if boundary is None:
             boundary = today - timedelta(days=RETENTION_FALLBACK_DAYS)
-        await self._store_retention(boundary, method, counter[0], probes)
+        await self._store_retention(boundary, method, counter[0], probes, previous=previous)
 
     async def _async_verify_retention(self) -> dict[str, Any]:
         """Daily check of the stored boundary date (DESIGN section 8).

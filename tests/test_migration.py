@@ -1695,7 +1695,8 @@ async def test_cleanup_issue_lists_what_exists_and_clears(
 ) -> None:
     """The repair lists only the leftovers that still exist, re-checks after each
     scheduled attempt (also a skipped, caught-up one), and clears once nothing remains,
-    although the old statistics are still there."""
+    although the advisory parts are still there: the old statistics and the amber_api_key
+    secret (listed in the migration result only)."""
     entry = await _entry(hass, aioclient_mock, hass_storage)
     mgr = entry.runtime_data.manager
     await _advanced(hass)
@@ -1712,8 +1713,9 @@ async def test_cleanup_issue_lists_what_exists_and_clears(
     ).entity_id
     assert template == ADV[ROLE_IMPORT_COST]  # registry entry only, no state
 
-    await _migrate(hass, dry_run=False, confirm_backup=True)
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
 
+    assert "The amber_api_key line in secrets.yaml, if nothing else uses it." in report["cleanup"]
     assert _cleanup_items(hass) == [
         f"- Automation {ADV_AUTOMATION}: turned off by the migration; delete it when you are "
         "satisfied.",
@@ -1722,7 +1724,6 @@ async def test_cleanup_issue_lists_what_exists_and_clears(
         "- rest_command.amber_fetch_usage (configuration.yaml, rest_command:).",
         f"- Template sensors {template} (configuration.yaml, template:), and their lines "
         "under recorder: exclude: entities:.",
-        "- The amber_api_key line in secrets.yaml, if nothing else uses it.",
         f"- {migration._PACKAGE_HINT}",
     ]
 
@@ -1740,21 +1741,15 @@ async def test_cleanup_issue_lists_what_exists_and_clears(
         "- Helpers input_number.amber_retention_days.",
         f"- Template sensors {template} (configuration.yaml, template:), and their lines "
         "under recorder: exclude: entities:.",
-        "- The amber_api_key line in secrets.yaml, if nothing else uses it.",
         f"- {migration._PACKAGE_HINT}",
     ]
 
-    # Only the secret left: no package hint.
+    # Everything checkable gone. The secret is still in secrets.yaml and the old
+    # statistics are still there, but neither keeps the issue open.
     hass.states.async_remove("input_number.amber_retention_days")
     registry.async_remove(template)
     await mgr._async_scheduled(final=True)
-    assert _cleanup_items(hass) == [
-        "- The amber_api_key line in secrets.yaml, if nothing else uses it."
-    ]
-
-    # Everything gone; the old statistics are still there but do not keep it open.
-    secrets.write_text("other: 1\n", encoding="utf-8")
-    await mgr._async_scheduled(final=False)
+    assert "amber_api_key" in secrets.read_text(encoding="utf-8")
     assert _cleanup_items(hass) is None
     assert "leftovers are all removed" in caplog.text
     assert _record(hass_storage)["legacy_deleted"] is False
@@ -1839,34 +1834,31 @@ async def test_cleanup_manual_pick_lists_its_sensors(hass: HomeAssistant) -> Non
     assert await migration._async_leftovers(hass, record) == []
 
 
-async def test_cleanup_v1_files_and_secret(hass: HomeAssistant, tmp_path) -> None:
-    """v1: the backfill files count only when present in the configuration folder, and
-    only a top-level amber_api_key key in secrets.yaml counts."""
+async def test_cleanup_v1_files_and_advisory_secret(hass: HomeAssistant, tmp_path) -> None:
+    """v1: the backfill files count only when present in the configuration folder. The
+    amber_api_key secret is advisory: secrets.yaml is not read, and the line is never
+    listed in the issue (only in the migration result)."""
     hass.config.config_dir = str(tmp_path)
     record = {"status": "completed", "sources": {"layout": "v1"}, "automations": []}
-    assert await migration._async_leftovers(hass, record) == []  # no secrets.yaml at all
+    (tmp_path / "secrets.yaml").write_text("amber_api_key: x\n", encoding="utf-8")
+    assert await migration._async_leftovers(hass, record) == []
 
-    (tmp_path / "secrets.yaml").write_text(
-        "# amber_api_key: commented out\n"
-        "amber_api_key_old: x\n"
-        "nested:\n  amber_api_key: x\n"
-        "not a key line\n",
-        encoding="utf-8",
-    )
     (tmp_path / "amber_backfill_cache.json").write_text("{}", encoding="utf-8")
     assert await migration._async_leftovers(hass, record) == [
         "amber_backfill_cache.json, wherever you ran the backfill."
     ]
-    (tmp_path / "secrets.yaml").write_text("amber_api_key : x\n", encoding="utf-8")
     (tmp_path / "amber_backfill.py").write_text("", encoding="utf-8")
     hass.states.async_set("sensor.amber_daily_grid_export", "1")
     assert await migration._async_leftovers(hass, record) == [
         "REST sensors sensor.amber_daily_grid_export (configuration.yaml, the rest: block "
         "with the Amber usage URL).",
-        "The amber_api_key line in secrets.yaml, if nothing else uses it.",
         "amber_backfill.py and amber_backfill_cache.json, wherever you ran the backfill.",
         migration._PACKAGE_HINT,
     ]
+    # The result screen still lists the secret, among the full v1 list.
+    assert [item.render() for item in migration.V1_KIT.cleanup][3] == (
+        "The amber_api_key line in secrets.yaml, if nothing else uses it."
+    )
 
 
 async def test_cleanup_check_ignores_records_not_completed(

@@ -7,10 +7,10 @@ The Energy dashboard then shows what Amber really billed, hour by hour.
 This is an unofficial community project. It is not affiliated with or endorsed by
 Amber Electric.
 
-> **Version 2.0.0 (release candidate).** Version 2 replaces the earlier YAML kit (v1)
-> with a proper integration: set up in the UI, with no YAML at all. If you use the v1 kit,
-> see [Migrating from the YAML kits](#migrating-from-the-yaml-kits). The v1 kit itself is
-> kept in [`legacy/v1/`](legacy/v1/).
+> **Version 2.0.0.** Version 2 replaces the earlier YAML kit (v1) with a proper
+> integration: set up in the UI, with no YAML at all. If you use the v1 kit, see the
+> **[migration guide](docs/MIGRATION.md)**. The v1 kit itself is kept in
+> [`legacy/v1/`](legacy/v1/).
 
 ## Why
 
@@ -46,36 +46,24 @@ Out of scope: live and forecast prices, and battery or device control.
   <https://app.amber.com.au/developers>, or in the Amber app under Settings > Developer
   mode.
 
-## Installation (HACS custom repository)
+## Installation and setup
 
-1. In Home Assistant, open **HACS**.
-2. Open the three-dot menu, then **Custom repositories**.
-3. Add `https://github.com/r5e/ha-amber-energy-dashboard` with type **Integration**.
-4. Find **Amber Energy Dashboard (unofficial)** in HACS and **Download** it.
-   - To install a release candidate, first turn on "Show beta versions" in the
-     repository's settings in HACS.
-5. **Restart Home Assistant.**
+**➡️ Follow the [installation guide](docs/INSTALL.md).** It walks through creating the
+Amber API key, installing through HACS (as a custom repository), adding the integration,
+the settings, and the Energy dashboard, step by step with screenshots.
+
+In short: add `https://github.com/r5e/ha-amber-energy-dashboard` to HACS as a custom
+repository of type **Integration**, download **Amber Energy Dashboard (unofficial)**,
+restart, then add it under **Settings > Devices & services**. Setup asks for the API key,
+the site, the metering channels (always taken from Amber; for example `E1` general, `E2`
+controlled load, `B1` feed-in) and the schedule (**Automatic** is recommended). The first
+run then imports everything Amber still holds, about three months; after that, each day
+costs a few API calls.
 
 **Manual install:** copy `custom_components/amber_energy_dashboard` into your
 `/config/custom_components/`, then restart.
 
-## Setup
-
-Go to **Settings > Devices & services > Add integration > Amber Energy Dashboard
-(unofficial)**:
-
-1. **API key.** It is checked against Amber straight away.
-2. **Site.** Each site becomes its own entry, shown with its NMI.
-3. **Channels.** The metering channels found for the site (for example `E1` general,
-   `E2` controlled load, `B1` feed-in) are confirmed. Channel names differ between
-   accounts and are always taken from Amber.
-4. **Schedule.**
-   - **Automatic** (recommended) picks a stable time for your installation between
-     06:30 and 08:30, with retries 3 and 6 hours later.
-   - **Fixed times** takes your own list of times, for example `07:15, 10:15, 13:15`.
-
-When setup finishes, the first run imports everything Amber still holds, which is about
-three months. That takes around 20 API calls. After that, each day costs a few calls.
+## What it creates
 
 **Statistics created** (`<site>` is your Amber site ID in lower case, `<ch>` the channel):
 
@@ -86,7 +74,8 @@ three months. That takes around 20 API calls. After that, each day costs a few c
 | `amber_energy_dashboard:<site>_<ch>_compensation` | AUD | Feed-in earnings per hour. **Positive means earned**, as the Energy dashboard expects |
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
 
-**Energy dashboard:** under **Settings > Dashboards > Energy**, in the grid section, set:
+**Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
+under **Settings > Dashboards > Energy**, in the grid section, set:
 - "Grid consumption" to the general channel's energy, with "Use an entity tracking the
   total costs" set to its cost;
 - for controlled load, a second grid consumption with its own energy and cost;
@@ -206,20 +195,19 @@ If you used the earlier YAML kit, the integration can take over its history and 
 Energy dashboard settings. It works with both the published **v1 kit** (`legacy/v1/`) and
 the unpublished "advanced" YAML version.
 
-### Before you start
+**➡️ Follow the [migration guide](docs/MIGRATION.md).** It covers the backup, the dry
+run, running the migration, checking the result, undo, and removing the old kit, with
+screenshots. Install the integration and let its first import finish first, and leave the
+old kit running until then: the migration needs a few days where both have data, to
+compare them.
 
-1. **Take a full Home Assistant backup** (Settings > System > Backups). The migration keeps
-   its own copy of your Energy dashboard settings, but a full backup is the safe way back.
-2. Install this integration and let its **first import finish**. The status should read
-   "Up to date".
-3. Leave the old kit running until then. The migration needs a few days where both have
-   data, to compare them.
+The rest of this section explains what the migration checks and does, in more detail.
 
-### Dry run
+### What the dry run checks
 
-Go to **Settings > Devices & services > Amber Energy Dashboard > Configure > Migrate from
-the YAML kit**. Or call the `amber_energy_dashboard.migrate_v1` action, which is always a
-dry run unless you set `dry_run: false`. The dry run changes nothing. It shows:
+The migration is under **Configure > Migrate from the YAML kit**, or the
+`amber_energy_dashboard.migrate_v1` action, which is always a dry run unless you set
+`dry_run: false` (and `confirm_backup: true`). The dry run changes nothing. It shows:
 
 - **Which kit it found.** It recognises the kit by its entity names and uses the one with
   recent data. If it cannot tell (renamed entities, or two kits both recent), you pick the
@@ -244,10 +232,7 @@ dry run unless you set `dry_run: false`. The dry run changes nothing. It shows:
 - **What will be copied,** and the exact Energy dashboard settings before and after.
 - Which automation will be turned off.
 
-### Running it
-
-Tick **"I have a current Home Assistant backup"** and submit, or call the action with
-`dry_run: false` and `confirm_backup: true`. The migration then:
+### What it does
 
 1. **Copies your older history** (from before the integration's first day) into the new
    statistics. The Energy dashboard then shows one continuous series; the old and new
@@ -259,7 +244,9 @@ Tick **"I have a current Home Assistant backup"** and submit, or call the action
 3. **Turns off** the kit's daily automation. It is never deleted.
 4. **Lists everything else for you to remove by hand,** in the result and in a Repairs
    item: the helpers, scripts, YAML blocks (`rest:`, template sensors, `recorder:
-   exclude`) and the `amber_api_key` secret if nothing else uses it.
+   exclude`) and the `amber_api_key` secret if nothing else uses it. The Repairs item is
+   re-checked when Home Assistant starts and after each scheduled import, lists only what
+   is still there, and clears itself once everything is gone.
 
 If the migration is interrupted, running it again resumes where it stopped.
 
@@ -280,11 +267,12 @@ dashboard itself, so it already has the right sign and is copied as it is.
 **Controlled load:** neither kit had a controlled-load channel. Controlled-load
 statistics start with the integration's own data.
 
-### What is kept, and undo
+### The old statistics, and undo
 
-- **Old statistics are kept** unless you delete them. When you are happy, you can remove
-  them with `amber_energy_dashboard.delete_legacy_statistics` (`confirm: true`). After
-  that, undo is no longer possible.
+- **Old statistics are kept** unless you delete them. They are optional to remove, so
+  they do not keep the Repairs item open. When you are happy, you can remove them with
+  `amber_energy_dashboard.delete_legacy_statistics` (`confirm: true`). After that, undo is
+  no longer possible.
 - **Undo migration** (in the integration's Configure menu, or the `undo_migration`
   action):
   - restores your saved Energy dashboard settings;
@@ -314,7 +302,7 @@ statistics start with the integration's own data.
 | Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the integration and choose **Reconfigure** to add it |
 | Amber import stopped: marker and statistics disagree | The stored progress and the statistics disagree, for example after restoring an old database backup. Nothing is written until this is resolved; download diagnostics and open an issue |
 | Amber import could not be verified | A day was written but did not read back as expected. Progress was not advanced; the next attempt rewrites the day |
-| Finish removing the YAML kit | After a migration: the list of old kit items to remove by hand |
+| Finish removing the YAML kit | After a migration: the old kit items still present, to remove by hand. It is re-checked when Home Assistant starts and after each scheduled import, and clears itself once they are gone. The old statistics do not count; delete them later if you wish |
 
 **Diagnostics.** Open the integration, then the three-dot menu, then **Download
 diagnostics**. The file contains:
@@ -333,7 +321,16 @@ logger:
     custom_components.amber_energy_dashboard: debug
 ```
 
-**Common questions:**
+**Common questions** (more in the [installation guide's FAQ](docs/INSTALL.md#8-troubleshooting-and-faq)):
+- *Feed-in earnings are lower than the export credit on my bill.* Amber's usage data
+  applies your network's export charges to every interval. Some networks give a free
+  export allowance instead, for example Endeavour Energy's two-way tariff N61, with
+  8 kWh per day free before a midday export charge applies. Your bill applies that
+  allowance, but the usage data does not, so the dashboard can show lower feed-in earnings
+  than the bill. Import costs match the bill to the cent.
+- *Supply and subscription charges are missing.* Amber's usage data covers usage only.
+  Daily network supply, metering and Amber's subscription are separate charges on your
+  bill.
 - *Today and yesterday are missing.* Amber publishes each day about a day late. Yesterday
   normally appears in the morning.
 - *The first days are missing.* Amber only keeps about three months, so anything older

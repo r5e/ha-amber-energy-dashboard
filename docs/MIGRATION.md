@@ -56,6 +56,10 @@ the parts of the kit that are still there. It is re-checked when Home Assistant 
 after each scheduled import, so it shrinks as you remove things, and clears itself once
 they are all gone.
 
+The `amber_api_key` line in `secrets.yaml` is not checked, because another tool may still
+use it, so it doesn't keep the Repairs notice open. Remove it yourself once nothing else
+uses it.
+
 The old statistics are kept until you choose otherwise. Removing them is optional, so they
 don't keep the Repairs notice open. Once you're confident, delete them with the
 `amber_energy_dashboard.delete_legacy_statistics` action. After that, Undo is no longer

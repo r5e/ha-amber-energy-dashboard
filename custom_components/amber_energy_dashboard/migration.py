@@ -118,21 +118,21 @@ def _and(names: Sequence[str]) -> str:
 @dataclass(frozen=True, slots=True)
 class Leftover:
     """One part of the YAML kit to remove by hand. ``text`` names the parts present
-    (``{items}``); the Repairs issue lists it only while one of them still exists."""
+    (``{items}``); the Repairs issue lists it only while one of them still exists. An item
+    with nothing to check (the amber_api_key secret) is advisory: it is listed in the
+    migration result only, and never keeps the issue open."""
 
     text: str
     entities: tuple[str, ...] = ()
     """Entity IDs: present while they have a state or an entity registry entry."""
     services: tuple[str, ...] = ()
     """``domain.service`` names, such as a rest_command."""
-    secrets: tuple[str, ...] = ()
-    """Keys in secrets.yaml."""
     files: tuple[str, ...] = ()
     """File names in the configuration folder."""
 
     def render(self, present: Sequence[str] | None = None) -> str:
-        names = self.entities + self.services + self.secrets + self.files
-        return self.text.format(items=_and(list(names if present is None else present)))
+        names = list(self.entities + self.services + self.files if present is None else present)
+        return self.text.format(items=_and(names)) if names else self.text
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,10 +187,7 @@ V1_KIT: Final = Layout(
             "recorder: exclude: entities:.",
             entities=("sensor.amber_energy_import", "sensor.amber_energy_export"),
         ),
-        Leftover(
-            "The amber_api_key line in secrets.yaml, if nothing else uses it.",
-            secrets=("amber_api_key",),
-        ),
+        Leftover("The amber_api_key line in secrets.yaml, if nothing else uses it."),
         Leftover(
             "{items}, wherever you ran the backfill.",
             files=("amber_backfill.py", "amber_backfill_cache.json"),
@@ -251,10 +248,7 @@ ADVANCED: Final = Layout(
                 "sensor.amber_hourly_cost_export",
             ),
         ),
-        Leftover(
-            "The amber_api_key line in secrets.yaml, if nothing else uses it.",
-            secrets=("amber_api_key",),
-        ),
+        Leftover("The amber_api_key line in secrets.yaml, if nothing else uses it."),
     ),
 )
 LAYOUTS: Final = (V1_KIT, ADVANCED)
@@ -1385,15 +1379,13 @@ async def _async_leftovers(hass: HomeAssistant, record: Mapping[str, Any]) -> li
             ),
         )
     registry = er.async_get(hass)
-    secrets = {k for item in items for k in item.secrets}
     files = [f for item in items for f in item.files]
-    found = await hass.async_add_executor_job(_on_disk, hass.config.path(), secrets, files)
+    found = await hass.async_add_executor_job(_on_disk, hass.config.path(), files)
 
     def present(item: Leftover) -> list[str]:
         return [
             *(e for e in item.entities if _entity_exists(hass, registry, e)),
             *(s for s in item.services if hass.services.has_service(*s.split(".", 1))),
-            *(k for k in item.secrets if k in found),
             *(f for f in item.files if f in found),
         ]
 
@@ -1416,22 +1408,9 @@ def _entity_exists(hass: HomeAssistant, registry: er.EntityRegistry, entity_id: 
     return hass.states.get(entity_id) is not None or registry.async_get(entity_id) is not None
 
 
-def _on_disk(config_dir: str, secrets: set[str], files: Sequence[str]) -> set[str]:
-    """Which secrets.yaml keys and configuration-folder files exist. Only key names are
-    matched; secret values are never kept or logged."""
-    found = {f for f in files if os.path.isfile(os.path.join(config_dir, f))}
-    if secrets:
-        try:
-            with open(
-                os.path.join(config_dir, "secrets.yaml"), encoding="utf-8", errors="replace"
-            ) as file:
-                for line in file:
-                    key = line.split(":", 1)[0].strip()
-                    if ":" in line and key in secrets and not line[:1].isspace():
-                        found.add(key)
-        except OSError:
-            pass  # no secrets.yaml: nothing to remove there
-    return found
+def _on_disk(config_dir: str, files: Sequence[str]) -> set[str]:
+    """Which of these files exist in the configuration folder."""
+    return {f for f in files if os.path.isfile(os.path.join(config_dir, f))}
 
 
 async def _async_copy(hass: HomeAssistant, manager: AmberManager, plan: _Plan) -> None:

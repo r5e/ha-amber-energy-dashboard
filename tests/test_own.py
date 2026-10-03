@@ -432,6 +432,10 @@ async def test_recovery_mode_has_no_schedule(
     assert (await _rows(hass)).get(E1, []) == []
     assert result["chains"]["own:sub_house"]["written"] == [d.isoformat() for d in days]
     assert mgr.caught_up is True
+    # Recovery-only imports no usage on a schedule, so the usage marker is not outstanding
+    # work and "waiting for next run" would be wrong: the status stays "up to date" (M7).
+    assert result["status"] == "caught_up"
+    assert mgr.display_status == "caught_up"
 
 
 async def test_backfill_in_recovery_mode_ranges_and_gaps(

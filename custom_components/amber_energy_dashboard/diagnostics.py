@@ -52,4 +52,5 @@ async def async_get_config_entry_diagnostics(
             "next_run": runtime.manager.next_run.isoformat() if runtime.manager.next_run else None,
         },
         "status": runtime.manager.status,
+        "display_status": runtime.manager.display_status,
     }

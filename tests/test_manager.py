@@ -5,6 +5,8 @@ clock, not the event loop, so the importer's read-back polling still runs normal
 """
 
 from datetime import UTC, date, datetime, timedelta
+import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import PropertyMock, patch
 
@@ -853,8 +855,80 @@ async def test_run_now_returns_summary_and_diagnostics_show_store(
     assert diag["store"]["marker"] == YESTERDAY.isoformat()
     assert diag["schedule"]["mode"] == "automatic"
     assert diag["status"] == "caught_up"
+    assert diag["display_status"] == "caught_up"
     assert "FAKENMI000" not in repr(diag)
     assert len(diag["store"]["days"]) == 2
+
+
+STATUS = "sensor.amber_energy_dashboard_import_status"
+BEHIND = "sensor.amber_energy_dashboard_days_behind"
+
+
+async def test_status_after_restart_following_downtime(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """After a restart following 4 days of downtime, the last run's outcome is still
+    "caught up", but the sensor shows "waiting for next run" while days are outstanding.
+    The next scheduled attempt catches up, and "up to date" returns."""
+    _preload_store(hass_storage, retention_days=3)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    await _run(hass)
+    await hass.async_block_till_done()
+    assert hass.states.get(STATUS).state == "caught_up"
+    assert hass.states.get(BEHIND).state == "0"
+
+    clock.now += timedelta(days=4)
+    fake.latest += timedelta(days=4)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    mgr = entry.runtime_data.manager
+
+    status = hass.states.get(STATUS)
+    assert status.state == "waiting_for_next_run"
+    assert "waiting_for_next_run" in status.attributes["options"]
+    assert hass.states.get(BEHIND).state == "4"
+    assert mgr.store.last_run["status"] == "caught_up"  # the outcome itself is unchanged
+    assert status.attributes["imported_days"][-1] == YESTERDAY.isoformat()
+
+    await mgr._async_scheduled(final=False)
+    await hass.async_block_till_done()
+    assert mgr.store.last_run["trigger"] == "scheduled"
+    assert hass.states.get(STATUS).state == "caught_up"
+    assert hass.states.get(BEHIND).state == "0"
+
+
+async def test_status_up_to_date_only_when_nothing_is_outstanding(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A new day becoming due (the NEM day rolls over) turns "up to date" into "waiting
+    for next run" at the next refresh; other outcomes are shown as they are."""
+    _preload_store(hass_storage, retention_days=3)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    mgr = entry.runtime_data.manager
+    await _run(hass)
+    assert mgr.display_status == "caught_up"
+
+    clock.now += timedelta(days=1)
+    mgr._publish()
+    await hass.async_block_till_done()
+    assert hass.states.get(STATUS).state == "waiting_for_next_run"
+    assert hass.states.get(BEHIND).state == "1"
+
+    # Amber has not published the new day yet: the run's own outcome is shown.
+    assert (await _run(hass))["status"] == "waiting_for_data"
+    await hass.async_block_till_done()
+    assert hass.states.get(STATUS).state == "waiting_for_data"
+
+
+def test_every_status_has_a_translation() -> None:
+    """Each status sensor state, including the display-only one, is translated."""
+    base = Path(__file__).parent.parent / "custom_components" / DOMAIN
+    for path in (base / "strings.json", base / "translations" / "en.json"):
+        states = json.loads(path.read_text(encoding="utf-8"))["entity"]["sensor"]["status"]
+        assert set(states["state"]) == set(manager_mod.STATUSES), path
+    assert states["state"]["waiting_for_next_run"] == "Waiting for next run"
 
 
 # --- failure outcomes of a run ----------------------------------------------------------

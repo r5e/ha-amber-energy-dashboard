@@ -114,6 +114,9 @@ STATUS_RATE_LIMITED = "rate_limited"
 STATUS_UNAVAILABLE = "api_unavailable"
 STATUS_AUTH = "auth_failed"
 STATUS_ATTENTION = "needs_attention"
+STATUS_WAITING_NEXT = "waiting_for_next_run"
+"""Display only: the last run caught up, but days are outstanding now (for example after
+a restart following downtime). The next attempt imports them."""
 STATUSES = [
     STATUS_NEVER_RUN,
     STATUS_RUNNING,
@@ -124,6 +127,7 @@ STATUSES = [
     STATUS_UNAVAILABLE,
     STATUS_AUTH,
     STATUS_ATTENTION,
+    STATUS_WAITING_NEXT,
 ]
 
 
@@ -315,6 +319,14 @@ class AmberManager:
             await self.async_run("scheduled (final)" if final else "scheduled", final=final)
         if self.after_scheduled is not None:
             await self.after_scheduled()
+
+    @property
+    def display_status(self) -> str:
+        """The status sensor's state: the last outcome, except that "caught up" is shown
+        only while nothing is outstanding."""
+        if self.status == STATUS_CAUGHT_UP and not self.caught_up:
+            return STATUS_WAITING_NEXT
+        return self.status
 
     @property
     def caught_up(self) -> bool:
@@ -1686,7 +1698,7 @@ class AmberManager:
                 c.key: {"marker": c.state.marker, "last_written": c.state.last_written}
                 for c in self._secondary_chains()
             },
-            "status": self.status,
+            "status": self.display_status,
             "last_run": self.store.last_run,
             "marker": marker,
             "last_imported": self.store.last_written,

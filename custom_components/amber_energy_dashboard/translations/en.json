@@ -176,7 +176,8 @@
           "rate_limited": "Paused (rate limited)",
           "api_unavailable": "Amber unavailable",
           "auth_failed": "Authentication failed",
-          "needs_attention": "Needs attention"
+          "needs_attention": "Needs attention",
+          "waiting_for_next_run": "Waiting for next run"
         }
       },
       "last_imported_date": {

@@ -17,6 +17,7 @@ import itertools
 import json
 import logging
 import math
+import os
 from statistics import median
 from typing import TYPE_CHECKING, Any, Final
 
@@ -29,9 +30,9 @@ from homeassistant.components.recorder.statistics import (
     statistics_during_period,
 )
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
@@ -98,13 +99,40 @@ BACKUP_WARNING: Final = (
     "Take a full Home Assistant backup before migrating. The migration keeps a copy of "
     "your Energy dashboard settings and can be undone, but it also writes statistics."
 )
-_COMMON_CLEANUP: Final = (
+_PACKAGE_HINT: Final = (
     "If you installed the kit as a package, delete that single package file instead of "
-    "the individual blocks.",
+    "the individual blocks."
+)
+_COMMON_CLEANUP: Final = (
+    _PACKAGE_HINT,
     "Old statistics are kept. Delete them later with "
     "amber_energy_dashboard.delete_legacy_statistics if you wish (undo is then no longer "
     "possible).",
 )
+
+
+def _and(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+@dataclass(frozen=True, slots=True)
+class Leftover:
+    """One part of the YAML kit to remove by hand. ``text`` names the parts present
+    (``{items}``); the Repairs issue lists it only while one of them still exists."""
+
+    text: str
+    entities: tuple[str, ...] = ()
+    """Entity IDs: present while they have a state or an entity registry entry."""
+    services: tuple[str, ...] = ()
+    """``domain.service`` names, such as a rest_command."""
+    secrets: tuple[str, ...] = ()
+    """Keys in secrets.yaml."""
+    files: tuple[str, ...] = ()
+    """File names in the configuration folder."""
+
+    def render(self, present: Sequence[str] | None = None) -> str:
+        names = self.entities + self.services + self.secrets + self.files
+        return self.text.format(items=_and(list(names if present is None else present)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +150,7 @@ class Layout:
     automations: tuple[str, ...]
     markers: tuple[str, ...]
     """Strings in an automation's configuration that tie it to this layout."""
-    cleanup: tuple[str, ...]
+    cleanup: tuple[Leftover, ...]
 
 
 V1_KIT: Final = Layout(
@@ -143,14 +171,30 @@ V1_KIT: Final = Layout(
         "input_number.amber_energy_export_running_total",
     ),
     cleanup=(
-        "Helpers input_number.amber_energy_import_running_total and "
-        "input_number.amber_energy_export_running_total (configuration.yaml, input_number:).",
-        "REST sensors sensor.amber_daily_grid_import and sensor.amber_daily_grid_export "
-        "(configuration.yaml, the rest: block with the Amber usage URL).",
-        "Template sensors sensor.amber_energy_import and sensor.amber_energy_export "
-        "(configuration.yaml, template:), and their lines under recorder: exclude: entities:.",
-        "The amber_api_key line in secrets.yaml, if nothing else uses it.",
-        "amber_backfill.py and amber_backfill_cache.json, wherever you ran the backfill.",
+        Leftover(
+            "Helpers {items} (configuration.yaml, input_number:).",
+            entities=(
+                "input_number.amber_energy_import_running_total",
+                "input_number.amber_energy_export_running_total",
+            ),
+        ),
+        Leftover(
+            "REST sensors {items} (configuration.yaml, the rest: block with the Amber usage URL).",
+            entities=("sensor.amber_daily_grid_import", "sensor.amber_daily_grid_export"),
+        ),
+        Leftover(
+            "Template sensors {items} (configuration.yaml, template:), and their lines under "
+            "recorder: exclude: entities:.",
+            entities=("sensor.amber_energy_import", "sensor.amber_energy_export"),
+        ),
+        Leftover(
+            "The amber_api_key line in secrets.yaml, if nothing else uses it.",
+            secrets=("amber_api_key",),
+        ),
+        Leftover(
+            "{items}, wherever you ran the backfill.",
+            files=("amber_backfill.py", "amber_backfill_cache.json"),
+        ),
     ),
 )
 ADVANCED: Final = Layout(
@@ -172,19 +216,45 @@ ADVANCED: Final = Layout(
         "input_text.amber_last_imported_date",
     ),
     cleanup=(
-        "Helpers input_number.amber_lifetime_grid_import_v2, "
-        "input_number.amber_lifetime_grid_export_v2, input_number.amber_lifetime_cost_import, "
-        "input_number.amber_lifetime_cost_export, input_number.amber_retention_days, "
-        "input_number.amber_nodata_patience_days, input_text.amber_last_imported_date and "
-        "input_text.amber_nodata_tracker.",
-        "Scripts script.amber_daily_import, script.amber_retention_probe and "
-        "script.amber_window_rebuild (scripts.yaml).",
-        "rest_command.amber_fetch_usage (configuration.yaml, rest_command:).",
-        "Template sensors sensor.amber_cumulative_grid_import_v2, "
-        "sensor.amber_cumulative_grid_export_v2, sensor.amber_hourly_cost_import and "
-        "sensor.amber_hourly_cost_export (configuration.yaml, template:), and their lines "
-        "under recorder: exclude: entities:.",
-        "The amber_api_key line in secrets.yaml, if nothing else uses it.",
+        Leftover(
+            "Helpers {items}.",
+            entities=(
+                "input_number.amber_lifetime_grid_import_v2",
+                "input_number.amber_lifetime_grid_export_v2",
+                "input_number.amber_lifetime_cost_import",
+                "input_number.amber_lifetime_cost_export",
+                "input_number.amber_retention_days",
+                "input_number.amber_nodata_patience_days",
+                "input_text.amber_last_imported_date",
+                "input_text.amber_nodata_tracker",
+            ),
+        ),
+        Leftover(
+            "Scripts {items} (scripts.yaml).",
+            entities=(
+                "script.amber_daily_import",
+                "script.amber_retention_probe",
+                "script.amber_window_rebuild",
+            ),
+        ),
+        Leftover(
+            "{items} (configuration.yaml, rest_command:).",
+            services=("rest_command.amber_fetch_usage",),
+        ),
+        Leftover(
+            "Template sensors {items} (configuration.yaml, template:), and their lines under "
+            "recorder: exclude: entities:.",
+            entities=(
+                "sensor.amber_cumulative_grid_import_v2",
+                "sensor.amber_cumulative_grid_export_v2",
+                "sensor.amber_hourly_cost_import",
+                "sensor.amber_hourly_cost_export",
+            ),
+        ),
+        Leftover(
+            "The amber_api_key line in secrets.yaml, if nothing else uses it.",
+            secrets=("amber_api_key",),
+        ),
     ),
 )
 LAYOUTS: Final = (V1_KIT, ADVANCED)
@@ -917,7 +987,8 @@ async def _async_plan(
         )
     plan.energy = await _energy_plan(hass, sources, targets)
     plan.automations = _find_automations(hass, layout, sources)
-    plan.cleanup = list(layout.cleanup if layout else _MANUAL_CLEANUP) + list(_COMMON_CLEANUP)
+    listed = [item.render() for item in layout.cleanup] if layout else list(_MANUAL_CLEANUP)
+    plan.cleanup = listed + list(_COMMON_CLEANUP)
     return plan
 
 
@@ -1260,29 +1331,107 @@ async def _async_finish(
     record["cleanup"] = _cleanup_lines(record["automations"], plan.cleanup)
     _change(record, "completed", None)
     await manager.store.async_set_migration(record)
-    cleanup_issue(hass, manager)
+    await async_check_cleanup(hass, manager)
     _LOGGER.info("Migration from the %s completed", plan.sources["layout"])
 
 
-def cleanup_issue(hass: HomeAssistant, manager: AmberManager) -> None:
-    """Show the Repairs issue listing the leftovers while a migration is completed (also
-    after a restart; it is removed by undo)."""
+async def async_check_cleanup(hass: HomeAssistant, manager: AmberManager) -> list[str]:
+    """Re-check the YAML kit's leftovers while a migration is completed, and show the
+    Repairs issue listing only those that still exist. Once none remain, the issue is
+    removed (the old statistics are optional, so they never keep it open). Runs when the
+    integration loads (after Home Assistant has started) and after each scheduled run;
+    undo removes the issue."""
     record = manager.store.migration
     if record is None or record["status"] != STATUS_COMPLETED:
-        return
+        return []
+    issue_id = f"{ISSUE_LEGACY_CLEANUP}_{manager.entry.entry_id}"
+    lines = await _async_leftovers(hass, record)
+    if not lines:
+        if ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None:
+            _LOGGER.info("The YAML kit's leftovers are all removed; the Repairs issue is cleared")
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return []
     ir.async_create_issue(
         hass,
         DOMAIN,
-        f"{ISSUE_LEGACY_CLEANUP}_{manager.entry.entry_id}",
+        issue_id,
         is_fixable=False,
         is_persistent=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_LEGACY_CLEANUP,
         translation_placeholders={
             "entry": manager.entry.title,
-            "items": "\n".join(f"- {line}" for line in record.get("cleanup", [])),
+            "items": "\n".join(f"- {line}" for line in lines),
         },
     )
+    return lines
+
+
+async def _async_leftovers(hass: HomeAssistant, record: Mapping[str, Any]) -> list[str]:
+    """The cleanup lines for the parts of the kit that still exist."""
+    sources = record.get("sources") or {}
+    layout = _BY_KEY.get(sources.get("layout"))
+    if layout is not None:
+        items = layout.cleanup
+    else:
+        # A manually picked source: its legacy sensors (the statistics stay).
+        picked = (sources.get(role) for role in ROLES)
+        sensors = tuple(dict.fromkeys(s for s in picked if s and valid_entity_id(s)))
+        items = (
+            Leftover(
+                "Legacy sensors {items}, and the helpers, scripts and YAML blocks that feed "
+                "them: remove them once you are satisfied with the migration.",
+                entities=sensors,
+            ),
+        )
+    registry = er.async_get(hass)
+    secrets = {k for item in items for k in item.secrets}
+    files = [f for item in items for f in item.files]
+    found = await hass.async_add_executor_job(_on_disk, hass.config.path(), secrets, files)
+
+    def present(item: Leftover) -> list[str]:
+        return [
+            *(e for e in item.entities if _entity_exists(hass, registry, e)),
+            *(s for s in item.services if hass.services.has_service(*s.split(".", 1))),
+            *(k for k in item.secrets if k in found),
+            *(f for f in item.files if f in found),
+        ]
+
+    automations = [
+        a for a in record.get("automations", []) if _entity_exists(hass, registry, a["entity_id"])
+    ]
+    lines = _cleanup_lines(automations, [])
+    in_config = bool(automations)
+    for item in items:
+        names = present(item)
+        if names:
+            lines.append(item.render(names))
+            in_config = in_config or bool(item.entities or item.services)
+    if in_config and layout is not None:
+        lines.append(_PACKAGE_HINT)
+    return lines
+
+
+def _entity_exists(hass: HomeAssistant, registry: er.EntityRegistry, entity_id: str) -> bool:
+    return hass.states.get(entity_id) is not None or registry.async_get(entity_id) is not None
+
+
+def _on_disk(config_dir: str, secrets: set[str], files: Sequence[str]) -> set[str]:
+    """Which secrets.yaml keys and configuration-folder files exist. Only key names are
+    matched; secret values are never kept or logged."""
+    found = {f for f in files if os.path.isfile(os.path.join(config_dir, f))}
+    if secrets:
+        try:
+            with open(
+                os.path.join(config_dir, "secrets.yaml"), encoding="utf-8", errors="replace"
+            ) as file:
+                for line in file:
+                    key = line.split(":", 1)[0].strip()
+                    if ":" in line and key in secrets and not line[:1].isspace():
+                        found.add(key)
+        except OSError:
+            pass  # no secrets.yaml: nothing to remove there
+    return found
 
 
 async def _async_copy(hass: HomeAssistant, manager: AmberManager, plan: _Plan) -> None:

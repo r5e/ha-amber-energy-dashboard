@@ -69,7 +69,8 @@ the 1.x YAML kit; the release candidates are listed below for reference.
 
 **Sensors and services**
 - Display sensors:
-  - import status, last imported date, days behind, next run;
+  - import status ("Up to date" only while nothing is outstanding; otherwise, after a
+    caught-up run, "Waiting for next run"), last imported date, days behind, next run;
   - yesterday's energy, cost and compensation per channel.
 - Services: `run_now`, `import_day`, `backfill` and `probe_retention` (finds the retention
   boundary again from scratch; if it fails, the stored boundary is kept).
@@ -85,7 +86,8 @@ the 1.x YAML kit; the release candidates are listed below for reference.
 - The Energy dashboard switched, with a saved copy of its settings.
 - Legacy automations turned off, never deleted.
 - A cleanup list in the result, and a Repairs item that lists only the kit's leftovers
-  still present and clears itself once they are gone.
+  still present and clears itself once they are gone (the `amber_api_key` secret and the
+  old statistics are advisory).
 - Undo, and a separate, explicit deletion of the old statistics.
 - The advanced version's feed-in cost is flipped to positive-when-earned (the dashboard
   sign fix).
@@ -105,9 +107,16 @@ the 1.x YAML kit; the release candidates are listed below for reference.
 - **Cleanup repair re-checks itself.** "Finish removing the YAML kit" was a fixed list
   that never cleared. It is now re-checked when Home Assistant starts and after each
   scheduled import, lists only the leftovers still present (entities, the
-  `rest_command`, the `amber_api_key` line in `secrets.yaml`, and the v1 backfill files
-  in the configuration folder), and clears itself once none remain. The optional old
-  statistics no longer keep it open.
+  `rest_command`, and the v1 backfill files in the configuration folder), and clears
+  itself once none remain. Two parts are advisory and never keep it open: the
+  `amber_api_key` line in `secrets.yaml` (still listed in the migration result and the
+  migration guide, since another tool may use it) and the optional old statistics.
+- **Import status no longer shows "Up to date" while days are outstanding.** After a
+  restart following downtime, the last run's outcome was "caught up" while "Days behind"
+  was above 0. The sensor now shows **Waiting for next run** until the next scheduled
+  attempt imports the outstanding days. The stored outcome is unchanged, and diagnostics
+  show both (`status` and `display_status`). Recovery-only mode, which imports no usage
+  on a schedule, is unaffected.
 - **Retention record after `probe_retention`.** The stored record (shown in diagnostics)
   now keeps the boundary from before the probe as `previous_boundary`, instead of
   `null`, and a move is logged as a warning.

@@ -266,3 +266,126 @@ status and task reads.
 4. Check that 9102's 13:15 run today caught up the 4 days.
 5. Then merge `v2` to `main`, tag `v2.0.0`, and publish the GitHub release with
    `reports/release-notes-v2.0.0.md`. Its guide links point at the `v2.0.0` tag.
+
+---
+
+## Addendum: M7 review decisions (2026-10-03)
+
+Branch `v2`, pushed. Version 2.0.0. No merge and no tag.
+
+### A.1 What was built
+
+| Commit | What |
+|---|---|
+| `c946c87` | Cleanup repair: the `amber_api_key` secret is advisory |
+| `8de09a8` | Import status: "Waiting for next run" instead of "Up to date" while days are due |
+| `6bf04d8` | CHANGELOG, release notes, README and DESIGN for both |
+| (this commit) | This addendum |
+
+**Decision 1: the secret is advisory** (`migration.py`).
+- The two `amber_api_key` `Leftover` items no longer have anything to check, so the
+  repair never lists them and never stays open for them.
+- `secrets.yaml` is no longer read at all. The secrets parsing was removed, and
+  `_on_disk` now checks only the v1 backfill files.
+- The line is still on the migration's result screen. `Leftover.render()` returns the text
+  unchanged when there are no names.
+- MIGRATION.md now says the line isn't checked, because another tool may use it, and to
+  remove it once nothing else does. The README and DESIGN section 14 say the same.
+- Section 5 items 2 to 5 are unchanged, as accepted.
+
+**Decision 2: the import status** (`manager.py`, `diagnostics.py`, translations).
+- **The new state** `waiting_for_next_run` ("Waiting for next run") is added to
+  `STATUSES`, so it is in the enum's options, `strings.json` and `en.json`.
+- **When it shows:** `AmberManager.display_status` returns it when the last outcome is
+  `caught_up` but `caught_up` (the mode-aware "nothing outstanding" check the scheduler
+  uses) is false. Otherwise it returns the last outcome.
+- **Where it shows:** the sensor snapshot uses it. The stored outcome (`last_run.status`)
+  and the run results are unchanged. Diagnostics show both `status` and the new
+  `display_status`.
+- **Consistency:** the status and "Days behind" come from the same snapshot, so they
+  always agree.
+- **The midnight rollover:** the snapshot is refreshed at load, on runs and on each
+  scheduled attempt, not at midnight. So after the NEM day rolls over, both sensors
+  update together at the next attempt.
+- **Recovery-only mode** (my interpretation; please confirm):
+  - Usage is not imported on a schedule there, so the usage marker is not outstanding
+    work, and the status stays "Up to date" while "Days behind" grows.
+  - "Waiting for next run" would be wrong, because no run is coming.
+  - Pricing-only works the same way for its own chains.
+  - A test pins this behaviour.
+- **DESIGN section 13** gains a bullet describing this, and the README status table gains
+  the row.
+
+**Decision 3:** the CHANGELOG 2.0.0 entry is updated in "Added" (sensors, migration) and in
+"Changed since 2.0.0-rc2". The release notes' "What's new since rc2" covers both.
+
+### A.2 Test results
+
+- `uv run pytest`: **392 passed, 0 skipped, 0 failed** (287 s). Coverage is **100 %**
+  (3321 statements). ruff is clean.
+- New tests:
+  - `test_status_after_restart_following_downtime`: a reload 4 days later. The sensor
+    shows `waiting_for_next_run`, "Days behind" is 4, and the stored outcome is still
+    `caught_up`. The next scheduled attempt catches up, giving `caught_up` and 0.
+  - `test_status_up_to_date_only_when_nothing_is_outstanding`: the day rollover turns
+    the status to "waiting for next run" with 1 day behind. A run whose outcome is
+    `waiting_for_data` is shown as that.
+  - `test_every_status_has_a_translation`: `strings.json` and `en.json` translate exactly
+    the `STATUSES` list, including "Waiting for next run".
+- Changed tests:
+  - `test_cleanup_issue_lists_what_exists_and_clears`: the secret stays in
+    `secrets.yaml` throughout. It is in the result but never in the issue, and the issue
+    clears with it still present.
+  - `test_cleanup_v1_files_and_advisory_secret`: replaces the secrets-parsing test.
+  - `test_recovery_mode_has_no_schedule`: pins the Recovery-only display status.
+  - The diagnostics test checks `display_status`.
+
+### A.3 CI
+
+CI on **`6bf04d8`**: all succeeded.
+- Validate with hassfest: success (03:49:45Z). This covers the new translation key.
+- HACS validation: success (03:50:09Z).
+- Tests: success (03:54:00Z).
+
+### A.4 VM 9102's 13:15 run (decision 4, read-only)
+
+Read at 13:48 AEST through the HA REST API and the diagnostics download. Only selected
+fields were printed. No Amber calls were made by me.
+
+| Field | Value |
+|---|---|
+| trigger | `scheduled (final)` (the fixed 13:15 slot) |
+| started / finished | 2026-10-03 03:15:00Z / 03:15:06Z (13:15:00 to 13:15:06 AEST) |
+| status | **`caught_up`** |
+| imported_days | **2026-09-29, 09-30, 10-01, 10-02** (all 4) |
+| calls | `sites_usage` **9** |
+| retention | `moved forward 7 days (bisected)`, 8 calls; boundary 2026-06-29 → **2026-07-06** (96 → 89 days) |
+| revisions | checked `[]`, changed `[]`, 0 rewritten |
+| marker / last_written | 2026-10-02 / 2026-10-02 |
+| days behind | **0**; next run 2026-10-03 20:15Z = 2026-10-04 07:15 AEDT (daylight saving starts that night) |
+| the 4 days in the store | all `imported`, `estimated_records` 0 |
+
+**It caught up all 4 days.**
+- The 9 calls were 8 for retention plus 1 window call for the 4 days.
+- While the VM was down, Amber's rolling boundary moved forward 7 days. The daily check
+  found that and bisected within its 8-call cap, as designed.
+- The VM still runs `2.0.0-rc2`. In the 2 hours before this run it showed exactly the
+  case decision 2 fixes: "Up to date" while 4 days behind.
+
+### A.5 Live Amber API calls
+
+**0 by me.** The integration's own 13:15 run on 9102 made 9.
+
+### A.6 Lab state left behind
+
+- **VM 9102** (`amber-test-m3`): running, unchanged, on `2.0.0-rc2`, with no snapshots.
+  No files were written to it.
+- VM 101 was not accessed. No other clones exist.
+- Repository: `v2` is pushed. No tag, and nothing merged to `main`.
+
+### A.7 Still open from the main report
+
+- Confirm that the token in `docs/images/02-amber-token-created.png` is revoked (section
+  3), or replace the image.
+- Confirm the Recovery-only interpretation in A.1.
+- Then merge, tag `v2.0.0`, and publish the release.

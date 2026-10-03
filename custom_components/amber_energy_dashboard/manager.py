@@ -22,7 +22,7 @@ A run does, in order:
 """
 
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 import logging
@@ -229,6 +229,8 @@ class AmberManager:
             hass, _LOGGER, config_entry=entry, name=f"{DOMAIN} status"
         )
         self._unsub_timer: CALLBACK_TYPE | None = None
+        self.after_scheduled: Callable[[], Awaitable[None]] | None = None
+        """Called after each scheduled attempt (the YAML-kit cleanup re-check)."""
         self._final_attempt = False
 
     @property
@@ -309,8 +311,10 @@ class AmberManager:
             _LOGGER.debug("Caught up; skipping scheduled attempt")
             self._delete_issue(ISSUE_BEHIND)
             self._publish()
-            return
-        await self.async_run("scheduled (final)" if final else "scheduled", final=final)
+        else:
+            await self.async_run("scheduled (final)" if final else "scheduled", final=final)
+        if self.after_scheduled is not None:
+            await self.after_scheduled()
 
     @property
     def caught_up(self) -> bool:

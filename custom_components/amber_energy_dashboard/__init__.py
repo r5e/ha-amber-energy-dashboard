@@ -74,10 +74,10 @@ from .importer import ImportContext
 from .manager import AmberManager, OwnSensor, nem_today
 from .migration import (
     MigrationRefused,
+    async_check_cleanup,
     async_delete_legacy,
     async_migrate,
     async_undo,
-    cleanup_issue,
 )
 from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs, own_cost_spec
@@ -409,7 +409,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         **extra,
     )
     entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
-    cleanup_issue(hass, manager)
+
+    async def _check_cleanup(_hass: HomeAssistant | None = None) -> None:
+        await async_check_cleanup(hass, manager)
+
+    # Re-check the YAML kit's leftovers once Home Assistant has started (so the kit's
+    # entities have been set up), and after each scheduled run.
+    entry.async_on_unload(async_at_started(hass, _check_cleanup))
+    manager.after_scheduled = _check_cleanup
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     manager.async_start()

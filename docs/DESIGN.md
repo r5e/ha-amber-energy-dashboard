@@ -576,9 +576,13 @@ example as device consumption) are reported, not changed.
 deleted; each one's prior state is recorded, and one already off stays off. Everything
 else is **listed** for the user to remove (helpers, scripts, YAML blocks, recorder
 excludes, or, for package users, the single package file), in the result and in a
-persistent Repairs issue (kept across restarts while the migration is completed; removed by
-undo). Old statistics are kept by default; a separate, explicit service deletes them later
-(after which undo is no longer possible).
+persistent Repairs issue. The issue is re-checked when the integration loads (once Home
+Assistant has started) and after each scheduled attempt: it lists only the leftovers that
+still exist (entities by state or registry entry, the rest_command service, the
+`amber_api_key` key in secrets.yaml, the v1 backfill files in the configuration folder) and
+clears itself once none remain. Undo removes it. Old statistics are kept by default and do
+not keep the issue open; a separate, explicit service deletes them later (after which undo
+is no longer possible).
 
 **Undo.** Every change is recorded in the Store. "Undo migration" restores the saved
 energy preferences and re-enables only the automations the migration turned off. A later

@@ -15,10 +15,11 @@ from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.db_schema import Statistics
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_add_external_statistics
-from homeassistant.core import HomeAssistant, ServiceRegistry
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, HomeAssistant, ServiceRegistry
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.setup import async_setup_component
 import pytest
 from pytest_homeassistant_custom_component.components.recorder.common import (
@@ -383,9 +384,15 @@ async def test_advanced_migration(
         "automations",
         "completed",
     ]
+    # The result lists everything; the Repairs issue only what exists (the automation).
+    assert any("script.amber_daily_import" in line for line in report["cleanup"])
     issue = ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
     assert issue is not None
-    assert "script.amber_daily_import" in issue.translation_placeholders["items"]
+    assert issue.translation_placeholders["items"] == (
+        f"- Automation {ADV_AUTOMATION}: turned off by the migration; delete it when you are "
+        "satisfied.\n"
+        f"- {migration._PACKAGE_HINT}"
+    )
     assert issue.is_persistent is True
     assert entry.runtime_data.manager.store.tail_rewrite is None
 
@@ -1365,6 +1372,7 @@ async def test_cleanup_issue_survives_a_restart(
 ) -> None:
     entry = await _entry(hass, aioclient_mock, hass_storage)
     await _advanced(hass)
+    hass.states.async_set("script.amber_daily_import", "off")
     await _migrate(hass, dry_run=False, confirm_backup=True)
     ir.async_delete_issue(hass, DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
     await hass.config_entries.async_reload(entry.entry_id)
@@ -1665,3 +1673,212 @@ async def test_options_flow_flagged_rows(
     )
     assert "Migration status: completed." in flow["description_placeholders"]["result"]
     assert _record(hass_storage)["sources"]["exclude_flagged"] is True
+
+
+# --- the "Finish removing the YAML kit" repair: live re-check --------------------------------
+
+CLEANUP_ISSUE = f"legacy_cleanup_{ENTRY_ID}"
+
+
+def _cleanup_items(hass: HomeAssistant) -> list[str] | None:
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, CLEANUP_ISSUE)
+    return None if issue is None else issue.translation_placeholders["items"].split("\n")
+
+
+async def test_cleanup_issue_lists_what_exists_and_clears(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The repair lists only the leftovers that still exist, re-checks after each
+    scheduled attempt (also a skipped, caught-up one), and clears once nothing remains,
+    although the old statistics are still there."""
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    mgr = entry.runtime_data.manager
+    await _advanced(hass)
+    await _adv_automation(hass)
+    hass.config.config_dir = str(tmp_path)
+    secrets = tmp_path / "secrets.yaml"
+    secrets.write_text("other: 1\namber_api_key: not-a-real-key\n", encoding="utf-8")
+    hass.states.async_set("script.amber_daily_import", "off")
+    hass.states.async_set("input_number.amber_retention_days", "90")
+    hass.services.async_register("rest_command", "amber_fetch_usage", lambda call: None)
+    registry = er.async_get(hass)
+    template = registry.async_get_or_create(
+        "sensor", "template", "amber-cost-import", suggested_object_id="amber_hourly_cost_import"
+    ).entity_id
+    assert template == ADV[ROLE_IMPORT_COST]  # registry entry only, no state
+
+    await _migrate(hass, dry_run=False, confirm_backup=True)
+
+    assert _cleanup_items(hass) == [
+        f"- Automation {ADV_AUTOMATION}: turned off by the migration; delete it when you are "
+        "satisfied.",
+        "- Helpers input_number.amber_retention_days.",
+        "- Scripts script.amber_daily_import (scripts.yaml).",
+        "- rest_command.amber_fetch_usage (configuration.yaml, rest_command:).",
+        f"- Template sensors {template} (configuration.yaml, template:), and their lines "
+        "under recorder: exclude: entities:.",
+        "- The amber_api_key line in secrets.yaml, if nothing else uses it.",
+        f"- {migration._PACKAGE_HINT}",
+    ]
+
+    # Some removed: the next scheduled attempt (caught up, so no run) narrows the list.
+    hass.states.async_remove("script.amber_daily_import")
+    registry.async_remove(ADV_AUTOMATION)
+    hass.services.async_remove("rest_command", "amber_fetch_usage")
+    await hass.async_block_till_done()
+    assert hass.states.get(ADV_AUTOMATION) is None
+    assert mgr.caught_up
+    calls = len(aioclient_mock.mock_calls)
+    await mgr._async_scheduled(final=False)
+    assert len(aioclient_mock.mock_calls) == calls  # the re-check makes no Amber calls
+    assert _cleanup_items(hass) == [
+        "- Helpers input_number.amber_retention_days.",
+        f"- Template sensors {template} (configuration.yaml, template:), and their lines "
+        "under recorder: exclude: entities:.",
+        "- The amber_api_key line in secrets.yaml, if nothing else uses it.",
+        f"- {migration._PACKAGE_HINT}",
+    ]
+
+    # Only the secret left: no package hint.
+    hass.states.async_remove("input_number.amber_retention_days")
+    registry.async_remove(template)
+    await mgr._async_scheduled(final=True)
+    assert _cleanup_items(hass) == [
+        "- The amber_api_key line in secrets.yaml, if nothing else uses it."
+    ]
+
+    # Everything gone; the old statistics are still there but do not keep it open.
+    secrets.write_text("other: 1\n", encoding="utf-8")
+    await mgr._async_scheduled(final=False)
+    assert _cleanup_items(hass) is None
+    assert "leftovers are all removed" in caplog.text
+    assert _record(hass_storage)["legacy_deleted"] is False
+    assert (await _rows(hass, [ADV[ROLE_IMPORT_ENERGY]]))[ADV[ROLE_IMPORT_ENERGY]]
+    assert _record(hass_storage)["status"] == "completed"  # nothing else changes
+
+    # It stays cleared after a reload.
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _cleanup_items(hass) is None
+
+
+async def test_cleanup_issue_rechecked_after_a_scheduled_run(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A scheduled attempt that runs (not caught up) also re-checks afterwards."""
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _entry(hass, aioclient_mock, hass_storage, fake)
+    mgr = entry.runtime_data.manager
+    await _advanced(hass)
+    hass.states.async_set("script.amber_daily_import", "off")
+    await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert _cleanup_items(hass) is not None
+
+    hass.states.async_remove("script.amber_daily_import")
+    clock.now += timedelta(days=1)
+    fake.latest = TODAY
+    assert not mgr.caught_up
+    await mgr._async_scheduled(final=False)
+    assert mgr.store.last_run["trigger"] == "scheduled"
+    assert _cleanup_items(hass) is None
+
+
+async def test_cleanup_check_waits_until_started(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """At load the check waits until Home Assistant has started, so the kit's entities
+    (set up by other integrations) are not mistaken for removed ones."""
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    await _advanced(hass)
+    hass.states.async_set("script.amber_daily_import", "off")
+    await _migrate(hass, dry_run=False, confirm_backup=True)
+
+    hass.set_state(CoreState.not_running)
+    hass.states.async_remove("script.amber_daily_import")  # not set up yet
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _cleanup_items(hass) is not None  # not cleared before the start
+
+    hass.states.async_set("script.amber_daily_import", "off")  # scripts load
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert _cleanup_items(hass) == [
+        "- Scripts script.amber_daily_import (scripts.yaml).",
+        f"- {migration._PACKAGE_HINT}",
+    ]
+
+
+async def test_cleanup_manual_pick_lists_its_sensors(hass: HomeAssistant) -> None:
+    """A manually picked source has no known layout: its legacy sensors are checked
+    (external statistic IDs are skipped), with no package hint."""
+    record = {
+        "status": "completed",
+        "sources": {
+            "layout": "manual",
+            ROLE_IMPORT_ENERGY: "sensor.my_import",
+            ROLE_EXPORT_ENERGY: "sensor.my_export",
+            ROLE_IMPORT_COST: "sensor.my_import",
+            ROLE_EXPORT_COST: "external:export_cost",
+        },
+        "automations": [],
+    }
+    hass.states.async_set("sensor.my_import", "1")
+    hass.states.async_set("sensor.my_export", "2")
+    assert await migration._async_leftovers(hass, record) == [
+        "Legacy sensors sensor.my_import and sensor.my_export, and the helpers, scripts and "
+        "YAML blocks that feed them: remove them once you are satisfied with the migration."
+    ]
+    hass.states.async_remove("sensor.my_import")
+    hass.states.async_remove("sensor.my_export")
+    assert await migration._async_leftovers(hass, record) == []
+
+
+async def test_cleanup_v1_files_and_secret(hass: HomeAssistant, tmp_path) -> None:
+    """v1: the backfill files count only when present in the configuration folder, and
+    only a top-level amber_api_key key in secrets.yaml counts."""
+    hass.config.config_dir = str(tmp_path)
+    record = {"status": "completed", "sources": {"layout": "v1"}, "automations": []}
+    assert await migration._async_leftovers(hass, record) == []  # no secrets.yaml at all
+
+    (tmp_path / "secrets.yaml").write_text(
+        "# amber_api_key: commented out\n"
+        "amber_api_key_old: x\n"
+        "nested:\n  amber_api_key: x\n"
+        "not a key line\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "amber_backfill_cache.json").write_text("{}", encoding="utf-8")
+    assert await migration._async_leftovers(hass, record) == [
+        "amber_backfill_cache.json, wherever you ran the backfill."
+    ]
+    (tmp_path / "secrets.yaml").write_text("amber_api_key : x\n", encoding="utf-8")
+    (tmp_path / "amber_backfill.py").write_text("", encoding="utf-8")
+    hass.states.async_set("sensor.amber_daily_grid_export", "1")
+    assert await migration._async_leftovers(hass, record) == [
+        "REST sensors sensor.amber_daily_grid_export (configuration.yaml, the rest: block "
+        "with the Amber usage URL).",
+        "The amber_api_key line in secrets.yaml, if nothing else uses it.",
+        "amber_backfill.py and amber_backfill_cache.json, wherever you ran the backfill.",
+        migration._PACKAGE_HINT,
+    ]
+
+
+async def test_cleanup_check_ignores_records_not_completed(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """No record, or an undone one: nothing is listed and no issue is created."""
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    mgr = entry.runtime_data.manager
+    hass.states.async_set("script.amber_daily_import", "off")
+    assert await migration.async_check_cleanup(hass, mgr) == []
+    await _advanced(hass)
+    await _migrate(hass, dry_run=False, confirm_backup=True)
+    await hass.services.async_call(DOMAIN, "undo_migration", {}, blocking=True)
+    assert await migration.async_check_cleanup(hass, mgr) == []
+    assert _cleanup_items(hass) is None

@@ -225,7 +225,7 @@
     },
     "legacy_cleanup": {
       "title": "Finish removing the YAML kit ({entry})",
-      "description": "The migration is complete. Remove these leftovers of the YAML kit when you are satisfied:\n\n{items}\n\nThis notice only lists them; nothing here is removed automatically."
+      "description": "The migration is complete. Remove these leftovers of the YAML kit when you are satisfied:\n\n{items}\n\nThis notice only lists them; nothing here is removed automatically. It is re-checked after each scheduled run and when Home Assistant starts, and clears itself once they are all gone. The old statistics are kept until you delete them with the delete_legacy_statistics action; see the migration guide."
     }
   },
   "services": {

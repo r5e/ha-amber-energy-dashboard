@@ -336,6 +336,46 @@ async def test_probe_retention_forces_fresh_discovery(
     assert "retention" not in await _run(hass)
 
 
+async def test_probe_retention_record_keeps_previous_boundary(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """After a probe, the stored retention record (and so diagnostics) keeps the
+    boundary from before the probe, and a move is logged as a warning."""
+    _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
+    fake = FakeAmber(TODAY - timedelta(days=89), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    store = entry.runtime_data.manager.store
+
+    await _probe(hass)
+
+    assert store.retention["boundary"] == (TODAY - timedelta(days=89)).isoformat()
+    assert store.retention["previous_boundary"] == (TODAY - timedelta(days=20)).isoformat()
+    assert (
+        f"Usage retention boundary moved from {TODAY - timedelta(days=20)} to "
+        f"{TODAY - timedelta(days=89)} (bisection)" in caplog.text
+    )
+    # Read back from the saved store file, not just the in-memory copy.
+    await hass.async_block_till_done()
+    saved = hass_storage[_store_key()]["data"]["retention"]
+    assert saved["previous_boundary"] == (TODAY - timedelta(days=20)).isoformat()
+
+
+async def test_first_discovery_has_no_previous_boundary(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock
+) -> None:
+    """With nothing stored, discovery records previous_boundary as None."""
+    fake = FakeAmber(TODAY - timedelta(days=89), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    await _run(hass)
+    retention = entry.runtime_data.manager.store.retention
+    assert retention["method"] == "bisection"
+    assert retention["previous_boundary"] is None
+
+
 @pytest.mark.parametrize("failure", ["server", "auth", "budget", "cap"])
 async def test_probe_retention_failure_keeps_stored_boundary(
     hass: HomeAssistant,

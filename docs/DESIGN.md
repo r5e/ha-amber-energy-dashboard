@@ -443,6 +443,12 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
   (lesson from the YAML rebuild bug).
 - Every stop is recorded in the Store with a reason, and exposed via the status sensor
   and diagnostics.
+- The status sensor shows the last run's outcome, except that "Up to date" is shown only
+  while nothing is outstanding. When the last run caught up but days have become due
+  since (for example after a restart following downtime), it shows "Waiting for next
+  run" (`waiting_for_next_run`, display only; the stored outcome is unchanged). In
+  Recovery-only mode the usage marker is not scheduled work, so it does not count as
+  outstanding.
 
 ## 14. Migration from the YAML kits (Milestone 6a)
 
@@ -578,11 +584,12 @@ else is **listed** for the user to remove (helpers, scripts, YAML blocks, record
 excludes, or, for package users, the single package file), in the result and in a
 persistent Repairs issue. The issue is re-checked when the integration loads (once Home
 Assistant has started) and after each scheduled attempt: it lists only the leftovers that
-still exist (entities by state or registry entry, the rest_command service, the
-`amber_api_key` key in secrets.yaml, the v1 backfill files in the configuration folder) and
-clears itself once none remain. Undo removes it. Old statistics are kept by default and do
-not keep the issue open; a separate, explicit service deletes them later (after which undo
-is no longer possible).
+still exist (entities by state or registry entry, the rest_command service, the v1
+backfill files in the configuration folder) and clears itself once none remain. Undo
+removes it. Two parts are advisory and never keep the issue open: the `amber_api_key` line
+in secrets.yaml (listed in the result only, since something else may use it; secrets.yaml
+is not read) and the old statistics. Old statistics are kept by default; a separate,
+explicit service deletes them later (after which undo is no longer possible).
 
 **Undo.** Every change is recorded in the Store. "Undo migration" restores the saved
 energy preferences and re-enables only the automations the migration turned off. A later

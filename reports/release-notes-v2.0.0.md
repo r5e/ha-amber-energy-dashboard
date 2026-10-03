@@ -37,8 +37,12 @@ live prices. Keep both.
 - **The "Finish removing the YAML kit" repair clears itself.** It used to be a fixed list
   that never went away. It is now re-checked when Home Assistant starts and after each
   scheduled import, lists only the parts of the kit that are still there, and clears
-  itself once they are all gone. The old statistics are optional to delete, so they no
-  longer keep it open.
+  itself once they are all gone. The old statistics and the `amber_api_key` line in
+  `secrets.yaml` are optional to remove (another tool may use the key), so they no
+  longer keep it open; the migration guide still mentions both.
+- **Import status no longer says "Up to date" while days are outstanding.** After Home
+  Assistant has been off for a while, it now shows **Waiting for next run** until the
+  next scheduled import catches up; "Days behind" shows how many days.
 - **Diagnostics after `probe_retention`** now show the previous retention date, and a
   move is logged as a warning.
 - **Installation and migration guides**, step by step with screenshots.

@@ -246,7 +246,8 @@ The migration is under **Configure > Migrate from the YAML kit**, or the
    item: the helpers, scripts, YAML blocks (`rest:`, template sensors, `recorder:
    exclude`) and the `amber_api_key` secret if nothing else uses it. The Repairs item is
    re-checked when Home Assistant starts and after each scheduled import, lists only what
-   is still there, and clears itself once everything is gone.
+   is still there, and clears itself once everything is gone. The `amber_api_key` secret
+   is not checked, since another tool may use it: remove it yourself if nothing does.
 
 If the migration is interrupted, running it again resumes where it stopped.
 
@@ -282,11 +283,13 @@ statistics start with the integration's own data.
 
 ## Troubleshooting and diagnostics
 
-**The import status sensor** shows what the last run did:
+**The import status sensor** shows what the last run did ("Up to date" only while nothing
+is outstanding):
 
 | Status | Meaning |
 |---|---|
 | Up to date | All complete days are imported |
+| Waiting for next run | The last run was up to date, but days have become due since, for example after Home Assistant was off for a while. The next scheduled attempt imports them; "Days behind" shows how many |
 | Waiting for Amber data | Yesterday is not published yet. This is normal early in the morning; later attempts retry |
 | Paused (rate limit budget) / Paused (rate limited) | The shared Amber rate limit was low. The next attempt continues |
 | Amber unavailable | Network error or an Amber server error. The next attempt retries |

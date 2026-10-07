@@ -663,6 +663,13 @@ Each milestone ends with a written report and Robert's sign-off before the next 
 5. **Usage modes and own-sensor cost:** plus reconciliation and the optional price series.
 6. **Migration and release.** 6a: migration from the YAML kits (section 14), verified on
    VM 101. 6b: the v1-kit clone test, README with credits, HACS release.
+7. **2.0.0 release preparation:** guides, cleanup repair, release notes (2.0.0).
+8. **2.0.1:** legacy gaps in the migration parity check.
+9. **v2.1 usability** (section 18): device buttons, Energy dashboard setup and its Repairs
+   issue, the migration acknowledgement for unverifiable history, documentation.
+10. **v2.1 bill estimate** (section 19).
+11. **v2.1 export allowance for two-way network tariffs** (section 20). Depends on M10's
+    billing day.
 
 ## 17. Carried-forward lessons (do not rediscover)
 
@@ -677,3 +684,158 @@ Each milestone ends with a written report and Robert's sign-off before the next 
 - Advance the marker last, only after verified success.
 - Treat empty inner results as errors.
 - Test failure paths, not just happy paths. Lab before production. Verify every write.
+
+---
+
+# Version 2.1
+
+Agreed in the v2.1 planning chat (October 2026). Milestone 9 is implemented first;
+Milestones 10 and 11 are design only until their milestones start.
+
+## 18. Usability (Milestone 9)
+
+**Buttons** (button platform, on the integration's device):
+- **Run now** (`button.<device>_run_now`, under Controls): the same as the `run_now`
+  service, a catch-up run under the run lock.
+- **Re-check retention** (`button.<device>_re_check_retention`, a diagnostic entity): the
+  same as `probe_retention`. A failure raises an error in the UI, and the stored boundary is
+  kept, as with the service.
+- Names and icons through translations (`entity.button`) and `icons.json`.
+
+**Energy dashboard setup.**
+- The grid sources for an entry: **one grid source** with the general channel's energy
+  (`stat_energy_from`) and cost (`stat_cost`) and the feed-in channel's energy
+  (`stat_energy_to`) and compensation (`stat_compensation`); price fields empty;
+  `cost_adjustment_day` 0. A **controlled-load channel gets a second grid source** with its
+  energy and cost (Home Assistant's grid source holds one import meter; several grid
+  sources are allowed). A site without a general channel puts the feed-in on a grid source
+  with no import meter. The sources are validated against Home Assistant's energy schema
+  before saving.
+- **Config flow:** the last step (schedule) shows "Add to the Energy dashboard" (default
+  on) only when the Energy dashboard has **no grid source**. The choice is stored in the
+  entry's data. It is carried out once, when the entry is first set up; the Store records
+  the outcome (`energy_setup`), so it never repeats. If a grid source exists by then, it
+  is skipped silently. An existing grid source is never modified; legacy kits are the
+  migration's job.
+- **The change uses the migration's energy-preference code:** a full copy of the
+  preferences is saved in the Store and read back from disk before any change, the new
+  preferences are validated and saved through Home Assistant's energy manager, the
+  changed sources are read back, and on a mismatch the saved sources are restored.
+- **Repairs issue `energy_not_used`** ("The Energy dashboard isn't using Amber Energy
+  Dashboard", a warning, fixable). Raised when, **24 h after the first successful
+  import**, no energy preference (any source or device) references any of the entry's
+  statistics. The Store records the first successful import (`first_import_at`); an
+  existing install with data gets the time of the upgrade, so it has the same 24 h.
+  Checked when Home Assistant has started, after each run, and whenever the energy
+  preferences change; cleared automatically once the statistics are in use. Not raised
+  in Pricing-only mode (no usage statistics).
+- **Fix flow:**
+  - no grid source: offer to add the grid sources (as above); the issue is resolved;
+  - a YAML kit is detected (migration detection finds a candidate): explain that the
+    migration switches the Energy dashboard, and point to the integration's options
+    ("Migrate from the YAML kit"); the issue stays until the statistics are in use;
+  - otherwise (another grid source): explain how to select the statistics by hand, and
+    let the user dismiss the issue. A dismissal is stored and the issue is not raised
+    again for that entry.
+
+**Migration acknowledgement for unverifiable history** (changes section 14's "at least 3
+compared days").
+- When parity has **fewer than 3 compared days, no differences, and at least one legacy
+  gap** (the legacy data does not overlap the integration's: all gaps, or a kit that
+  stopped before the integration's first day), parity is *unverified*, not failed. The dry
+  run says why, for example "The YAML kit's last data is D, before the integration's first
+  day (B); the old history can't be checked against Amber's data", and names the days
+  that will have no data in either source.
+- A real run then needs an explicit acknowledgement: the options-flow checkbox "I
+  understand the old history can't be checked against Amber's data", or the service field
+  `acknowledge_unverified: true`. The choice is stored with the run's sources, so a
+  resumed run keeps it.
+- Fewer than 3 compared days with no gap (for example an integration with only 2 days of
+  data) still refuses: waiting fixes it. Any genuine difference still refuses.
+
+**Documentation:** README FAQ on NEM days and daylight saving; README troubleshooting on
+HACS's "icon not available"; INSTALL.md's version step shortened to a pre-release
+footnote, the new setup option (section 3) and the buttons (section 4).
+
+## 19. Bill estimate (Milestone 10, design only)
+
+**Options** (options flow, a "Bill estimate" step; off until a billing day is set):
+- billing day of month, 1 to 28 (the cycle runs from that day to the day before it next
+  month);
+- daily fixed charges **excluding GST**, as named fields: network daily, metering,
+  retailer subscription, other (AUD per day);
+- GST rate, default 10 %.
+
+**Sensors** (AUD, display only, no state class):
+- **Bill to date** = billed import cost (Amber's values, GST-inclusive, all import
+  channels) − billed feed-in compensation + fixed charges × elapsed days × (1 + GST), over
+  the **complete imported days** of the current cycle. Attributes: the breakdown by line
+  (usage, each fixed charge, export credit), cycle start and end, data-through date, days
+  elapsed and days in cycle.
+- **Projected bill** = average daily usage cost (import cost − compensation) over the
+  completed days × days in the cycle, plus the exact fixed charges for the whole cycle.
+- **Days into cycle** and **average cost per day**.
+- One-off charges (for example card payment fees) are out of scope; the docs say so.
+
+**Optional statistic** (opt-in): "import cost including fixed charges",
+`amber_energy_dashboard:{site}_{chan}_cost_incl_fixed` (general channel), with the fixed
+daily amount including GST spread evenly over the day's 24 hours, for users who want the
+Energy dashboard's totals to match the bill. The user selects it in the Energy dashboard
+instead of the plain cost. It is written by the import path alongside the other
+statistics (a secondary chain, so it follows revisions and rewrites).
+
+**Acceptance** (VM 9102 holds this account's history): the bill for 28 Aug to 27 Sep
+2026 (31 days):
+- usage $98.68 ex GST ($108.548 inc; the integration holds $108.542390);
+- fixed: network 0.7019 + metering 0.3852 + subscription 0.7471 = 1.8342 $/day ex GST,
+  × 31 × 1.1 = $62.5462;
+- export credits $5.38 (wholesale 5.20 + reward 0.18); a one-off card fee $1.61 ex GST
+  ($1.77 inc); total payable $167.51, so **$165.74 without the card fee**.
+- With M11's allowance adjustment (compensation $5.3749): 108.5424 − 5.3749 + 62.5462 =
+  **$165.71**, within a few cents of $165.74.
+- Without it (billed compensation $2.1238): 108.5424 − 2.1238 + 62.5462 = **$168.96**,
+  about **$3.25 higher**. (The planning brief said "lower"; less export credit makes the
+  bill higher. To confirm in the planning chat.)
+
+## 20. Export allowance for two-way network tariffs (Milestone 11, design only)
+
+**Facts** (reports/billing-reconciliation-2026-09.md):
+- Amber's feed-in `perKwh` = loss factor (about 0.974) × spot + a network component:
+  −1.86 c/kWh in the solarSponge period (10:00 to 14:00) and +3.47 c/kWh in peak
+  (weekdays 16:00 to 20:00, April to October; higher November to March). The period of
+  each interval comes from the general channel's `tariffInformation.period` (feed-in
+  records have none).
+- Endeavour N61's free export threshold is 2,920 kWh a year, "calculated on a daily basis
+  and applied to the billing period" (AER pricing proposal): allowance = 8 kWh × days in
+  the billing period, against total exports in the penalty window over the period; only
+  the excess is charged. The September bill shows no export charge (174.79 kWh exported in
+  the window, against a 248 kWh allowance), while Amber's usage data deducts it per
+  interval.
+
+**Detection and options:**
+- Detect the network (`/sites` `network`) and the channel tariff codes at setup; store
+  them in the entry, refreshed on reload (the setup `/sites` call, no extra calls).
+- A built-in table of two-way tariffs, starting with **Endeavour N61 only** (verified);
+  others are added when verified.
+- Options: enable; override the allowance (kWh per day); billing-period or daily
+  totalling; the penalty period by name (default from the table, `solarSponge` for N61).
+
+**Rates measured, not hard-coded:** the penalty and reward rates are the median network
+component per period over recent days (`−perKwh − loss factor × spot`, with the loss
+factor measured from offPeak intervals), because Endeavour's published rates differ from
+what Amber applies (1.79 against 1.86 c/kWh).
+
+**Stored per day:** window export kWh and the penalty amount (Σ kWh × rate in the penalty
+period).
+
+**Outputs:**
+- An **"adjusted compensation"** statistic, `amber_energy_dashboard:{site}_{chan}_compensation_adjusted`:
+  billed compensation plus the refunded penalty on exports within the allowance,
+  accumulated per billing period (so the refund is not known in full until the period's
+  window exports exceed the allowance, or the period ends), for users to select in the
+  Energy dashboard.
+- Sensors: allowance used and allowance remaining (kWh) for the current billing period.
+- The bill estimate's export line uses the adjusted figure.
+
+**Acceptance (September):** billed compensation $2.1238 + refund (174.789 kWh × 1.86 c =
+$3.2511) = **$5.3749**, against the bill's $5.38.

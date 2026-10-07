@@ -18,7 +18,7 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
@@ -72,6 +72,7 @@ from .const import (
     SERVICE_UNDO_MIGRATION,
     SUBENTRY_OWN_SENSOR,
 )
+from .devices import device_info
 from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
 from .importer import ImportContext
 from .manager import AmberManager, OwnSensor, nem_today
@@ -128,6 +129,8 @@ class AmberRuntimeData:
 
     context: ImportContext
     manager: AmberManager
+    device_id: str = ""
+    """The site's device in the device registry."""
     last_import: dict[str, Any] | None = None
     last_error: dict[str, str] | None = None
 
@@ -419,7 +422,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         own_sensors=own,
         **extra,
     )
-    entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
+    # The site's device first, so own-sensor devices can link to it (section 18).
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **device_info(site_id)
+    )
+    entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager, device_id=device.id)
     if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
         # Chosen in the config flow: carried out once (section 18).
         await async_add_to_energy(hass, manager, "setup")

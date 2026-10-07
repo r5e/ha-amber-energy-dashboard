@@ -176,8 +176,8 @@ The dashboard then shows your own meter's energy, in real time, priced at Amber'
 billed rates (the cost arrives a day later, when Amber publishes it). This was verified on
 Home Assistant 2026.9: the Energy dashboard accepts the statistic and reports no issues.
 
-**Reconciliation.** When a whole-house sensor is mapped to the general channel, a sensor
-named "Reconciliation: <your sensor>" appears. It shows, for the most recent day both
+**Reconciliation.** When a whole-house sensor is mapped to the general channel, a
+**Reconciliation** sensor appears on a device named "<your sensor> (own sensor)". It shows, for the most recent day both
 have, your meter's kWh minus Amber's kWh (the percentage and both totals are attributes).
 It catches CT calibration drift or a sensor that stopped reporting.
 

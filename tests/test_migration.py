@@ -102,6 +102,7 @@ def _legacy_rows(
     export_cost_sign: float = -1.0,
     start: dict[str, float] | None = None,
     tweak: dict[tuple[str, date], float] | None = None,
+    window: list[date] = WINDOW,
 ) -> dict[str, list[dict[str, Any]]]:
     """Cumulative legacy rows: daily lumps (row at local midnight holding the total through
     the end of that day), then hourly rows equal to the real data."""
@@ -116,7 +117,7 @@ def _legacy_rows(
     )
     rows: dict[str, list[dict[str, Any]]] = {role: [] for role in ids}
     for i, day in enumerate(lump_days):
-        a = _amounts(day) if day in WINDOW else None
+        a = _amounts(day) if day in window else None
         inc = {
             ROLE_IMPORT_ENERGY: sum(a[E1]) if a else 10.0 + i,
             ROLE_EXPORT_ENERGY: sum(a[B1]) if a else 5.0 + i,
@@ -726,7 +727,10 @@ async def test_too_few_overlap_days(
     await _import_legacy(hass, ids, _legacy_rows(ids, hourly_days=WINDOW[:2], lump_days=PRE))
     report = await _migrate(hass)
     assert report["parity"]["passed"] is False
-    assert report["parity"]["reason"] == "only 2 comparable days (at least 3 needed)"
+    assert report["parity"]["reason"] == (
+        "only 2 comparable days (at least 3 needed); 2 days are legacy gaps"
+    )
+    assert report["parity"]["gaps"][0]["kind"] == "trailing"
 
 
 async def test_missing_day_on_one_side_is_a_mismatch(
@@ -777,6 +781,9 @@ async def test_preconditions(
     )
     report = await _migrate(hass)
     assert report["problems"] == ["A range rewrite is in progress; let a run finish it first."]
+    text = migration.format_report(report)
+    assert "Problem: A range rewrite is in progress" in text
+    assert "Parity" not in text  # refused before parity was checked
     await store.async_set_tail_rewrite(None)
 
     await store.async_set_pending(TODAY)
@@ -1874,3 +1881,303 @@ async def test_cleanup_check_ignores_records_not_completed(
     await hass.services.async_call(DOMAIN, "undo_migration", {}, blocking=True)
     assert await migration.async_check_cleanup(hass, mgr) == []
     assert _cleanup_items(hass) is None
+
+
+# --- legacy gaps (2.0.1): a kit that stopped or paused ------------------------------------
+
+V1_KWH = {ROLE_IMPORT_ENERGY: V1[ROLE_IMPORT_ENERGY], ROLE_EXPORT_ENERGY: V1[ROLE_EXPORT_ENERGY]}
+
+
+async def _entry_days(hass, aioclient_mock, hass_storage, days: int) -> list[date]:
+    """An entry whose first run has imported the last ``days`` days; returns them."""
+    _preload_store(hass_storage, retention_days=days)
+    await _setup_entry(hass, aioclient_mock, FakeAmber(TODAY - timedelta(days=120), YESTERDAY))
+    result = await _run(hass)
+    window = [TODAY - timedelta(days=d) for d in range(days, 0, -1)]
+    assert result["imported_days"] == [d.isoformat() for d in window]
+    return window
+
+
+def _stall(
+    rows: dict[str, list[dict[str, Any]]],
+    first: date,
+    last: date | None = None,
+    *,
+    drop: bool = False,
+    catch_up: bool = False,
+) -> None:
+    """The kit stops writing data on ``first`` (and resumes after ``last``).
+
+    In the stalled days the rows keep their times with frozen sums (the v1 automation
+    still runs and adds 0 when its REST sensor fails), or with ``drop`` there are no rows.
+    After ``last`` the kit resumes: with ``catch_up`` its first row is a lump holding the
+    stalled days too; otherwise the stalled days' amounts are lost and later sums are lower.
+    """
+    start = importer.nem_day_start(first)
+    end = importer.nem_day_start(last + timedelta(days=1)) if last else None
+    for role, series in rows.items():
+        base = max((r["sum"] for r in series if r["start"] < start), default=0.0)
+        stalled = [r for r in series if r["start"] >= start and (end is None or r["start"] < end)]
+        lost = stalled[-1]["sum"] - base
+        out = []
+        for row in series:
+            if row in stalled:
+                if not drop:
+                    out.append({**row, "state": base, "sum": base})
+            elif end is not None and row["start"] >= end and not catch_up:
+                out.append({**row, "state": row["sum"] - lost, "sum": row["sum"] - lost})
+            else:
+                out.append(row)
+        rows[role] = out
+
+
+async def _v1_gap_scenario(
+    hass, aioclient_mock, hass_storage, days: int, *, tweak=None, **stall: Any
+) -> tuple[list[date], dict]:
+    window = await _entry_days(hass, aioclient_mock, hass_storage, days)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(V1_KWH, hourly_days=[], lump_days=pre + window, window=window, tweak=tweak)
+    _stall(rows, **stall)
+    await _import_legacy(hass, V1_KWH, rows)
+    await _prefs(hass, V1[ROLE_IMPORT_ENERGY], V1[ROLE_EXPORT_ENERGY])
+    return window, rows
+
+
+async def test_v1_kit_stopped_before_today(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The field case: daily rules, an 86-day overlap, and a v1 kit that stopped importing
+    after day 69, still writing rows with 0 kWh each day. The last 16 days are a legacy gap,
+    not 32 differences: parity passes, the dry run says so, and the copy, re-base and
+    Energy dashboard switch leave the integration's own data in place over the gap."""
+    window, rows = await _v1_gap_scenario(
+        hass, aioclient_mock, hass_storage, 86, first=TODAY - timedelta(days=16)
+    )
+    assert window[70] == TODAY - timedelta(days=16)
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is True, parity["reason"]
+    assert parity["rules"] == "daily"
+    assert (parity["days"], parity["compared_days"], parity["gap_days"]) == (86, 70, 16)
+    assert parity["mismatch_count"] == 0
+    stopped = (
+        f"The YAML kit stopped importing after {window[69]}; 16 days ({window[70]} to "
+        f"{window[85]}) will come from the integration's own data."
+    )
+    assert parity["gaps"] == [
+        {
+            "kind": "trailing",
+            "first": window[70].isoformat(),
+            "last": window[85].isoformat(),
+            "days": 16,
+            "kwh": pytest.approx(sum(sum(_amounts(d)[E1]) for d in window[70:]), abs=1e-3),
+            "text": stopped,
+        }
+    ]
+    text = migration.format_report(report)
+    assert f"86 days ({window[0]} to {window[85]}), 70 compared and 16 legacy gap days" in text
+    assert f"- {stopped}" in text
+    before = await _rows(hass)
+
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+
+    assert report["migration_status"] == "completed"
+    assert stopped in migration.format_result(report)
+    stored = await _rows(hass)
+    for sid in (E1, B1):
+        _assert_continuous(stored[sid])
+        # The integration's own hourly amounts are kept over the whole window, gap included.
+        ours = {r["start"]: r["state"] for r in before[sid]}
+        assert {r["start"]: r["state"] for r in stored[sid] if r["start"] in ours} == ours
+    boundary = importer.nem_day_start(window[0])
+    seam = _by_start(stored[E1])[boundary]
+    last_lump = next(r for r in reversed(rows[ROLE_IMPORT_ENERGY]) if r["start"] < boundary)
+    assert seam["sum"] - seam["state"] == pytest.approx(last_lump["sum"])
+    gap_end = _by_start(stored[E1])[importer.nem_day_start(TODAY) - HOUR]
+    assert gap_end["sum"] == pytest.approx(
+        last_lump["sum"] + sum(sum(_amounts(d)[E1]) for d in window), abs=1e-3
+    )
+    grid = (await async_get_manager(hass)).data["energy_sources"][0]
+    assert (grid["stat_energy_from"], grid["stat_energy_to"]) == (E1, B1)
+
+
+@pytest.mark.parametrize(
+    ("drop", "catch_up", "kind"),
+    [
+        (False, True, "catch_up"),  # rows with 0, then a lump
+        (True, True, "catch_up"),  # no rows, then a lump
+        (False, False, "interior"),  # rows with 0, resumed without catching up
+        (True, False, "interior"),  # no rows, resumed without catching up
+    ],
+)
+async def test_v1_interior_gap(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    drop: bool,
+    catch_up: bool,
+    kind: str,
+) -> None:
+    """A kit that paused for three days and resumed: with a catch-up lump the totals are
+    compared across the gap plus the lump; without, the gap is reported and the next day is
+    compared on its own. Either way, parity passes and the run completes."""
+    first, last = TODAY - timedelta(days=7), TODAY - timedelta(days=5)
+    await _v1_gap_scenario(
+        hass, aioclient_mock, hass_storage, 12, first=first, last=last, drop=drop, catch_up=catch_up
+    )
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is True, parity["reason"]
+    assert (parity["compared_days"], parity["gap_days"]) == (9, 3)
+    [gap] = parity["gaps"]
+    assert (gap["kind"], gap["first"], gap["last"]) == (kind, first.isoformat(), last.isoformat())
+    lump = (last + timedelta(days=1)).isoformat()
+    if catch_up:
+        assert gap["lump_day"] == lump
+        assert f"caught up on {lump}; compared as one total from {first} to {lump}" in gap["text"]
+    else:
+        assert "lump_day" not in gap
+        assert gap["text"].endswith("(3 days); the integration's own data covers them.")
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    _assert_continuous((await _rows(hass))[E1])
+
+
+async def test_genuine_mismatch_beside_a_gap_still_fails(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A difference on a day both sides have data for fails, gap or not, and the failures
+    are counted by category before they are listed."""
+    days = 30
+    tweaked = [TODAY - timedelta(days=d) for d in range(days - 1, days - 13, -1)]
+    tweak = {(ROLE_EXPORT_ENERGY, d): 0.02 for d in tweaked}
+    tweak[(ROLE_IMPORT_ENERGY, tweaked[0])] = 0.05
+    await _v1_gap_scenario(
+        hass, aioclient_mock, hass_storage, days, tweak=tweak, first=TODAY - timedelta(days=5)
+    )
+    before = await _rows(hass)
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is False
+    assert parity["gap_days"] == 5
+    assert parity["mismatch_count"] == 13
+    assert parity["mismatch_summary"] == (
+        "grid import kWh differs: 1 day; grid export kWh differs: 12 days"
+    )
+    assert parity["reason"] == f"13 daily totals differ ({parity['mismatch_summary']})"
+    text = migration.format_report(report)
+    assert "Differences (10 of 13 shown):" in text
+    assert (
+        f"- {tweaked[0]}, grid import kWh: differs (legacy "
+        f"{parity['mismatches'][0]['legacy']}, integration {parity['mismatches'][0]['new']})"
+    ) in text
+    assert "stopped importing after" in text
+    with pytest.raises(ServiceValidationError, match="grid export kWh differs: 12 days"):
+        await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert await _rows(hass) == before
+    assert _record(hass_storage) is None
+
+
+async def test_catch_up_lump_that_disagrees_fails(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """After a gap, a lump that matches neither the day alone nor the gap plus the day is
+    a difference; a catch-up whose import agrees but export does not is one too, reported
+    over the whole span."""
+    first, last = TODAY - timedelta(days=7), TODAY - timedelta(days=5)
+    lump = last + timedelta(days=1)
+    await _v1_gap_scenario(
+        hass,
+        aioclient_mock,
+        hass_storage,
+        12,
+        tweak={(ROLE_IMPORT_ENERGY, lump): 1.0, (ROLE_EXPORT_ENERGY, lump): 1.0},
+        first=first,
+        last=last,
+        catch_up=True,
+    )
+    parity = (await _migrate(hass))["parity"]
+    assert parity["passed"] is False
+    assert parity["gaps"][0]["kind"] == "interior"
+    assert {(m["statistic"], m["problem"], m["day"]) for m in parity["mismatches"]} == {
+        ("grid import kWh", "differs", lump.isoformat()),
+        ("grid export kWh", "differs", lump.isoformat()),
+    }
+
+
+async def test_catch_up_with_export_difference(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    first, last = TODAY - timedelta(days=7), TODAY - timedelta(days=5)
+    lump = last + timedelta(days=1)
+    await _v1_gap_scenario(
+        hass,
+        aioclient_mock,
+        hass_storage,
+        12,
+        tweak={(ROLE_EXPORT_ENERGY, lump): 1.0},
+        first=first,
+        last=last,
+        catch_up=True,
+    )
+    report = await _migrate(hass)
+    parity = report["parity"]
+    assert parity["gaps"][0]["kind"] == "catch_up"
+    [mismatch] = parity["mismatches"]
+    assert mismatch["problem"] == "catch-up total differs"
+    assert (mismatch["from"], mismatch["day"]) == (first.isoformat(), lump.isoformat())
+    assert f"- {first} to {lump}, grid export kWh: catch-up total differs" in (
+        migration.format_report(report)
+    )
+
+
+async def test_advanced_kit_stopped_with_an_earlier_pause(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The advanced version (hourly rules, cost compared): a one-day pause with frozen
+    hourly rows and a catch-up in the next day's first hour, then a stop with no rows for
+    the last three days. Both are gaps; parity passes and the run completes."""
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 10)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(ADV, hourly_days=window, lump_days=pre, window=window)
+    _stall(rows, window[3], window[3], catch_up=True)
+    _stall(rows, window[7], drop=True)
+    await _import_legacy(hass, ADV, rows)
+    await _prefs(
+        hass,
+        ADV[ROLE_IMPORT_ENERGY],
+        ADV[ROLE_EXPORT_ENERGY],
+        stat_cost=ADV[ROLE_IMPORT_COST],
+        stat_compensation=ADV[ROLE_EXPORT_COST],
+    )
+    await _adv_automation(hass)
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is True, parity["reason"]
+    assert parity["rules"] == "hourly"
+    assert [(g["kind"], g["first"], g["days"]) for g in parity["gaps"]] == [
+        ("catch_up", window[3].isoformat(), 1),
+        ("trailing", window[7].isoformat(), 3),
+    ]
+    assert parity["gaps"][0]["text"].startswith(f"The YAML kit has no data for {window[3]} to ")
+    assert "(1 day)" in parity["gaps"][0]["text"]
+    assert parity["compared"]["export cost"] == 6
+    before = await _rows(hass)
+    report = await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert report["migration_status"] == "completed"
+    stored = await _rows(hass)
+    for sid in (E1, B1, NET):
+        _assert_continuous(stored[sid])
+    ours = {r["start"]: r["state"] for r in before[B1_COMP]}
+    assert {r["start"]: r["state"] for r in stored[B1_COMP] if r["start"] in ours} == ours
+    grid = (await async_get_manager(hass)).data["energy_sources"][0]
+    assert (grid["stat_cost"], grid["stat_compensation"]) == (E1_COST, B1_COMP)

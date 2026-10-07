@@ -165,6 +165,16 @@ options:
 - **Patience days** and **Revision days:** how long to wait for missing days, and how long
   to re-check days Amber marked as estimated. The defaults suit almost everyone.
 
+### Bill estimate (optional)
+
+Choose **Bill estimate** in the options menu, and enter your **billing day** (the first
+day of each cycle on your bill), the **daily fixed charges excluding GST** as printed on
+your bill (network daily charge, metering, Amber subscription, other), and the **GST rate**
+(10 %). The device then shows **Bill to date**, **Projected bill**, **Days into billing
+cycle** and **Average cost per day** for the current cycle. The estimate runs a day behind,
+because only complete imported days count, and it leaves out one-off charges such as card
+fees. Leave the billing day empty to turn it off.
+
 ### Own energy sensors (optional)
 
 If you measure your own consumption (for example with CT clamps or smart plugs), click

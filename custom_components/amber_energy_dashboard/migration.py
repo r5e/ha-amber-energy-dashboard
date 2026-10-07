@@ -13,7 +13,6 @@ from collections.abc import Iterable, Mapping, Sequence
 import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-import itertools
 import json
 import logging
 import math
@@ -71,6 +70,8 @@ MIN_PARITY_DAYS: Final = 3
 KWH_DIGITS: Final = 3
 COST_TOLERANCE: Final = 0.01
 DAILY_KWH_TOLERANCE: Final = 0.01
+ZERO_KWH: Final = 0.0005
+"""A legacy daily total below this (it rounds to 0.000 kWh) is "no data" when ours is not."""
 MAX_REPORTED_MISMATCHES: Final = 10
 V1_EMPTY_COST: Final = 0.05
 ENERGY_ROW_CAP: Final = 100.0
@@ -435,21 +436,26 @@ def _targets(manager: AmberManager) -> tuple[dict[str, str], list[str]]:
     return targets, problems
 
 
-def _legacy_daily(rows: Sequence[Mapping[str, Any]], rules: str, tz: Any) -> dict[date, float]:
-    """Daily totals from cumulative sums: end-of-day sum minus the previous day's.
+def _legacy_ends(rows: Sequence[Mapping[str, Any]], rules: str, tz: Any) -> dict[date, float]:
+    """Each day's last cumulative sum. Hourly data is assigned to NEM days; daily lumps (one
+    row at local midnight holding the total through the end of that day) to their local
+    date."""
+    return {_legacy_day(row["start"], rules, tz): row["sum"] for row in rows}
 
-    Hourly data is assigned to NEM days; daily lumps (one row at local midnight holding
-    the total through the end of that day) to their local date.
-    """
-    ends: dict[date, float] = {}
-    for row in rows:
-        ends[_legacy_day(row["start"], rules, tz)] = row["sum"]
-    days = sorted(ends)
-    return {
-        day: ends[day] - ends[prev]
-        for prev, day in itertools.pairwise(days)
-        if (day - prev).days == 1
-    }
+
+def _total(ends: Mapping[date, float], first: date, last: date) -> float | None:
+    """The legacy total over the days ``first`` to ``last``: the end of ``last`` minus the
+    end of the day before ``first``. None unless both days have data."""
+    before = first - timedelta(days=1)
+    if last not in ends or before not in ends:
+        return None
+    return ends[last] - ends[before]
+
+
+def _legacy_daily(ends: Mapping[date, float]) -> dict[date, float]:
+    """Daily totals: each day's end-of-day sum minus the previous day's."""
+    totals = {day: _total(ends, day, day) for day in ends}
+    return {day: total for day, total in totals.items() if total is not None}
 
 
 def _legacy_day(start: datetime, rules: str, tz: Any) -> date:
@@ -484,83 +490,232 @@ def _detect_rules(rows: Sequence[Mapping[str, Any]], boundary: datetime, tz: Any
     return RULES_DAILY
 
 
+def _agrees(role: str, old: float, ours: float, rules: str, days: int) -> bool:
+    """Whether a legacy total agrees with ours over ``days`` days (DESIGN section 14)."""
+    if role in _ENERGY_ROLES:
+        if rules == RULES_HOURLY:
+            return round(old, KWH_DIGITS) == round(ours, KWH_DIGITS)
+        return abs(old - ours) <= DAILY_KWH_TOLERANCE * days
+    return rules == RULES_DAILY or abs(abs(old) - abs(ours)) <= COST_TOLERANCE * days
+
+
+def _gap_days(
+    ends: Mapping[str, Mapping[date, float]], new_import: Mapping[date, float], days: list[date]
+) -> set[date]:
+    """Days the legacy statistics have no data for while the integration has: no legacy
+    import row that day, or exactly 0 import and 0 export (a stalled kit that still writes
+    rows) against our import above 0."""
+    gaps = set()
+    for day in days:
+        imported = _total(ends[ROLE_IMPORT_ENERGY], day, day)
+        exported = _total(ends[ROLE_EXPORT_ENERGY], day, day) if ROLE_EXPORT_ENERGY in ends else 0
+        if day not in ends[ROLE_IMPORT_ENERGY] or (
+            imported is not None
+            and abs(imported) < ZERO_KWH
+            and (exported is None or abs(exported) < ZERO_KWH)
+            and new_import[day] >= ZERO_KWH
+        ):
+            gaps.add(day)
+    return gaps
+
+
+def _runs(days: Sequence[date], gaps: set[date]) -> list[list[date]]:
+    """The gap days as runs of consecutive days."""
+    runs: list[list[date]] = []
+    for day in days:
+        if day not in gaps:
+            continue
+        if runs and runs[-1][-1] == day - timedelta(days=1):
+            runs[-1].append(day)
+        else:
+            runs.append([day])
+    return runs
+
+
+def _classify_gaps(
+    ends: Mapping[str, Mapping[date, float]],
+    new: Mapping[str, Mapping[date, float]],
+    days: Sequence[date],
+    gaps: set[date],
+    rules: str,
+) -> tuple[list[dict[str, Any]], dict[date, date]]:
+    """Describe each run of gap days, and find catch-up lumps.
+
+    A run with no compared day after it is trailing (the kit stopped). After an interior
+    run, the next day's legacy total is compared first with our total for that day alone
+    (the kit resumed without catching up); if that fails but it agrees with our total over
+    the run plus that day, the day is a catch-up lump (the kit resumed and caught up), and
+    it is compared as one total from the run's first day. Returns the gaps and, for each
+    day after a gap that is not compared on its own, the first day of the legacy total and
+    of ours (with no legacy rows in the gap, its legacy total starts before the gap).
+    """
+    found: list[dict[str, Any]] = []
+    starts: dict[date, tuple[date, date]] = {}
+    imports, ours = ends[ROLE_IMPORT_ENERGY], new[ROLE_IMPORT_ENERGY]
+    for run in _runs(days, gaps):
+        after = [day for day in days if day > run[-1] and day not in gaps]
+        info: dict[str, Any] = {
+            "first": run[0].isoformat(),
+            "last": run[-1].isoformat(),
+            "days": len(run),
+            "kwh": round(math.fsum(ours[day] for day in run), 3),
+        }
+        if not after:
+            found.append({"kind": "trailing", **info})
+            continue
+        lump = after[0]
+        block = [run[0] + timedelta(days=i) for i in range((lump - run[0]).days + 1)]
+        alone = _total(imports, lump, lump) if lump - timedelta(days=1) in imports else None
+        whole = _total(imports, run[0], lump)
+        if alone is None:
+            alone = whole
+        caught_up = (
+            (alone is None or not _agrees(ROLE_IMPORT_ENERGY, alone, ours[lump], rules, 1))
+            and whole is not None
+            and all(day in ours for day in block)
+            and _agrees(
+                ROLE_IMPORT_ENERGY,
+                whole,
+                math.fsum(ours[day] for day in block),
+                rules,
+                len(block),
+            )
+        )
+        if caught_up:
+            starts[lump] = (run[0], run[0])
+            found.append({"kind": "catch_up", **info, "lump_day": lump.isoformat()})
+            continue
+        if lump - timedelta(days=1) not in imports:
+            starts[lump] = (run[0], lump)
+        found.append({"kind": "interior", **info})
+    return found, starts
+
+
+def _gap_text(gap: Mapping[str, Any]) -> str:
+    first, last, days = gap["first"], gap["last"], gap["days"]
+    plural = "day" if days == 1 else "days"
+    if gap["kind"] == "trailing":
+        stopped = (date.fromisoformat(first) - timedelta(days=1)).isoformat()
+        return (
+            f"The YAML kit stopped importing after {stopped}; {days} {plural} ({first} to "
+            f"{last}) will come from the integration's own data."
+        )
+    if gap["kind"] == "catch_up":
+        return (
+            f"The YAML kit has no data for {first} to {last} ({days} {plural}) and caught "
+            f"up on {gap['lump_day']}; compared as one total from {first} to "
+            f"{gap['lump_day']}."
+        )
+    return (
+        f"The YAML kit has no data for {first} to {last} ({days} {plural}); the "
+        "integration's own data covers them."
+    )
+
+
 def _parity(
-    legacy: Mapping[str, dict[date, float]],
-    new: Mapping[str, dict[date, float]],
+    ends: Mapping[str, Mapping[date, float]],
+    new: Mapping[str, Mapping[date, float]],
     rules: str,
     sign: float,
     spans: Mapping[str, tuple[date, date]],
 ) -> dict[str, Any]:
-    """Compare daily totals. Each statistic is compared inside its own legacy span (a cost
-    series that starts later is not a mismatch before it starts); a gap inside is."""
-    days = sorted(set(legacy[ROLE_IMPORT_ENERGY]) & set(new[ROLE_IMPORT_ENERGY]))
+    """Compare daily totals over the overlap window: the integration's days from the
+    legacy import series' first comparable day.
+
+    Legacy gaps (days the legacy statistics have no data for, see ``_gap_days``) are
+    reported, not compared: the integration's own data covers them. A catch-up lump after
+    a gap is compared as one total over the gap and the lump. Each statistic is compared
+    inside its own legacy span (a cost series that starts later is not a mismatch before
+    it starts); a missing day inside it is.
+    """
+    days = sorted(day for day in new[ROLE_IMPORT_ENERGY] if day >= spans[ROLE_IMPORT_ENERGY][0])
+    gaps = _gap_days(ends, new[ROLE_IMPORT_ENERGY], days)
+    found, starts = _classify_gaps(ends, new, days, gaps, rules)
+    compared_days = [day for day in days if day not in gaps]
     mismatches: list[dict[str, Any]] = []
     cost_totals: dict[str, list[float]] = {}
     compared: dict[str, int] = defaultdict(int)
-    for day in days:
+    for day in compared_days:
+        legacy_first, first = starts.get(day, (day, day))
+        block = [first + timedelta(days=i) for i in range((day - first).days + 1)]
         for role in ROLES:
-            if role not in legacy or not spans[role][0] <= day <= spans[role][1]:
+            if role not in ends or not spans[role][0] <= legacy_first <= day <= spans[role][1]:
                 continue
             compared[_ROLE_LABELS[role]] += 1
-            old, ours = legacy[role].get(day), new[role].get(day)
+            old = _total(ends[role], legacy_first, day)
+            ours = (
+                math.fsum(new[role][d] for d in block)
+                if all(d in new[role] for d in block)
+                else None
+            )
             energy = role in _ENERGY_ROLES
+            entry: dict[str, Any] = {"day": day.isoformat(), "statistic": _ROLE_LABELS[role]}
+            if first != day:
+                entry["from"] = first.isoformat()
             if old is None or ours is None:
                 if energy or rules == RULES_HOURLY:
                     mismatches.append(
-                        {
-                            "day": day.isoformat(),
-                            "statistic": _ROLE_LABELS[role],
-                            "legacy": old,
-                            "new": ours,
-                            "problem": "missing on one side",
-                        }
+                        {**entry, "legacy": old, "new": ours, "problem": "missing on one side"}
                     )
                 continue
             if role == ROLE_EXPORT_COST:
                 old *= sign
-            if energy:
-                ok = (
-                    round(old, KWH_DIGITS) == round(ours, KWH_DIGITS)
-                    if rules == RULES_HOURLY
-                    else abs(old - ours) <= DAILY_KWH_TOLERANCE
-                )
-            else:
+            if not energy:
                 totals = cost_totals.setdefault(_ROLE_LABELS[role], [0.0, 0.0])
                 totals[0] += old
                 totals[1] += ours
-                ok = rules == RULES_DAILY or abs(abs(old) - abs(ours)) <= COST_TOLERANCE
-            if not ok:
+            if not _agrees(role, old, ours, rules, len(block)):
                 mismatches.append(
                     {
-                        "day": day.isoformat(),
-                        "statistic": _ROLE_LABELS[role],
+                        **entry,
                         "legacy": round(old, 6),
                         "new": round(ours, 6),
                         "difference": round(ours - old, 6),
+                        "problem": "catch-up total differs" if first != day else "differs",
                     }
                 )
-    passed = len(days) >= MIN_PARITY_DAYS and not mismatches
+    enough = len(compared_days) >= MIN_PARITY_DAYS
+    passed = enough and not mismatches
+    summary = _mismatch_summary(mismatches)
+    if passed:
+        reason = None
+    elif not enough:
+        reason = (
+            f"only {len(compared_days)} comparable days (at least {MIN_PARITY_DAYS} needed)"
+            + (f"; {len(gaps)} days are legacy gaps" if gaps else "")
+        )
+    else:
+        reason = f"{len(mismatches)} daily totals differ ({summary})"
     return {
         "rules": rules,
         "days": len(days),
         "first": days[0].isoformat() if days else None,
         "last": days[-1].isoformat() if days else None,
+        "compared_days": len(compared_days),
+        "gap_days": len(gaps),
+        "gaps": [{**gap, "text": _gap_text(gap)} for gap in found],
         "passed": passed,
         "compared": dict(compared),
         "mismatch_count": len(mismatches),
+        "mismatch_summary": summary,
         "mismatches": mismatches[:MAX_REPORTED_MISMATCHES],
         "cost_totals": {
             label: {"legacy": round(v[0], 4), "new": round(v[1], 4)}
             for label, v in cost_totals.items()
         },
-        "reason": None
-        if passed
-        else (
-            f"only {len(days)} comparable days (at least {MIN_PARITY_DAYS} needed)"
-            if len(days) < MIN_PARITY_DAYS
-            else f"{len(mismatches)} daily totals differ"
-        ),
+        "reason": reason,
     }
+
+
+def _mismatch_summary(mismatches: Sequence[Mapping[str, Any]]) -> str:
+    """Count by category, for example "grid import kWh differs: 16 days"."""
+    counts: dict[str, int] = defaultdict(int)
+    for mismatch in mismatches:
+        counts[f"{mismatch['statistic']} {mismatch['problem']}"] += 1
+    return "; ".join(
+        f"{category}: {count} {'day' if count == 1 else 'days'}"
+        for category, count in counts.items()
+    )
 
 
 def _copy_rows(
@@ -963,12 +1118,13 @@ async def _async_plan(
     )
     first_day, last_day = nem_date(plan.boundary), manager.store.last_written
     assert last_day is not None
-    legacy_daily = {role: _legacy_daily(legacy[sid], rules, tz) for role, sid in legacy_ids.items()}
+    ends = {role: _legacy_ends(legacy[sid], rules, tz) for role, sid in legacy_ids.items()}
+    legacy_daily = {role: _legacy_daily(ends[role]) for role in legacy_ids}
     new_daily = {role: _new_daily(ours[targets[role]], first_day, last_day) for role in legacy_ids}
     sign = _export_sign(sources, legacy_daily, new_daily, plan.notes)
     plan.sources = {**sources, "rules": rules, "export_cost_sign": sign}
     spans = {role: _legacy_span(legacy[sid], rules, tz) for role, sid in legacy_ids.items()}
-    plan.parity = _parity(legacy_daily, new_daily, rules, sign, spans)
+    plan.parity = _parity(ends, new_daily, rules, sign, spans)
     _plan_copy(plan, legacy, legacy_ids)
     if rules == RULES_DAILY:
         cost_copied = any(
@@ -1576,6 +1732,39 @@ def _flagged_lines(flagged: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _mismatch_line(mismatch: Mapping[str, Any]) -> str:
+    days = f"{mismatch['from']} to {mismatch['day']}" if mismatch.get("from") else mismatch["day"]
+    return (
+        f"- {days}, {mismatch['statistic']}: {mismatch['problem']} "
+        f"(legacy {mismatch['legacy']}, integration {mismatch['new']})"
+    )
+
+
+def _parity_lines(parity: Mapping[str, Any] | None) -> list[str]:
+    """The parity verdict, the legacy gaps, then any failures: counted by category first,
+    so a long list cut short still says what it holds."""
+    if not parity:
+        return []
+    gaps = parity.get("gap_days", 0)
+    lines = [
+        f"Parity ({parity['rules']} rules): {parity['days']} days "
+        f"({parity['first']} to {parity['last']})"
+        + (f", {parity['compared_days']} compared and {gaps} legacy gap days" if gaps else "")
+        + ", "
+        + ("passed." if parity["passed"] else f"FAILED: {parity['reason']}.")
+    ]
+    lines.extend(f"- {gap['text']}" for gap in parity.get("gaps", []))
+    shown = parity["mismatches"]
+    if shown:
+        lines.append(
+            f"Differences ({len(shown)} of {parity['mismatch_count']} shown):"
+            if parity["mismatch_count"] > len(shown)
+            else "Differences:"
+        )
+        lines.extend(_mismatch_line(mismatch) for mismatch in shown)
+    return lines
+
+
 def format_report(report: Mapping[str, Any]) -> str:
     """A readable summary of a dry-run or run report (markdown)."""
     lines: list[str] = [f"**{report['warning']}**", ""]
@@ -1593,15 +1782,7 @@ def format_report(report: Mapping[str, Any]) -> str:
     for problem in report.get("problems", []):
         lines.append(f"Problem: {problem}")
     lines.extend(_flagged_lines(report.get("flagged") or {}))
-    parity = report.get("parity")
-    if parity:
-        lines.append(
-            f"Parity ({parity['rules']} rules): {parity['days']} days "
-            f"({parity['first']} to {parity['last']}), "
-            + ("passed." if parity["passed"] else f"FAILED: {parity['reason']}.")
-        )
-        for mismatch in parity["mismatches"]:
-            lines.append(f"- {mismatch}")
+    lines.extend(_parity_lines(report.get("parity")))
     for sid, info in report.get("copy", {}).items():
         lines.append(
             f"Copy {info['rows']} rows into {sid} ({info['from'][:10]} to {info['to'][:10]}), "
@@ -1633,6 +1814,8 @@ def format_result(report: Mapping[str, Any]) -> str:
     lines = [f"Migration status: {report.get('migration_status')}."]
     if "paused" in result:
         lines.append(f"Paused: {result['paused']}")
+    for gap in (report.get("parity") or {}).get("gaps", []):
+        lines.append(gap["text"])
     for sid, info in (result.get("copy") or {}).items():
         lines.append(f"Copied {info['rows']} rows into {sid} (baseline {info['baseline']}).")
     rebase = result.get("rebase")

@@ -565,8 +565,32 @@ overlap window (days both the legacy and the new statistics have), compare daily
   (that day has no earlier total) to its last row. A cost series that starts later than the
   kWh series (as on VM 101, where cost tracking started fresh at the rebuild) is therefore
   not a mismatch before it starts; a missing day inside the span is.
-- At least 3 comparable days are required. On failure the migration stops with a clear
-  report and changes nothing.
+- **Legacy gaps (2.0.1, from a real v1 migration).** The overlap window runs from the
+  legacy import series' first comparable day to the integration's last day, so it includes
+  days after the kit stopped. A day is a *legacy gap* when the legacy statistics have no
+  data for it: no legacy import row that day, or exactly 0 import and 0 export (it rounds
+  to 0.000 kWh; a stalled v1 kit keeps writing rows, adding 0 when its REST sensor fails)
+  while the integration's import is above 0. Gap days are reported, not compared; the
+  integration's own data covers them. Consecutive gap days form a run:
+  - *trailing* (no compared day after it): the kit stopped. Reported as "The YAML kit
+    stopped importing after D; N days (from to to) will come from the integration's own
+    data."
+  - *interior*: the next day's legacy total (from the last legacy data before the run when
+    the run has no rows) is compared with the integration's total for that day alone (the
+    kit resumed without catching up). If that disagrees but it agrees with the
+    integration's total over the run plus that day, the day is a *catch-up lump* (the kit
+    resumed and caught up): every statistic is compared as one total over the run and the
+    lump, with the per-day tolerance times the number of days (hourly kWh still exact to 3
+    decimals). Otherwise the day is compared on its own and fails as usual.
+  Days where both sides have data keep the tolerances above; only genuine disagreement
+  fails.
+- At least 3 compared days (both sides with data) are required. On failure the migration
+  stops with a clear report and changes nothing. The report counts the failures by
+  category (statistic and problem) before listing the first 10, and the reason carries the
+  same summary.
+- A gap does not change the copy, the re-base or the Energy dashboard switch: the copy
+  takes only legacy rows before the boundary, the re-base continues from the copied carry
+  row, and the integration's own rows cover the gap.
 
 **Energy dashboard.** A full copy of the current energy preferences is saved in the Store
 and read back from disk (the backup check). With explicit confirmation, after a dry-run

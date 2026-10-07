@@ -4,6 +4,20 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-10-07
+
+### Fixed
+
+- Migration: a YAML kit that stopped importing before the integration's last day no longer
+  fails the parity check. Days the kit has no data for (no rows, or 0 kWh import and
+  export while the integration has data) are legacy gaps: reported, not compared, and
+  covered by the integration's own data. A pause followed by a catch-up lump is compared
+  as one total over the pause and the lump. Genuine differences on days both sides have
+  data still fail.
+- Migration dry run and result: gaps are stated explicitly ("The YAML kit stopped
+  importing after ...; N days will come from the integration's own data"), and failures
+  are counted by category before the first 10 are listed.
+
 ## [2.0.0] - 2026-10-03
 
 Version 2: a rewrite of the v1 YAML kit as a Home Assistant custom integration, installed
@@ -266,6 +280,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1
 [2.0.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0
 [2.0.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0-rc2
 [2.0.0-rc1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0-rc1

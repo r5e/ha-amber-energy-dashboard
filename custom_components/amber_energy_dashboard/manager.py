@@ -49,6 +49,7 @@ from .api import (
     RunBudget,
     UsageRecord,
 )
+from .bill import BillSettings, cycle_for, estimate
 from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
@@ -79,6 +80,7 @@ from .statistics import (
     ChannelConfig,
     MeanSpec,
     StatisticSpec,
+    fixed_cost_spec,
     price_specs,
 )
 from .storage import (
@@ -154,17 +156,22 @@ class OwnSensor:
 
 @dataclass(slots=True)
 class _Chain:
-    """A secondary chain: the price series, or one own sensor."""
+    """A secondary chain: the price series, one own sensor, or the cost including fixed
+    charges."""
 
     key: str
     state: ChainState
     mean_specs: list[MeanSpec] = field(default_factory=list)
     sensor: OwnSensor | None = None
+    fixed: StatisticSpec | None = None
+    """The "import cost including fixed charges" statistic (section 19)."""
 
     @property
     def ids(self) -> list[str]:
         if self.sensor is not None:
             return [self.sensor.spec.statistic_id]
+        if self.fixed is not None:
+            return [self.fixed.statistic_id]
         return [s.statistic_id for s in self.mean_specs]
 
 
@@ -211,6 +218,7 @@ class AmberManager:
         price_series: bool = False,
         own_fallback: bool = True,
         own_sensors: Iterable[OwnSensor] = (),
+        bill: BillSettings | None = None,
     ) -> None:
         """Create the manager (call async_start after the store is loaded)."""
         self.hass = hass
@@ -225,6 +233,7 @@ class AmberManager:
         self.price_series = price_series
         self.own_fallback = own_fallback
         self.own_sensors = list(own_sensors)
+        self.bill = bill
         self._cache: dict[date, list[UsageRecord]] = {}
         self._last_rewrite_count = 0
         self.status = STATUS_NEVER_RUN if store.last_run is None else store.last_run["status"]
@@ -274,6 +283,7 @@ class AmberManager:
         usage_mode: str = MODE_FULL,
         price_series: bool = False,
         own_fallback: bool = True,
+        bill: BillSettings | None = None,
     ) -> None:
         """Apply new options (options flow) without reloading the entry.
 
@@ -285,6 +295,7 @@ class AmberManager:
         self.usage_mode = usage_mode
         self.price_series = price_series
         self.own_fallback = own_fallback
+        self.bill = bill
         self.async_stop()
         self._schedule_next()
         self._publish()
@@ -1201,7 +1212,18 @@ class AmberManager:
             _Chain(sensor.key, chain_state(self.store, sensor.key), sensor=sensor)
             for sensor in self.own_sensors
         )
+        fixed = self.fixed_spec
+        if fixed is not None:
+            chains_.append(_Chain("fixed", chain_state(self.store, "fixed"), fixed=fixed))
         return chains_
+
+    @property
+    def fixed_spec(self) -> StatisticSpec | None:
+        """The "import cost including fixed charges" statistic, when it is written: opted
+        in, with usage statistics written (not Pricing-only) and a general channel."""
+        if self.bill is None or not self.bill.fixed_statistic or not self._usage_active:
+            return None
+        return fixed_cost_spec(self.ctx.site_id, self.ctx.channels)
 
     async def _async_secondary(self, info: dict[str, Any]) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -1385,6 +1407,23 @@ class AmberManager:
             raise
         tail = rewriting or (state.last_written is not None and day <= state.last_written)
         estimated = sum(1 for r in records if r.quality == "estimated")
+        if chain.fixed is not None:
+            assert self.bill is not None
+            spec = chain.fixed
+            hourly = importer.hourly_amounts({spec.channel: by_channel[spec.channel]}, [spec], day)[
+                spec.statistic_id
+            ]
+            fixed = self.bill.daily_fixed_incl_gst
+            await self._async_write_sum_chain(
+                chain,
+                day,
+                spec,
+                [amount + fixed / importer.DAY_HOURS for amount in hourly],
+                tail=tail,
+                details={"fixed_incl_gst": round(fixed, 6)},
+            )
+            await self._async_track_revision(day, records, estimated)
+            return "written"
         if chain.sensor is None:
             specs = [s for s in chain.mean_specs if s.channel in by_channel]
             rows = chains.price_rows(records, specs, day)
@@ -1420,7 +1459,30 @@ class AmberManager:
         except chains.PreciseDataUnavailable as err:
             await state.async_mark_skipped(day, day, STATUS_SKIPPED_PRECISION, str(err))
             return STATUS_SKIPPED_PRECISION
-        sid = sensor.spec.statistic_id
+        await self._async_write_sum_chain(
+            chain,
+            day,
+            sensor.spec,
+            priced.amounts,
+            tail=tail,
+            details={"energy_kwh": priced.energy_kwh, "lower_precision": priced.lower_precision},
+        )
+        await self._async_track_revision(day, records, estimated)
+        return "lower_precision" if priced.lower_precision else "written"
+
+    async def _async_write_sum_chain(
+        self,
+        chain: _Chain,
+        day: date,
+        spec: StatisticSpec,
+        amounts: list[float],
+        *,
+        tail: bool,
+        details: dict[str, Any],
+    ) -> None:
+        """Write one day of a sum-type secondary chain from its baseline, and record it."""
+        state = chain.state
+        sid = spec.statistic_id
         prev = (
             state.last_written
             if (state.last_written and state.last_written < day)
@@ -1438,24 +1500,16 @@ class AmberManager:
         if not tail:
             await state.async_set_pending(day)
         await importer.async_write_amounts(
-            self.hass,
-            day,
-            [sensor.spec],
-            {sid: priced.amounts},
-            {sid: baseline},
-            expect_latest=not tail,
+            self.hass, day, [spec], {sid: amounts}, {sid: baseline}, expect_latest=not tail
         )
         await state.async_mark_written(
             day,
             {
                 "mode": "revision" if tail else "catch_up",
-                "amount": round(math.fsum(priced.amounts), 6),
-                "energy_kwh": priced.energy_kwh,
-                "lower_precision": priced.lower_precision,
+                "amount": round(math.fsum(amounts), 6),
+                **details,
             },
         )
-        await self._async_track_revision(day, records, estimated)
-        return "lower_precision" if priced.lower_precision else "written"
 
     async def _async_chain_rewrite(self, chain: _Chain, first: date) -> int:
         """Rewrite a secondary chain from ``first`` to its last written day, resumably."""
@@ -1710,4 +1764,24 @@ class AmberManager:
             "next_run": self.next_run,
             "yesterday": yesterday,
             "yesterday_totals": totals,
+            "bill": self.bill_estimate(nem_today()) if self.bill_available else None,
         }
+
+    @property
+    def bill_available(self) -> bool:
+        """The bill estimate needs its options and imported usage (not Pricing-only)."""
+        return self.bill is not None and self._usage_active
+
+    def bill_estimate(self, cycle_day: date) -> dict[str, Any]:
+        """The bill estimate for the cycle containing ``cycle_day`` (section 19)."""
+        assert self.bill is not None
+        start, end = cycle_for(cycle_day, self.bill.billing_day)
+        days = {day: self.store.day(day) for day in _days(start, end)}
+        return estimate(
+            self.bill,
+            days,
+            list(self.ctx.specs),
+            self.ctx.channels,
+            cycle_day=cycle_day,
+            today=nem_today(),
+        )

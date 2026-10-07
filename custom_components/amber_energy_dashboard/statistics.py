@@ -202,3 +202,19 @@ def own_cost_spec(site_id: str, entity_id: str, channel: ChannelConfig) -> Stati
         CURRENCY,
         None,
     )
+
+
+def fixed_cost_spec(site_id: str, channels: Iterable[ChannelConfig]) -> StatisticSpec | None:
+    """The optional "import cost including fixed charges" statistic (section 19), on the
+    first general channel; None for a site without one."""
+    general = next((c for c in channels if c.type == CHANNEL_GENERAL), None)
+    if general is None:
+        return None
+    return StatisticSpec(
+        statistic_id(site_id, f"{general.identifier.lower()}_cost_incl_fixed"),
+        Metric.COST,
+        general.identifier,
+        f"Amber general {general.identifier} cost including fixed charges",
+        CURRENCY,
+        None,
+    )

@@ -20,6 +20,9 @@
     },
     "delete_legacy_statistics": {
       "service": "mdi:delete-clock"
+    },
+    "bill_estimate": {
+      "service": "mdi:receipt-text-outline"
     }
   },
   "entity": {
@@ -46,6 +49,18 @@
       },
       "reconciliation": {
         "default": "mdi:scale-balance"
+      },
+      "bill_to_date": {
+        "default": "mdi:receipt-text-outline"
+      },
+      "projected_bill": {
+        "default": "mdi:receipt-text-clock-outline"
+      },
+      "days_into_cycle": {
+        "default": "mdi:calendar-range"
+      },
+      "average_cost_per_day": {
+        "default": "mdi:cash-clock"
       }
     }
   }

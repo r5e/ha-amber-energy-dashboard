@@ -69,6 +69,12 @@ CONF_PRICE_SERIES: Final = "price_series"
 CONF_OWN_FALLBACK: Final = "own_fallback"
 """Allow the hourly (lower precision) own-sensor cost when 5-minute data is gone."""
 
+# Bill estimate (options, section 19); the charge names are in bill.CHARGES
+CONF_BILLING_DAY: Final = "billing_day"
+CONF_GST_PERCENT: Final = "gst_percent"
+CONF_FIXED_STATISTIC: Final = "fixed_statistic"
+SERVICE_BILL_ESTIMATE: Final = "bill_estimate"
+
 # Own-sensor cost (config sub-entries)
 SUBENTRY_OWN_SENSOR: Final = "own_sensor"
 CONF_SENSOR: Final = "entity_id"

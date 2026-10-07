@@ -14,14 +14,15 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.const import EntityCategory, UnitOfEnergy
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import AmberConfigEntry
-from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL
+from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL, DOMAIN
 from .devices import device_info, own_sensor_device_info
 from .manager import STATUSES
 from .statistics import CURRENCY, Metric
@@ -73,6 +74,60 @@ STATUS_SENSORS = (
 )
 
 
+def _bill(key: str) -> Callable[[dict[str, Any]], Any]:
+    def value(data: dict[str, Any]) -> Any:
+        return None if data.get("bill") is None else data["bill"][key]
+
+    return value
+
+
+def _bill_attrs(keys: tuple[str, ...]) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    def attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+        bill = data.get("bill")
+        return None if bill is None else {k: bill[k] for k in keys}
+
+    return attrs
+
+
+_CYCLE = ("cycle_start", "cycle_end", "days_in_cycle")
+_DATA = ("data_from", "data_through", "days_elapsed", "complete_from_cycle_start")
+BILL_SENSORS = (
+    AmberSensorDescription(
+        key="bill_to_date",
+        translation_key="bill_to_date",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY,
+        suggested_display_precision=2,
+        value_fn=_bill("bill_to_date"),
+        attrs_fn=_bill_attrs(("lines", *_CYCLE, *_DATA, "missing_days", "gst_percent")),
+    ),
+    AmberSensorDescription(
+        key="projected_bill",
+        translation_key="projected_bill",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY,
+        suggested_display_precision=2,
+        value_fn=_bill("projected_bill"),
+        attrs_fn=_bill_attrs((*_CYCLE, *_DATA, "days_imported")),
+    ),
+    AmberSensorDescription(
+        key="days_into_cycle",
+        translation_key="days_into_cycle",
+        native_unit_of_measurement=UnitOfTime.DAYS,
+        value_fn=_bill("days_into_cycle"),
+        attrs_fn=_bill_attrs(_CYCLE),
+    ),
+    AmberSensorDescription(
+        key="average_cost_per_day",
+        translation_key="average_cost_per_day",
+        native_unit_of_measurement=f"{CURRENCY}/{UnitOfTime.DAYS}",
+        suggested_display_precision=2,
+        value_fn=_bill("average_cost_per_day"),
+        attrs_fn=_bill_attrs(("data_through", "days_elapsed")),
+    ),
+)
+
+
 def _yesterday_value(statistic_id: str) -> Callable[[dict[str, Any]], float | None]:
     def value(data: dict[str, Any]) -> float | None:
         totals = data.get("yesterday_totals")
@@ -113,6 +168,14 @@ async def async_setup_entry(
     manager = entry.runtime_data.manager
     channel_types = {c.identifier: c.type for c in manager.ctx.channels}
     descriptions: list[AmberSensorDescription] = list(STATUS_SENSORS)
+    if manager.bill is not None:
+        descriptions.extend(BILL_SENSORS)
+    else:  # turned off: remove the bill sensors rather than leave them unavailable
+        registry = er.async_get(hass)
+        for description in BILL_SENSORS:
+            unique_id = f"{manager.ctx.site_id}_{description.key}"
+            if entity_id := registry.async_get_entity_id("sensor", DOMAIN, unique_id):
+                registry.async_remove(entity_id)
     for spec in manager.ctx.specs:
         if spec.channel is None:
             continue

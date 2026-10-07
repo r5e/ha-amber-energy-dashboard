@@ -70,6 +70,7 @@
         "title": "Amber Energy Dashboard options",
         "menu_options": {
           "settings": "Import settings",
+          "bill": "Bill estimate",
           "migrate": "Migrate from the YAML kit",
           "undo_migration": "Undo migration"
         }
@@ -93,6 +94,28 @@
           "usage_mode": "Full imports usage every day. Recovery-only imports nothing on a schedule (use the backfill service). Pricing-only writes no usage statistics, only prices and own-sensor cost. Switching never deletes statistics; ones no longer updated simply stop.",
           "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate. Enabling it fetches the full retention window once (about 13 API calls for 90 days).",
           "own_fallback": "When 5-minute sensor data is no longer available (after about 10 days), price hourly energy at the hour's mean price and flag the day as lower precision. If off, such days are skipped."
+        }
+      },
+      "bill": {
+        "title": "Bill estimate",
+        "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the charges as printed on your bill, excluding GST. Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
+        "data": {
+          "billing_day": "Billing day of the month",
+          "network_daily": "Network daily charge",
+          "metering_daily": "Metering charge",
+          "subscription_daily": "Amber subscription",
+          "other_daily": "Other daily charges",
+          "gst_percent": "GST rate",
+          "fixed_statistic": "Also write cost including fixed charges"
+        },
+        "data_description": {
+          "billing_day": "The first day of each billing cycle (1 to 28), as on your bill. Cycle days are Amber's days (AEST), like the bill.",
+          "network_daily": "Per day, excluding GST.",
+          "metering_daily": "Per day, excluding GST.",
+          "subscription_daily": "Per day, excluding GST.",
+          "other_daily": "Any other fixed daily charge, per day, excluding GST.",
+          "gst_percent": "Added to the fixed charges (default 10 %). Amber's usage figures already include GST.",
+          "fixed_statistic": "An extra statistic: the general channel's cost plus the fixed charges (including GST), spread evenly over each day's hours. Select it in the Energy dashboard instead of the cost if you want its totals to match your bill. Turning it on fetches the available history once (about 13 API calls); later changes to the charges apply from the next day written."
         }
       },
       "migrate_pick": {
@@ -213,6 +236,18 @@
       },
       "reconciliation": {
         "name": "Reconciliation"
+      },
+      "bill_to_date": {
+        "name": "Bill to date"
+      },
+      "projected_bill": {
+        "name": "Projected bill"
+      },
+      "days_into_cycle": {
+        "name": "Days into billing cycle"
+      },
+      "average_cost_per_day": {
+        "name": "Average cost per day"
       }
     }
   },
@@ -296,6 +331,20 @@
       "name": "Probe retention",
       "description": "Discover Amber's usage retention boundary again from scratch (at most 8 API calls), instead of waiting for the daily check. The stored boundary is kept if the probe fails.",
       "fields": {
+        "config_entry_id": {
+          "name": "Site",
+          "description": "The Amber site. Optional when only one site is configured."
+        }
+      }
+    },
+    "bill_estimate": {
+      "name": "Bill estimate",
+      "description": "Return the bill estimate for the billing cycle that contains a date (default today), with the line breakdown. Needs a billing day in the options.",
+      "fields": {
+        "date": {
+          "name": "Date",
+          "description": "Any date in the billing cycle (default today)."
+        },
         "config_entry_id": {
           "name": "Site",
           "description": "The Amber site. Optional when only one site is configured."

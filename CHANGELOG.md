@@ -4,6 +4,35 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] - 2.1.0-dev1
+
+### Added
+
+- **Buttons** on the device: **Run now** (the `run_now` action) and, as a diagnostic
+  entity, **Re-check retention** (the `probe_retention` action).
+- **Add to the Energy dashboard** at the end of setup, offered when the Energy dashboard
+  has no grid connection (on by default): one grid connection with the general channel's
+  energy and cost and the feed-in's energy and compensation, and a second one for a
+  controlled load. An existing grid connection is never changed. The Energy dashboard
+  settings are saved (and read back) first, as the migration does.
+- **Repairs item "The Energy dashboard isn't using Amber Energy Dashboard"**, a day after
+  the first import when nothing in the Energy dashboard uses the integration's
+  statistics. Its fix adds them (no grid connection), points to the migration (YAML kit
+  detected), or explains how to choose them and lets you dismiss it. It clears itself
+  once the statistics are in use.
+- **Migration: unverifiable history.** When the YAML kit's data doesn't overlap the
+  integration's (for example the kit stopped before the integration's first day), the
+  dry run explains why and names the days neither has, and the migration runs with an
+  explicit acknowledgement (options checkbox, or `acknowledge_unverified: true`).
+  Differences still stop it.
+
+### Documentation
+
+- README: why an hour of yesterday's usage appears after midnight in summer (NEM days),
+  and HACS's "icon not available".
+- Installation guide: the version step is now a footnote for pre-releases; the new setup
+  option, the buttons, and the Repairs item.
+
 ## [2.0.1] - 2026-10-07
 
 ### Fixed

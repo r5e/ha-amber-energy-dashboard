@@ -75,7 +75,10 @@ costs a few API calls.
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
 
 **Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
-under **Settings > Dashboards > Energy**, in the grid section, set:
+if the Energy dashboard has no grid connection yet, setup offers **Add to the Energy
+dashboard** (on by default), which sets all of this up for you. An existing grid
+connection is never changed. Otherwise, under **Settings > Dashboards > Energy**, in the
+grid section, set:
 - "Grid consumption" to the general channel's energy, with "Use an entity tracking the
   total costs" set to its cost;
 - for controlled load, a second grid consumption with its own energy and cost;
@@ -88,6 +91,9 @@ approximate figures this integration exists to replace.
 **Display sensors** (these are not statistics, so they never disturb the history):
 - import status, last imported date, days behind, and next scheduled run;
 - yesterday's energy, cost and compensation per channel.
+
+**Buttons** on the device: **Run now** (the same as `run_now`) and, under Diagnostic,
+**Re-check retention** (the same as `probe_retention`).
 
 **Services:**
 - `amber_energy_dashboard.run_now`: run the import now;
@@ -215,7 +221,12 @@ The migration is under **Configure > Migrate from the YAML kit**, or the
 - **Parity:** a comparison of the daily totals over the days both have. The advanced
   version must match exactly (cost within 1 cent a day). The v1 kit must be within
   0.01 kWh a day; its cost was approximate, so cost differences are only reported. If
-  they do not match, the migration will not run.
+  they do not match, the migration will not run. Days the kit has no data for (it
+  stopped, or paused) are listed as gaps, not differences. If the kit's data doesn't
+  overlap the integration's at all (for example it stopped before the integration's
+  first day), the old history can't be checked: the dry run explains why, and the
+  migration runs only if you tick "I understand the old history can't be checked against
+  Amber's data" (the `acknowledge_unverified` option).
 - **Implausible rows** in the old statistics:
   - more energy between two rows than 100 kWh per hour between them;
   - more cost between two rows than 500 per hour between them (a real price spike hour
@@ -305,6 +316,7 @@ is outstanding):
 | Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the integration and choose **Reconfigure** to add it |
 | Amber import stopped: marker and statistics disagree | The stored progress and the statistics disagree, for example after restoring an old database backup. Nothing is written until this is resolved; download diagnostics and open an issue |
 | Amber import could not be verified | A day was written but did not read back as expected. Progress was not advanced; the next attempt rewrites the day |
+| The Energy dashboard isn't using Amber Energy Dashboard | A day after the first import, nothing in the Energy dashboard uses this integration's statistics. **Fix** adds them if there is no grid connection yet, points to the migration if the YAML kit is in use, or explains how to choose them (and lets you dismiss the item). It clears itself once the statistics are in use |
 | Finish removing the YAML kit | After a migration: the old kit items still present, to remove by hand. It is re-checked when Home Assistant starts and after each scheduled import, and clears itself once they are gone. The old statistics do not count; delete them later if you wish |
 
 **Diagnostics.** Open the integration, then the three-dot menu, then **Download
@@ -316,6 +328,11 @@ diagnostics**. The file contains:
 
 Your **API key and NMI are redacted**. Your usage figures are personal data, so check
 the file before you attach it to an issue.
+
+**HACS shows "icon not available"** for this integration in its own list. That is a
+known HACS limitation for custom integrations that ship their brand icon locally (since
+Home Assistant 2026.3). The icon shows in Home Assistant itself (Settings > Devices &
+services), so nothing needs fixing.
 
 **Debug logging:**
 ```yaml
@@ -336,6 +353,13 @@ logger:
   bill.
 - *Today and yesterday are missing.* Amber publishes each day about a day late. Yesterday
   normally appears in the morning.
+- *Why does an hour of yesterday's usage appear after midnight?* Amber's days are NEM
+  days: 00:00 to 24:00 Australian Eastern Standard Time all year, with no daylight saving.
+  During daylight saving, a NEM day runs from 01:00 to 01:00 local time, so its last hour
+  shows at 00:00 to 01:00 on the next local day. Daily totals in the Energy dashboard
+  therefore shift by an hour in summer; totals over a billing period don't, because the
+  bill uses the same NEM days. (In South Australia the same applies, with half-hour
+  offsets.)
 - *The first days are missing.* Amber only keeps about three months, so anything older
   cannot be fetched. If you used the YAML kit, the migration copies its older history.
 - *Why AUD and not cents?* Home Assistant statistics use your currency; the cents Amber

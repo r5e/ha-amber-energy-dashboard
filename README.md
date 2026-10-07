@@ -73,6 +73,7 @@ costs a few API calls.
 | `amber_energy_dashboard:<site>_<ch>_cost` | AUD | Cost per hour on general and controlled-load channels. Positive means paid |
 | `amber_energy_dashboard:<site>_<ch>_compensation` | AUD | Feed-in earnings per hour. **Positive means earned**, as the Energy dashboard expects |
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
+| `amber_energy_dashboard:<site>_<ch>_cost_incl_fixed` | AUD | Optional (see [Bill estimate](#bill-estimate-optional)): the general channel's cost plus your daily fixed charges |
 
 **Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
 if the Energy dashboard has no grid connection yet, setup offers **Add to the Energy
@@ -97,6 +98,8 @@ approximate figures this integration exists to replace.
 
 **Services:**
 - `amber_energy_dashboard.run_now`: run the import now;
+- `bill_estimate`: the bill estimate for any billing cycle, with the line breakdown (see
+  [Bill estimate](#bill-estimate-optional));
 - `probe_retention`: find Amber's retention boundary again from scratch (at most 8 API
   calls). Normally not needed, because the daily check follows the boundary;
 - `import_day`: import one day;
@@ -180,6 +183,40 @@ Home Assistant 2026.9: the Energy dashboard accepts the statistic and reports no
 **Reconciliation** sensor appears on a device named "<your sensor> (own sensor)". It shows, for the most recent day both
 have, your meter's kWh minus Amber's kWh (the percentage and both totals are attributes).
 It catches CT calibration drift or a sensor that stopped reporting.
+
+## Bill estimate (optional)
+
+Under **Configure > Bill estimate**, enter your **billing day** (1 to 28, the first day of
+each cycle on your bill), the **daily fixed charges excluding GST** as printed on your bill
+(network daily charge, metering, Amber subscription, other) and the **GST rate** (10 %).
+Four sensors then show, for the current cycle:
+
+| Sensor | Meaning |
+|---|---|
+| Bill to date | Usage cost (Amber's figures, GST included) − export credit + fixed charges × days × (1 + GST). Attributes: each line, the cycle's start and end, and the days the data covers |
+| Projected bill | The average daily usage so far × the days in the cycle, plus the fixed charges for the whole cycle |
+| Days into billing cycle | Today's day of the cycle |
+| Average cost per day | Bill to date ÷ the days it covers |
+
+- **It runs a day behind:** only complete imported days count, and the attributes say
+  which day the data runs to (`data_through`). If you installed the integration part-way
+  through a cycle, it covers from your first imported day (`data_from`).
+- **Cycle days are Amber's days** (AEST, all year), like your bill. In summer a cycle
+  starts at 01:00 local time.
+- **One-off charges** (such as card payment fees) are not included.
+- Changing the billing day recalculates at once. In Pricing-only mode there is no usage,
+  so no estimate.
+- The `amber_energy_dashboard.bill_estimate` action returns the estimate for any cycle
+  that is still in the integration's day records (give a date in it).
+- **Optional statistic, "cost including fixed charges":** the general channel's cost plus
+  the daily fixed charges (with GST) spread evenly over each day's hours. Select it in the
+  Energy dashboard instead of the plain cost if you want the dashboard's totals to match
+  your bill. Turning it on fetches the available history once (about 13 API calls).
+  Changed charges apply from the next day written.
+
+Export credits use Amber's billed compensation. On networks with a free export allowance
+(for example Endeavour N61), the bill can credit more than Amber's data shows; see the
+feed-in question under Troubleshooting.
 
 ## Price series (optional)
 

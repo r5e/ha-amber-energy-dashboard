@@ -164,6 +164,7 @@ Optional:
 |---|---|---|---|
 | `amber_energy_dashboard:{site}_{chan}_price` | AUD/kWh | mean | Off by default. Hourly mean of `perKwh`. README explains why this is not a cost rate |
 | `amber_energy_dashboard:{site}_own_{sensor_slug}_cost` | AUD | sum | Own-sensor cost (section 11) |
+| `amber_energy_dashboard:{site}_{chan}_cost_incl_fixed` | AUD | sum | Off by default. General cost plus daily fixed charges (section 19) |
 
 Metadata (verified against HA 2026.9.3 in Milestone 1): `source="amber_energy_dashboard"`,
 friendly `name`, and **always both `mean_type` and `unit_class`** (omitting either is
@@ -434,6 +435,7 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 - `backfill(start_date, end_date)`
 - `run_now()` and `import_day(date)`
 - `probe_retention()`: a fresh retention discovery (section 8)
+- `bill_estimate(date)`: the bill estimate for a cycle (section 19)
 - `rebuild_from_anchor` was dropped at the M6b review: `backfill` with the guarded tail
   rewrite (section 8) covers the YAML `amber_window_rebuild` use.
 - `migrate_v1(dry_run, confirm_backup, exclude_flagged, acknowledge_unverified, …)`,
@@ -774,7 +776,7 @@ compared days").
 HACS's "icon not available"; INSTALL.md's version step shortened to a pre-release
 footnote, the new setup option (section 3) and the buttons (section 4).
 
-## 19. Bill estimate (Milestone 10, design only)
+## 19. Bill estimate (Milestone 10)
 
 **Options** (options flow, a "Bill estimate" step; off until a billing day is set):
 - billing day of month, 1 to 28 (the cycle runs from that day to the day before it next
@@ -811,8 +813,39 @@ statistics (a secondary chain, so it follows revisions and rewrites).
 - With M11's allowance adjustment (compensation $5.3749): 108.5424 − 5.3749 + 62.5462 =
   **$165.71**, within a few cents of $165.74.
 - Without it (billed compensation $2.1238): 108.5424 − 2.1238 + 62.5462 = **$168.96**,
-  about **$3.25 higher**. (The planning brief said "lower"; less export credit makes the
-  bill higher. To confirm in the planning chat.)
+  about **$3.25 higher**. (Confirmed at the M9 review: the brief's "lower" was a sign slip.)
+
+**As built (M10):**
+- **Cycle days are NEM days**, as for Amber's meter data and bill. During daylight saving
+  a cycle starts at 01:00 local time; the local hour 00:00 to 01:00 on the billing day
+  belongs to the previous cycle. "Today" (days into cycle) is the NEM date.
+- **Coverage:** usage counts only imported (complete, verified) days, from the Store's
+  per-day totals (exact, and updated by revisions). Fixed charges apply to every day from
+  the first to the last imported day of the cycle (`data_from` to `data_through`); a
+  skipped day inside that range is listed in `missing_days` and still bears its fixed
+  charges. A cycle that began before the integration's first day says so
+  (`complete_from_cycle_start` false). With no imported day yet, bill to date and the
+  projection are unknown.
+- **Average cost per day** = bill to date ÷ days covered (fixed charges included).
+  **Projected** = (usage − credit) per imported day × days in cycle + fixed charges ×
+  days in cycle × (1 + GST).
+- **Billing day changes** apply at once: the estimate is recomputed, nothing is stored per
+  cycle. Turning the estimate on or off reloads the entry (its sensors are added or
+  removed).
+- **Modes:** Pricing-only has no usage, so the sensors are unknown and the action refuses;
+  the statistic is not written. Recovery-only uses whatever days are imported.
+- **Statistic including fixed charges:** a secondary chain (key `fixed`), so it follows
+  revisions, tail rewrites, crash recovery and retention like the price series. Each hour
+  = the general channel's cost from that day's usage records + the day's fixed charges
+  including GST ÷ 24 (NEM days always have 24 hours). It starts at the retention boundary
+  (about 13 calls when turned on). The fixed amount is the one set when each day is
+  written; it is recorded per day. Changed charges apply from the next day written.
+- **Action** `bill_estimate(date)`: the estimate for the cycle containing `date`
+  (default today), for any cycle still in the Store's day records (about 400 days).
+- **Acceptance** (VM 9102, 2026-10-08): billing day 28, the three charges, GST 10 % →
+  **$168.96** for 28 Aug to 27 Sep (usage 108.5424, export credit −2.1238, network
+  23.9348, metering 13.1353, subscription 25.4761). The brief's sign is corrected: the
+  targets are $168.96 now and $165.71 after M11's allowance adjustment.
 
 ## 20. Export allowance for two-way network tariffs (Milestone 11, design only)
 

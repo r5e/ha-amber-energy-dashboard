@@ -4,7 +4,29 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - 2.1.0-dev1
+## [Unreleased] - 2.1.0-dev2
+
+### Added
+
+- **Bill estimate** (options: billing day, daily fixed charges excluding GST, GST rate):
+  sensors **Bill to date** (with the line breakdown), **Projected bill**, **Days into
+  billing cycle** and **Average cost per day**, and the `bill_estimate` action for any
+  cycle. Cycle days are Amber's (AEST) days, as on the bill; only complete imported days
+  count.
+- Optional statistic **cost including fixed charges** (general channel), for an Energy
+  dashboard whose totals match the bill.
+
+### Changed
+
+- The import settings step keeps the bill estimate's options.
+
+### Documentation
+
+- README and installation guide: the bill estimate. The installation guide's FAQ entry
+  about HACS offering a commit code (pre-release era) and the unused version-picker
+  screenshot are removed.
+
+## 2.1.0-dev1
 
 ### Added
 

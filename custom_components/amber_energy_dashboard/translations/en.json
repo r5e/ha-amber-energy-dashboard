@@ -164,6 +164,14 @@
     }
   },
   "entity": {
+    "button": {
+      "run_now": {
+        "name": "Run now"
+      },
+      "probe_retention": {
+        "name": "Re-check retention"
+      }
+    },
     "sensor": {
       "status": {
         "name": "Import status",

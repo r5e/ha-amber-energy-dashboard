@@ -23,6 +23,14 @@
     }
   },
   "entity": {
+    "button": {
+      "run_now": {
+        "default": "mdi:play-circle-outline"
+      },
+      "probe_retention": {
+        "default": "mdi:calendar-search"
+      }
+    },
     "sensor": {
       "status": {
         "default": "mdi:database-sync"

@@ -64,14 +64,12 @@ which provides live prices. You can keep both.
 
    <img src="images/06-hacs-download.png" alt="The repository page" width="694">
 
-5. **Check the version** before confirming. While only pre-releases exist, HACS may offer a
-   short code (a commit, such as `1ac9ceb`) instead of a version number. Open **Need a
-   different version?** and pick the newest release from the list. Once a full release is
-   published, HACS offers it directly.
+5. Click **Download**, then **restart Home Assistant** when prompted.
 
-   <img src="images/07-hacs-choose-version.png" alt="Choosing the version" width="313">
+   HACS offers the latest release.¹
 
-6. Click **Download**, then **restart Home Assistant** when prompted.
+¹ *Pre-releases (release candidates) are not offered by default. To try one, open **Need a
+different version?** in the download dialog and pick it from the list.*
 
 ## 3. Add the integration
 
@@ -101,6 +99,12 @@ which provides live prices. You can keep both.
    3 and 6 hours later. Once the day is imported, the retries are skipped without any API
    calls. **Fixed times** lets you choose up to 6 times yourself.
 
+   If the Energy dashboard has no grid connection yet, this step also offers **Add to the
+   Energy dashboard** (on by default). It adds a grid connection with this site's
+   consumption and cost and, with feed-in, its return to grid and compensation (a
+   controlled load gets a second grid connection), so you can skip section 6. An existing
+   grid connection is never changed, and the option isn't shown then.
+
    <img src="images/12-import-schedule.png" alt="Import schedule" width="332">
 
 6. **Name and assign:** optionally rename the device or assign it to an area, then click
@@ -124,6 +128,10 @@ Open the integration's device to see its status:
 - **Yesterday** sensors show the previous day's energy, cost and feed-in compensation per
   channel.
 - **Next scheduled run** (under Diagnostic) shows when it will next check.
+- **Run now** (under Controls) runs the import straight away, the same as a scheduled run.
+  You rarely need it.
+- **Re-check retention** (under Diagnostic) finds the oldest day Amber still holds again
+  from scratch (at most 8 API calls). The daily check normally follows it by itself.
 - **Download diagnostics** produces a file for bug reports. Your API key and NMI are
   redacted from it.
 
@@ -166,8 +174,14 @@ the Energy dashboard's cost source.
 
 ## 6. Add it to the Energy dashboard
 
-Go to **Settings > Dashboards > Energy**, and in the **Electricity grid** section, add or
-edit a grid connection:
+If you kept **Add to the Energy dashboard** on during setup (section 3), this is already
+done. A day after the first import, if nothing in the Energy dashboard uses the
+integration's statistics, a Repairs item **"The Energy dashboard isn't using Amber Energy
+Dashboard"** appears. Its **Fix** adds them when there is no grid connection, points to
+the [migration guide](MIGRATION.md) when the YAML kit is in use, or lets you dismiss it.
+
+To set it up by hand, go to **Settings > Dashboards > Energy**, and in the **Electricity
+grid** section, add or edit a grid connection:
 
 - **Energy imported from grid:** the integration's **general** energy statistic.
 - **Energy exported to grid:** its **feed-in** energy statistic.

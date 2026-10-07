@@ -417,7 +417,8 @@ help and the README say so. Afterwards it shares each run's fetch at no extra co
    config entry per site.
 3. Channel discovery. Controlled load is supported automatically.
 4. Usage mode.
-5. Schedule (automatic or fixed times).
+5. Schedule (automatic or fixed times), and "Add to the Energy dashboard" when it has no
+   grid source (section 18).
 
 A **reauth flow** handles key rotation (triggered on 401/403).
 
@@ -431,8 +432,11 @@ series, own-sensor mappings, lower-precision fallback behaviour, and (from Miles
 - `probe_retention()`: a fresh retention discovery (section 8)
 - `rebuild_from_anchor` was dropped at the M6b review: `backfill` with the guarded tail
   rewrite (section 8) covers the YAML `amber_window_rebuild` use.
-- `migrate_v1(dry_run, confirm_backup, exclude_flagged, …)`, `undo_migration()` and
-  `delete_legacy_statistics(confirm)` (Milestone 6a, section 14)
+- `migrate_v1(dry_run, confirm_backup, exclude_flagged, acknowledge_unverified, …)`,
+  `undo_migration()` and `delete_legacy_statistics(confirm)` (Milestone 6a, section 14;
+  `acknowledge_unverified` from section 18)
+
+**Buttons** (section 18): Run now, and Re-check retention (diagnostic).
 
 ## 13. Error handling
 
@@ -585,7 +589,9 @@ overlap window (days both the legacy and the new statistics have), compare daily
   Days where both sides have data keep the tolerances above; only genuine disagreement
   fails.
 - At least 3 compared days (both sides with data) are required. On failure the migration
-  stops with a clear report and changes nothing. The report counts the failures by
+  stops with a clear report and changes nothing. (From 2.1, fewer than 3 compared days
+  with no difference and a legacy gap is *unverified*, and runs with an explicit
+  acknowledgement; section 18.) The report counts the failures by
   category (statistic and problem) before listing the first 10, and the reason carries the
   same summary.
 - A gap does not change the copy, the re-base or the Energy dashboard switch: the copy

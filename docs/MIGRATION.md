@@ -25,6 +25,11 @@ continuous series. **Take a full backup first.**
    That is not a failure: those days come from the integration, which has them. A pause
    the kit later caught up on is compared as one total. Parity fails only where both
    sides have data and disagree.
+
+   **If your kit stopped before the integration's first day** (or the two overlap by
+   fewer than 3 days), the old history can't be checked against Amber's data. The dry run
+   explains why, and names any days that neither has. The migration then runs only if you
+   also tick **I understand the old history can't be checked against Amber's data**.
 3. Turn on **I have a current Home Assistant backup** and click **Submit** to run it.
 
    <img src="images/19-migration-complete.png" alt="The migration result" width="330">

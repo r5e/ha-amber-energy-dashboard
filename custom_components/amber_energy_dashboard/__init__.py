@@ -33,6 +33,7 @@ from .api import (
     AmberRateLimitError,
     AmberServerError,
 )
+from .bill import CHARGES, DEFAULT_GST_PERCENT, BillSettings
 from .const import (
     ATTR_ACKNOWLEDGE_UNVERIFIED,
     ATTR_CONFIG_ENTRY_ID,
@@ -44,9 +45,12 @@ from .const import (
     ATTR_EXCLUDE_FLAGGED,
     ATTR_START_DATE,
     CONF_ADD_TO_ENERGY,
+    CONF_BILLING_DAY,
     CONF_CHANNEL,
     CONF_CHANNELS,
+    CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
+    CONF_GST_PERCENT,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
     CONF_PRICE_SERIES,
@@ -64,6 +68,7 @@ from .const import (
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
     SERVICE_BACKFILL,
+    SERVICE_BILL_ESTIMATE,
     SERVICE_DELETE_LEGACY,
     SERVICE_IMPORT_DAY,
     SERVICE_MIGRATE,
@@ -150,7 +155,20 @@ def settings_from_options(options: dict[str, Any]) -> tuple[tuple, dict[str, Any
             "usage_mode": options.get(CONF_USAGE_MODE, MODE_FULL),
             "price_series": bool(options.get(CONF_PRICE_SERIES, False)),
             "own_fallback": bool(options.get(CONF_OWN_FALLBACK, True)),
+            "bill": bill_from_options(options),
         },
+    )
+
+
+def bill_from_options(options: dict[str, Any]) -> BillSettings | None:
+    """The bill estimate settings, or None until a billing day is set (section 19)."""
+    if not options.get(CONF_BILLING_DAY):
+        return None
+    return BillSettings(
+        billing_day=int(options[CONF_BILLING_DAY]),
+        charges={name: float(options.get(name) or 0.0) for name in CHARGES},
+        gst_percent=float(options.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)),
+        fixed_statistic=bool(options.get(CONF_FIXED_STATISTIC, False)),
     )
 
 
@@ -273,6 +291,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
 
     _register_retention_service(hass)
+    _register_bill_service(hass)
     _register_migration_services(hass)
     return True
 
@@ -306,6 +325,33 @@ def _register_retention_service(hass: HomeAssistant) -> None:
         _probe_retention,
         schema=RUN_NOW_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+
+
+def _register_bill_service(hass: HomeAssistant) -> None:
+    """bill_estimate: the estimate for the cycle containing a date (default today)."""
+
+    async def _bill_estimate(call: ServiceCall) -> ServiceResponse:
+        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        manager = entry.runtime_data.manager
+        if manager.bill is None:
+            raise ServiceValidationError(
+                "Set a billing day in the integration's options (Bill estimate) first."
+            )
+        if not manager.bill_available:
+            raise ServiceValidationError(
+                "Pricing-only mode imports no usage, so there is no bill estimate."
+            )
+        return manager.bill_estimate(call.data.get(ATTR_DATE) or nem_today())
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BILL_ESTIMATE,
+        _bill_estimate,
+        schema=vol.Schema(
+            {vol.Optional(ATTR_DATE): cv.date, vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
+        ),
+        supports_response=SupportsResponse.ONLY,
     )
 
 
@@ -406,7 +452,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     )
     (schedule, patience_days, revision_days), extra = settings_from_options(dict(entry.options))
     own = own_sensors_from_entry(entry, channels)
-    known = {s.key for s in own} | {"price"}
+    known = {s.key for s in own} | {"price", "fixed"}
     for key in list(store.as_dict()["chains"]):
         if key not in known:
             await async_forget_chain(store, key)  # mapping removed; statistics are kept
@@ -475,10 +521,11 @@ async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -
     wanted = {
         sid for sid, sub in entry.subentries.items() if sub.subentry_type == SUBENTRY_OWN_SENSOR
     }
-    if current != wanted:
+    args, kwargs = settings_from_options(dict(entry.options))
+    # Own-sensor mappings, or turning the bill estimate on or off, change the entities.
+    if current != wanted or (manager.bill is None) != (kwargs["bill"] is None):
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
-    args, kwargs = settings_from_options(dict(entry.options))
     manager.async_update_settings(*args, **kwargs)
 
 

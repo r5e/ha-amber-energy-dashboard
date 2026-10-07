@@ -43,6 +43,7 @@ from .api import (
     AmberServerError,
     Site,
 )
+from .bill import CHARGES, DEFAULT_GST_PERCENT, MAX_BILLING_DAY
 from .const import (
     ATTR_ACKNOWLEDGE_UNVERIFIED,
     ATTR_CONFIRM,
@@ -52,9 +53,12 @@ from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
     CONF_ADD_TO_ENERGY,
+    CONF_BILLING_DAY,
     CONF_CHANNEL,
     CONF_CHANNELS,
+    CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
+    CONF_GST_PERCENT,
     CONF_NMI,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
@@ -128,6 +132,31 @@ _OPTIONS_SCHEMA = _SCHEDULE_SCHEMA.extend(
         ),
     }
 )
+
+
+def _money() -> NumberSelector:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=0, max=50, step="any", mode=NumberSelectorMode.BOX, unit_of_measurement="$/day"
+        )
+    )
+
+
+_BILL_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_BILLING_DAY): NumberSelector(
+            NumberSelectorConfig(min=1, max=MAX_BILLING_DAY, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        **{vol.Optional(name): _money() for name in CHARGES},
+        vol.Optional(CONF_GST_PERCENT): NumberSelector(
+            NumberSelectorConfig(
+                min=0, max=30, step=0.1, mode=NumberSelectorMode.BOX, unit_of_measurement="%"
+            )
+        ),
+        vol.Optional(CONF_FIXED_STATISTIC): BooleanSelector(),
+    }
+)
+_BILL_KEYS = frozenset({CONF_BILLING_DAY, *CHARGES, CONF_GST_PERCENT, CONF_FIXED_STATISTIC})
 
 
 def _schedule_options(user_input: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -402,7 +431,7 @@ class AmberOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Menu: settings, migration, and undo once a migration has started."""
-        options = ["settings", "migrate"]
+        options = ["settings", "bill", "migrate"]
         manager = self._manager()
         record = manager.store.migration if manager is not None else None
         if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
@@ -439,6 +468,8 @@ class AmberOptionsFlow(OptionsFlow):
                 options[CONF_OWN_FALLBACK] = bool(
                     user_input.get(CONF_OWN_FALLBACK, current.get(CONF_OWN_FALLBACK, True))
                 )
+                # The bill estimate has its own step; keep its options.
+                options.update({k: v for k, v in current.items() if k in _BILL_KEYS})
                 return self.async_create_entry(data=options)
         current = dict(self.config_entry.options)
         suggested = user_input or {
@@ -456,6 +487,28 @@ class AmberOptionsFlow(OptionsFlow):
             step_id="settings",
             data_schema=self.add_suggested_values_to_schema(_OPTIONS_SCHEMA, suggested),
             errors=errors,
+        )
+
+    async def async_step_bill(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """The bill estimate: billing day, daily fixed charges (ex GST), GST, statistic."""
+        current = dict(self.config_entry.options)
+        if user_input is not None:
+            options = {k: v for k, v in current.items() if k not in _BILL_KEYS}
+            if user_input.get(CONF_BILLING_DAY):
+                options[CONF_BILLING_DAY] = int(user_input[CONF_BILLING_DAY])
+                options.update({name: float(user_input.get(name) or 0.0) for name in CHARGES})
+                options[CONF_GST_PERCENT] = float(
+                    user_input.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)
+                )
+                options[CONF_FIXED_STATISTIC] = bool(user_input.get(CONF_FIXED_STATISTIC))
+            return self.async_create_entry(data=options)
+        suggested = {
+            CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
+            **{k: v for k, v in current.items() if k in _BILL_KEYS},
+        }
+        return self.async_show_form(
+            step_id="bill",
+            data_schema=self.add_suggested_values_to_schema(_BILL_SCHEMA, suggested),
         )
 
     async def async_step_migrate(

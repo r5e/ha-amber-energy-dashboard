@@ -24,6 +24,17 @@ probe_retention:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+bill_estimate:
+  fields:
+    date:
+      required: false
+      selector:
+        date:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: amber_energy_dashboard
 backfill:
   fields:
     start_date:

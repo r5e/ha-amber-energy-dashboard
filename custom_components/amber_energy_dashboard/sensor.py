@@ -28,6 +28,16 @@ from .statistics import CURRENCY, Metric
 PARALLEL_UPDATES = 0
 
 
+def device_info(site: str) -> DeviceInfo:
+    """The site's device, shared by the sensors and buttons."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, site)},
+        name="Amber Energy Dashboard",
+        manufacturer="Amber Electric (unofficial integration)",
+        entry_type=DeviceEntryType.SERVICE,
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class AmberSensorDescription(SensorEntityDescription):
     """A sensor computed from the manager snapshot."""
@@ -184,12 +194,7 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
         self.entity_description = description
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, site)},
-            name="Amber Energy Dashboard",
-            manufacturer="Amber Electric (unofficial integration)",
-            entry_type=DeviceEntryType.SERVICE,
-        )
+        self._attr_device_info = device_info(site)
 
     @property
     def available(self) -> bool:

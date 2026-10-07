@@ -83,7 +83,7 @@ from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs, own_cost_spec
 from .storage import AmberStore, async_forget_chain
 
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -270,21 +270,27 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_probe_retention(manager: AmberManager) -> dict[str, Any]:
+    """A fresh retention discovery (the service and the button). Failures raise
+    HomeAssistantError; the stored boundary is kept."""
+    try:
+        return await manager.async_probe_retention()
+    except AmberAuthError as err:
+        raise HomeAssistantError(
+            "Amber rejected the API key; re-authenticate the integration"
+        ) from err
+    except AmberError as err:
+        raise HomeAssistantError(
+            f"Retention probe failed ({err}); the stored boundary was kept"
+        ) from err
+
+
 def _register_retention_service(hass: HomeAssistant) -> None:
     """probe_retention: force a fresh discovery of the retention boundary."""
 
     async def _probe_retention(call: ServiceCall) -> ServiceResponse:
         entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
-        try:
-            result = await entry.runtime_data.manager.async_probe_retention()
-        except AmberAuthError as err:
-            raise HomeAssistantError(
-                "Amber rejected the API key; re-authenticate the integration"
-            ) from err
-        except AmberError as err:
-            raise HomeAssistantError(
-                f"Retention probe failed ({err}); the stored boundary was kept"
-            ) from err
+        result = await async_probe_retention(entry.runtime_data.manager)
         return result if call.return_response else None
 
     hass.services.async_register(

@@ -18,6 +18,13 @@ continuous series. **Take a full backup first.**
 
    If the parity check fails, or the scan flags suspicious rows, the migration stops and
    explains why, without changing anything.
+
+   **If your kit stopped importing** some time ago (for example its Amber key stopped
+   working, so it added 0 kWh each day), the dry run says so, for example "The YAML kit
+   stopped importing after 2026-09-20; 16 days will come from the integration's own data".
+   That is not a failure: those days come from the integration, which has them. A pause
+   the kit later caught up on is compared as one total. Parity fails only where both
+   sides have data and disagree.
 3. Turn on **I have a current Home Assistant backup** and click **Submit** to run it.
 
    <img src="images/19-migration-complete.png" alt="The migration result" width="330">

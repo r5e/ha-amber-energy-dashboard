@@ -7,7 +7,7 @@ The Energy dashboard then shows what Amber really billed, hour by hour.
 This is an unofficial community project. It is not affiliated with or endorsed by
 Amber Electric.
 
-> **Version 2.0.0.** Version 2 replaces the earlier YAML kit (v1) with a proper
+> **Version 2.0.1.** Version 2 replaces the earlier YAML kit (v1) with a proper
 > integration: set up in the UI, with no YAML at all. If you use the v1 kit, see the
 > **[migration guide](docs/MIGRATION.md)**. The v1 kit itself is kept in
 > [`legacy/v1/`](legacy/v1/).

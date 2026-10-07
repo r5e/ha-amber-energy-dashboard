@@ -198,10 +198,6 @@ feed-in sign, with a dry run and undo.
 
 ## 8. Troubleshooting and FAQ
 
-**HACS shows an "update" with a long code (for example `4b8a50a`).**
-While the repository only has pre-releases, HACS compares your installed release against
-the newest commit. Choose **Skip** on the update. It stops once a full release exists.
-
 **My feed-in earnings are lower than the export credit on my Amber bill.**
 Amber's usage data applies your network's export charges to every interval. Some networks
 offer a free export allowance (for example Endeavour Energy's two-way tariff N61, which has

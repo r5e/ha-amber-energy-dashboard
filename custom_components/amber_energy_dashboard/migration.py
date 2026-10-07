@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import itertools
 import json
 import logging
 import math
@@ -21,7 +22,7 @@ from statistics import median
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.components.automation import DATA_COMPONENT as AUTOMATIONS
-from homeassistant.components.energy.data import ENERGY_SOURCE_SCHEMA, async_get_manager
+from homeassistant.components.energy.data import async_get_manager
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
@@ -33,7 +34,6 @@ from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.util import dt as dt_util
-import voluptuous as vol
 
 from . import importer
 from .const import (
@@ -47,6 +47,7 @@ from .const import (
     ROLE_IMPORT_ENERGY,
     ROLES,
 )
+from .energy import async_save_sources, validate_sources
 from .importer import HOUR, ImportDayError, ImportRefusedError, nem_date, nem_day_start
 from .statistics import CURRENCY, Metric
 
@@ -677,6 +678,14 @@ def _parity(
     enough = len(compared_days) >= MIN_PARITY_DAYS
     passed = enough and not mismatches
     summary = _mismatch_summary(mismatches)
+    # Too few days to compare because the legacy data doesn't overlap ours (section 18):
+    # not a failure, but a real run needs an explicit acknowledgement.
+    unverified = not enough and not mismatches and bool(gaps or not days)
+    unverified_text, no_data = (
+        _unverified_text(ends[ROLE_IMPORT_ENERGY], new[ROLE_IMPORT_ENERGY], len(compared_days))
+        if unverified
+        else (None, None)
+    )
     if passed:
         reason = None
     elif not enough:
@@ -704,7 +713,50 @@ def _parity(
             for label, v in cost_totals.items()
         },
         "reason": reason,
+        "unverified": unverified,
+        "unverified_reason": unverified_text,
+        "no_data": no_data,
     }
+
+
+def _last_legacy_data(ends: Mapping[date, float]) -> date:
+    """The last day the legacy import series moved (a stalled kit's later rows don't)."""
+    days = sorted(ends)
+    moved = [
+        day for prev, day in itertools.pairwise(days) if abs(ends[day] - ends[prev]) >= ZERO_KWH
+    ]
+    return moved[-1] if moved else days[0]
+
+
+def _unverified_text(
+    ends: Mapping[date, float], ours: Mapping[date, float], compared: int
+) -> tuple[str, dict[str, Any] | None]:
+    """Why the old history can't be checked, and the days no source covers."""
+    last, first = _last_legacy_data(ends), min(ours)
+    if last >= first:
+        return (
+            f"Only {compared} {'day has' if compared == 1 else 'days have'} data in both the "
+            f"YAML kit and the integration (at least {MIN_PARITY_DAYS} are needed), so the old "
+            "history can't be checked against Amber's data.",
+            None,
+        )
+    text = (
+        f"The YAML kit's last data is {last}, before the integration's first day ({first}), "
+        "so the old history can't be checked against Amber's data."
+    )
+    gap = (first - last).days - 1
+    if not gap:
+        return text, None
+    no_data = {
+        "first": (last + timedelta(days=1)).isoformat(),
+        "last": (first - timedelta(days=1)).isoformat(),
+        "days": gap,
+    }
+    return (
+        f"{text} Neither covers {no_data['first']} to {no_data['last']} ({gap} "
+        f"{'day' if gap == 1 else 'days'}); the Energy dashboard will show no data for them.",
+        no_data,
+    )
 
 
 def _mismatch_summary(mismatches: Sequence[Mapping[str, Any]]) -> str:
@@ -850,11 +902,9 @@ async def _energy_plan(
         "reason": None if changed else "The Energy dashboard does not use the legacy statistics.",
         "instructions": instructions,
     }
-    try:
-        ENERGY_SOURCE_SCHEMA(copy.deepcopy(after))
-    except vol.Invalid as err:
+    if error := validate_sources(after):
         plan["safe"] = False
-        plan["reason"] = f"The changed preferences do not validate: {err}"
+        plan["reason"] = error
     return plan
 
 
@@ -1220,11 +1270,14 @@ async def async_migrate(
     confirm_backup: bool = False,
     picks: Mapping[str, str | None] | None = None,
     exclude_flagged: bool = False,
+    acknowledge_unverified: bool = False,
 ) -> dict[str, Any]:
     """Dry-run or run the migration. Raises MigrationRefused when it will not run.
 
     ``exclude_flagged`` leaves implausible legacy rows out (see ``_scan_series``);
-    without it, any such row stops the real run. A run in progress keeps its choice.
+    without it, any such row stops the real run. ``acknowledge_unverified`` lets a real
+    run go ahead when parity is unverified (the legacy data doesn't overlap ours). A run
+    in progress keeps both choices.
     """
     store = manager.store
     record = copy.deepcopy(store.migration)
@@ -1258,18 +1311,40 @@ async def async_migrate(
         raise MigrationRefused("needs_manual_pick", detection["reason"], report)
 
     if status != STATUS_IN_PROGRESS:
-        sources = {**sources, "exclude_flagged": exclude_flagged}
+        sources = {
+            **sources,
+            "exclude_flagged": exclude_flagged,
+            "acknowledge_unverified": acknowledge_unverified,
+        }
     plan = await _async_plan(hass, manager, sources, record)
     report = _report(plan, detection, dry_run=dry_run, status=status)
     if dry_run:
         return report
+    _check_ready(plan, report, confirm_backup=confirm_backup)
+    report["result"] = await _async_execute(hass, manager, plan)
+    report["migration_status"] = manager.store.migration["status"]
+    report["cleanup"] = _cleanup_lines(manager.store.migration["automations"], plan.cleanup)
+    return report
+
+
+def _check_ready(plan: _Plan, report: dict[str, Any], *, confirm_backup: bool) -> None:
+    """Raise MigrationRefused unless a real run may start (problems, flagged rows, parity,
+    the acknowledgement, and the backup confirmation)."""
     if plan.problems:
         raise MigrationRefused("plan_refused", " ".join(plan.problems), report)
     assert plan.parity is not None
-    if not plan.parity["passed"]:
+    parity = plan.parity
+    if parity["unverified"] and not plan.sources.get("acknowledge_unverified"):
+        raise MigrationRefused(
+            "unverified",
+            f"{parity['unverified_reason']} Nothing was changed. To go ahead, run it again "
+            "with acknowledge_unverified (or tick the acknowledgement in the options).",
+            report,
+        )
+    if not parity["passed"] and not parity["unverified"]:
         raise MigrationRefused(
             "parity_failed",
-            f"Parity check failed ({plan.parity['reason']}); nothing was changed.",
+            f"Parity check failed ({parity['reason']}); nothing was changed.",
             report,
         )
     if not confirm_backup:
@@ -1278,10 +1353,6 @@ async def async_migrate(
             "Confirm that you have a current Home Assistant backup (confirm_backup).",
             report,
         )
-    report["result"] = await _async_execute(hass, manager, plan)
-    report["migration_status"] = manager.store.migration["status"]
-    report["cleanup"] = _cleanup_lines(manager.store.migration["automations"], plan.cleanup)
-    return report
 
 
 async def _async_execute(hass: HomeAssistant, manager: AmberManager, plan: _Plan) -> dict:
@@ -1608,19 +1679,10 @@ async def _async_apply_energy(
             "instructions": energy["instructions"],
         }
     manager = await async_get_manager(hass)
-    await manager.async_update({"energy_sources": copy.deepcopy(energy["sources_after"])})
-    current = (manager.data or {}).get("energy_sources", [])
-    keys = ("stat_energy_from", "stat_cost", "stat_energy_to", "stat_compensation")
-    ok = all(
-        index < len(current)
-        and all(current[index].get(k) == energy["sources_after"][index].get(k) for k in keys)
-        for index in energy["indexes"]
-    )
-    if not ok:
-        backup = record["energy_backup"] or {}
-        await manager.async_update(
-            {"energy_sources": copy.deepcopy(backup.get("energy_sources", []))}
-        )
+    backup = record["energy_backup"] or {}
+    if not await async_save_sources(
+        manager, energy["sources_after"], energy["indexes"], backup.get("energy_sources", [])
+    ):
         record["energy_instructions"] = energy["instructions"]
         return {
             "changed": False,
@@ -1754,6 +1816,11 @@ def _parity_lines(parity: Mapping[str, Any] | None) -> list[str]:
         + ("passed." if parity["passed"] else f"FAILED: {parity['reason']}.")
     ]
     lines.extend(f"- {gap['text']}" for gap in parity.get("gaps", []))
+    if parity.get("unverified"):
+        lines.append(
+            f"Unverified: {parity['unverified_reason']} A real run needs your "
+            "acknowledgement; everything else is checked as usual."
+        )
     shown = parity["mismatches"]
     if shown:
         lines.append(

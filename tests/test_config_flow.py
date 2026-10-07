@@ -3,6 +3,7 @@
 from unittest.mock import PropertyMock, patch
 
 from homeassistant import config_entries
+from homeassistant.components.energy.data import async_get_manager
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -12,6 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 from custom_components.amber_energy_dashboard.const import (
+    CONF_ADD_TO_ENERGY,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
     CONF_NMI,
@@ -101,6 +103,7 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
             {"identifier": "E1", "type": "general", "tariff": "EA116"},
             {"identifier": "B1", "type": "feedIn", "tariff": None},
         ],
+        CONF_ADD_TO_ENERGY: True,  # offered (no grid source yet), default on
     }
     assert aioclient_mock.mock_calls[0][3]["Authorization"] == f"Bearer {KEY}"
 
@@ -361,3 +364,70 @@ async def test_options_flow_changes_schedule_without_reload(
         **OPTION_DEFAULTS,
     }
     assert manager.schedule.mode == "automatic"
+
+
+async def _to_schedule(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> dict:
+    aioclient_mock.get(SITES_URL, json=[site_json()])
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_ID: SITE_ID}
+    )
+    return await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+
+@pytest.mark.parametrize(
+    ("grid", "unavailable", "choice", "offered", "stored"),
+    [
+        (False, False, None, True, True),  # offered, default on
+        (False, False, False, True, False),  # offered, turned off
+        (True, False, None, False, False),  # a grid source exists: not offered
+        (False, True, None, False, False),  # preferences unreadable: not offered
+    ],
+)
+async def test_schedule_step_offers_energy_dashboard(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    grid: bool,
+    unavailable: bool,
+    choice: bool | None,
+    offered: bool,
+    stored: bool,
+) -> None:
+    """ "Add to the Energy dashboard" is offered only when there is no grid source; the
+    entry records whether it was chosen. An existing grid source is never changed."""
+    energy = await async_get_manager(hass)
+    sources = (
+        [
+            {
+                "type": "grid",
+                "stat_energy_from": "sensor.meter",
+                "stat_energy_to": None,
+                "stat_cost": None,
+                "entity_energy_price": None,
+                "number_energy_price": None,
+                "stat_compensation": None,
+                "entity_energy_price_export": None,
+                "number_energy_price_export": None,
+                "cost_adjustment_day": 0.0,
+            }
+        ]
+        if grid
+        else []
+    )
+    await energy.async_update({"energy_sources": sources})
+    with patch(
+        "custom_components.amber_energy_dashboard.energy.async_get_manager",
+        side_effect=RuntimeError("boom") if unavailable else async_get_manager,
+    ):
+        result = await _to_schedule(hass, aioclient_mock)
+        assert result["step_id"] == "schedule"
+        assert (CONF_ADD_TO_ENERGY in result["data_schema"].schema) is offered
+        user_input = {CONF_SCHEDULE_MODE: "automatic"}
+        if choice is not None:
+            user_input[CONF_ADD_TO_ENERGY] = choice
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+    assert result["data"][CONF_ADD_TO_ENERGY] is stored
+    await hass.async_block_till_done()
+    assert energy.data["energy_sources"][: len(sources)] == sources
+    assert len(energy.data["energy_sources"]) == len(sources) + (1 if stored else 0)

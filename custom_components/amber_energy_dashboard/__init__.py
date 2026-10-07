@@ -34,6 +34,7 @@ from .api import (
     AmberServerError,
 )
 from .const import (
+    ATTR_ACKNOWLEDGE_UNVERIFIED,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_CONFIRM,
     ATTR_CONFIRM_BACKUP,
@@ -42,6 +43,7 @@ from .const import (
     ATTR_END_DATE,
     ATTR_EXCLUDE_FLAGGED,
     ATTR_START_DATE,
+    CONF_ADD_TO_ENERGY,
     CONF_CHANNEL,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
@@ -70,6 +72,7 @@ from .const import (
     SERVICE_UNDO_MIGRATION,
     SUBENTRY_OWN_SENSOR,
 )
+from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
 from .importer import ImportContext
 from .manager import AmberManager, OwnSensor, nem_today
 from .migration import (
@@ -106,6 +109,7 @@ MIGRATE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_DRY_RUN, default=True): cv.boolean,
         vol.Optional(ATTR_CONFIRM_BACKUP, default=False): cv.boolean,
         vol.Optional(ATTR_EXCLUDE_FLAGGED, default=False): cv.boolean,
+        vol.Optional(ATTR_ACKNOWLEDGE_UNVERIFIED, default=False): cv.boolean,
         **{vol.Optional(role): cv.string for role in ROLES},
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
     }
@@ -315,6 +319,7 @@ def _register_migration_services(hass: HomeAssistant) -> None:
                 confirm_backup=call.data[ATTR_CONFIRM_BACKUP],
                 picks={role: call.data.get(role) for role in ROLES},
                 exclude_flagged=call.data[ATTR_EXCLUDE_FLAGGED],
+                acknowledge_unverified=call.data[ATTR_ACKNOWLEDGE_UNVERIFIED],
             )
         except MigrationRefused as err:
             raise ServiceValidationError(str(err)) from err
@@ -415,14 +420,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         **extra,
     )
     entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager)
+    if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
+        # Chosen in the config flow: carried out once (section 18).
+        await async_add_to_energy(hass, manager, "setup")
 
-    async def _check_cleanup(_hass: HomeAssistant | None = None) -> None:
+    async def _check_energy() -> None:
+        await async_check_energy_issue(hass, manager)
+
+    async def _check_all(_hass: HomeAssistant | None = None) -> None:
         await async_check_cleanup(hass, manager)
+        await _check_energy()
 
-    # Re-check the YAML kit's leftovers once Home Assistant has started (so the kit's
-    # entities have been set up), and after each scheduled run.
-    entry.async_on_unload(async_at_started(hass, _check_cleanup))
-    manager.after_scheduled = _check_cleanup
+    async def _started(_hass: HomeAssistant) -> None:
+        await async_listen_for_changes(hass)
+        await _check_all()
+
+    # Re-check the YAML kit's leftovers and the Energy dashboard once Home Assistant has
+    # started (so the kit's entities have been set up), and after each scheduled attempt;
+    # the Energy dashboard also after every run and whenever its preferences change.
+    entry.async_on_unload(async_at_started(hass, _started))
+    manager.after_scheduled = _check_all
+    manager.after_run = _check_energy
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     manager.async_start()

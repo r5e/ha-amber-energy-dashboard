@@ -10,8 +10,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import AmberConfigEntry, async_probe_retention
+from .devices import device_info
 from .manager import AmberManager
-from .sensor import device_info
 
 PARALLEL_UPDATES = 0
 

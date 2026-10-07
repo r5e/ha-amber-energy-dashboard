@@ -394,10 +394,14 @@ earliest changed day.
 **Reconciliation** (Full mode, for each sensor mapped to a general channel): a display
 sensor (no `state_class`) for the last NEM day that both Amber and the sensor have. Its
 state is own kWh − Amber general kWh; the percentage and both totals are attributes. It
-catches CT calibration drift and dropped sensors. In other modes it is unknown. It is named
-"Reconciliation: <source friendly name>", using the friendly name when the mapping was
-created. That name is stored in the sub-entry and not re-derived later, so renaming the
-source sensor does not rename it (mappings without a stored name use the entity ID).
+catches CT calibration drift and dropped sensors. In other modes it is unknown. It sits on
+the mapping's own device, "<source friendly name> (own sensor)" (linked to the site's
+device), and is named "Reconciliation" (M9: a device belongs to one config sub-entry, so
+the mapping's entity cannot share the site's device; until 2.0.1 it was on the site's
+device, named "Reconciliation: <source friendly name>"). The friendly name is the one
+when the mapping was created. It is stored in the sub-entry and not re-derived later, so
+renaming the source sensor does not rename it (mappings without a stored name use the
+entity ID).
 
 **Price series** (optional, default off): `amber_energy_dashboard:{site}_{chan}_price`,
 AUD/kWh, hourly mean with min and max, `mean_type` arithmetic, `unit_class` None. It follows
@@ -707,6 +711,13 @@ Milestones 10 and 11 are design only until their milestones start.
   same as `probe_retention`. A failure raises an error in the UI, and the stored boundary is
   kept, as with the service.
 - Names and icons through translations (`entity.button`) and `icons.json`.
+- **Own-sensor devices.** Each own-sensor mapping (a config sub-entry) has its own device,
+  "<name> (own sensor)", linked to the site's device, holding its reconciliation sensor
+  (section 11). Home Assistant 2026.9 gives a device exactly one sub-entry: with the
+  reconciliation sensor on the site's device, the buttons (no sub-entry) moved the device
+  out of the sub-entry, and Home Assistant could drop the sensor, depending on which
+  platform finished setting up last. Home Assistant also warned that sharing stops
+  working in 2027.8.
 
 **Energy dashboard setup.**
 - The grid sources for an entry: **one grid source** with the general channel's energy

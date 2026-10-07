@@ -212,7 +212,7 @@
         "name": "Yesterday {channel} compensation"
       },
       "reconciliation": {
-        "name": "Reconciliation: {sensor}"
+        "name": "Reconciliation"
       }
     }
   },

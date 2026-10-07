@@ -20,7 +20,7 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 import pytest
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
@@ -322,7 +322,7 @@ async def test_reconciliation_shows_own_minus_amber(
     states = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
     assert len(states) == 1
     state = states[0]
-    assert state.attributes["friendly_name"].endswith("Reconciliation: House meter")
+    assert state.attributes["friendly_name"] == "House meter (own sensor) Reconciliation"
     amber = math.fsum(r["kwh"] for r in make_usage_day(YESTERDAY) if r["channelIdentifier"] == "E1")
     assert float(state.state) == pytest.approx(amber * 0.02, abs=1e-3)
     assert state.attributes["difference_percent"] == pytest.approx(2.0, abs=0.01)
@@ -645,8 +645,8 @@ async def test_subentry_flow_validation_and_removal(
     await hass.async_block_till_done()
     assert entry.runtime_data.manager.own_sensors[0].name == "House meter"
     recon = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
-    assert [s.attributes["friendly_name"].split(" Reconciliation: ")[1] for s in recon] == [
-        "House meter"
+    assert [s.attributes["friendly_name"] for s in recon] == [
+        "House meter (own sensor) Reconciliation"
     ]
     mgr = entry.runtime_data.manager
     assert [s.entity_id for s in mgr.own_sensors] == [SENSOR]  # reloaded with the mapping
@@ -1224,4 +1224,40 @@ async def test_reconciliation_name_falls_back_to_entity_id(
     assert entry.runtime_data.manager.own_sensors[0].name == SENSOR
     await hass.async_block_till_done()
     [state] = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
-    assert state.attributes["friendly_name"].endswith(f"Reconciliation: {SENSOR}")
+    assert state.attributes["friendly_name"] == f"{SENSOR} (own sensor) Reconciliation"
+
+
+async def test_own_sensor_entities_have_their_own_device(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A device belongs to one config sub-entry, so the reconciliation sensor sits on the
+    mapping's own device (linked to the site's), never on the site's device. Otherwise the
+    site's buttons and sensors would move the device out of the sub-entry, and Home
+    Assistant would drop the reconciliation sensor (seen as a flaky test in M9)."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    await _import_sensor(hass, SENSOR, {YESTERDAY: _energy_like(YESTERDAY, "E1")})
+    entry = await _setup_entry(hass, aioclient_mock, fake, subentries=[_sub(SENSOR, "E1")])
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    [subentry_id] = list(entry.subentries)
+    recon = next(e for e in entities.entities.values() if "reconciliation" in e.entity_id)
+    button = entities.async_get("button.amber_energy_dashboard_run_now")
+    own_device = devices.async_get(recon.device_id)
+    site_device = devices.async_get(button.device_id)
+    assert own_device.id != site_device.id
+    assert own_device.config_entries_subentries == {entry.entry_id: {subentry_id}}
+    assert site_device.config_entries_subentries == {entry.entry_id: {None}}
+    assert own_device.via_device_id == site_device.id
+    assert own_device.name == f"{SENSOR} (own sensor)"
+    assert recon.config_subentry_id == subentry_id
+    assert hass.states.get(recon.entity_id) is not None
+    assert "assigns an existing device to a different config subentry" not in caplog.text
+    assert "deprecated `via_device`" not in caplog.text

@@ -26,6 +26,13 @@ All notable changes to this project are recorded here. The format follows
   explicit acknowledgement (options checkbox, or `acknowledge_unverified: true`).
   Differences still stop it.
 
+### Changed
+
+- **Own-sensor reconciliation sensors** are on their mapping's own device, "<name> (own
+  sensor)", linked to the site's device, and are named "Reconciliation". Home Assistant
+  gives a device only one sub-entry; on the site's device, alongside the new buttons, the
+  sensor could be dropped at startup. The entity ID stays the same.
+
 ### Documentation
 
 - README: why an hour of yesterday's usage appears after midnight in summer (NEM days),

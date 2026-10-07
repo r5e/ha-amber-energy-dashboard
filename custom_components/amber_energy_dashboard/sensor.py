@@ -16,26 +16,17 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory, UnitOfEnergy
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import AmberConfigEntry
-from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL, DOMAIN
+from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL
+from .devices import device_info, own_sensor_device_info
 from .manager import STATUSES
 from .statistics import CURRENCY, Metric
 
 PARALLEL_UPDATES = 0
-
-
-def device_info(site: str) -> DeviceInfo:
-    """The site's device, shared by the sensors and buttons."""
-    return DeviceInfo(
-        identifiers={(DOMAIN, site)},
-        name="Amber Energy Dashboard",
-        manufacturer="Amber Electric (unofficial integration)",
-        entry_type=DeviceEntryType.SERVICE,
-    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -165,14 +156,22 @@ async def async_setup_entry(
         description = AmberSensorDescription(
             key=f"reconciliation_{sensor.subentry_id}",
             translation_key="reconciliation",
-            translation_placeholders={"sensor": sensor.name},
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             suggested_display_precision=3,
             value_fn=_reconciliation_value(sensor.subentry_id),
             attrs_fn=_reconciliation_attrs(sensor.subentry_id),
         )
         async_add_entities(
-            [AmberSensor(manager.coordinator, entry, description)],
+            [
+                AmberSensor(
+                    manager.coordinator,
+                    entry,
+                    description,
+                    own_sensor_device_info(
+                        manager.ctx.site_id, sensor, entry.runtime_data.device_id
+                    ),
+                )
+            ],
             config_subentry_id=sensor.subentry_id,
         )
 
@@ -188,13 +187,14 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
         coordinator: DataUpdateCoordinator[dict[str, Any]],
         entry: AmberConfigEntry,
         description: AmberSensorDescription,
+        device: DeviceInfo | None = None,
     ) -> None:
-        """Initialise the sensor."""
+        """Initialise the sensor (on the site's device unless ``device`` is given)."""
         super().__init__(coordinator)
         self.entity_description = description
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
-        self._attr_device_info = device_info(site)
+        self._attr_device_info = device or device_info(site)
 
     @property
     def available(self) -> bool:

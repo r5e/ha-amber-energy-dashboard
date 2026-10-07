@@ -235,6 +235,8 @@ class AmberManager:
         self._unsub_timer: CALLBACK_TYPE | None = None
         self.after_scheduled: Callable[[], Awaitable[None]] | None = None
         """Called after each scheduled attempt (the YAML-kit cleanup re-check)."""
+        self.after_run: Callable[[], Awaitable[None]] | None = None
+        """Called after each run (the Energy dashboard check, section 18)."""
         self._final_attempt = False
 
     @property
@@ -411,7 +413,9 @@ class AmberManager:
                 len(imported),
                 summary["marker"],
             )
-            return summary
+        if self.after_run is not None:
+            await self.after_run()
+        return summary
 
     @property
     def _usage_active(self) -> bool:

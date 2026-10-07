@@ -142,6 +142,7 @@ async def _setup_entry(
     options: dict | None = None,
     site: dict | None = None,
     subentries: list[dict] | None = None,
+    data: dict | None = None,
 ) -> MockConfigEntry:
     fake.install(aioclient_mock, [site or site_json()])
     entry = MockConfigEntry(
@@ -157,6 +158,7 @@ async def _setup_entry(
                 {"identifier": "E1", "type": "general", "tariff": "EA116"},
                 {"identifier": "B1", "type": "feedIn", "tariff": None},
             ],
+            **(data or {}),
         },
         options=options or {CONF_SCHEDULE_MODE: "automatic"},
         subentries_data=subentries or [],

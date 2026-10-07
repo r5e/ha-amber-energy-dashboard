@@ -10,6 +10,9 @@ The statistics table stays the source of truth for running totals. The Store hol
 - ``days``: per-day status, reason and totals.
 - retention, patience (``empty_seen``), revisions and tail-rewrite progress, the schedule
   seed, per-channel start days for channels added later, and the last run.
+- the YAML-kit migration record, and the Energy dashboard setup (section 18): when the
+  first import was seen, the last "Add to the Energy dashboard" outcome with the saved
+  preferences, and whether the "not used" issue was dismissed.
 
 Writes are atomic and immediate.
 """
@@ -142,6 +145,9 @@ class AmberStore:
             "channel_since": {},
             "chains": {},
             "migration": None,
+            "first_import_at": None,
+            "energy_setup": None,
+            "energy_issue_dismissed": False,
         }
 
     async def async_load(self) -> None:
@@ -219,6 +225,22 @@ class AmberStore:
     def migration(self) -> dict[str, Any] | None:
         """The YAML-kit migration record (section 14), or None if never started."""
         return self._data["migration"]
+
+    @property
+    def first_import_at(self) -> datetime | None:
+        """When the first successful import was seen (section 18), or None."""
+        value = self._data["first_import_at"]
+        return datetime.fromisoformat(value) if value else None
+
+    @property
+    def energy_setup(self) -> dict[str, Any] | None:
+        """The last "Add to the Energy dashboard" outcome (section 18), or None."""
+        return self._data["energy_setup"]
+
+    @property
+    def energy_issue_dismissed(self) -> bool:
+        """True once the user dismissed the "Energy dashboard not used" issue."""
+        return bool(self._data["energy_issue_dismissed"])
 
     def channel_since(self, identifier: str) -> date | None:
         """First NEM day a channel added after setup is imported for (None = always)."""
@@ -358,6 +380,10 @@ class AmberStore:
 
     async def async_read_back_migration(self) -> dict[str, Any] | None:
         """The migration record as stored on disk, read through a fresh handle."""
+        return await self.async_read_back("migration")
+
+    async def async_read_back(self, key: str) -> Any:
+        """One key as stored on disk, read through a fresh handle."""
         fresh = _VersionedStore(
             self._store.hass,
             STORAGE_VERSION,
@@ -365,7 +391,22 @@ class AmberStore:
             minor_version=STORAGE_MINOR_VERSION,
         )
         data = await fresh.async_load()
-        return (data or {}).get("migration")
+        return (data or {}).get(key)
+
+    async def async_set_first_import_at(self, when: datetime) -> None:
+        """Record when the first successful import was seen."""
+        self._data["first_import_at"] = when.isoformat()
+        await self._async_save()
+
+    async def async_set_energy_setup(self, record: dict[str, Any]) -> None:
+        """Replace the "Add to the Energy dashboard" record (saved immediately)."""
+        self._data["energy_setup"] = record
+        await self._async_save()
+
+    async def async_dismiss_energy_issue(self) -> None:
+        """Remember that the user dismissed the "Energy dashboard not used" issue."""
+        self._data["energy_issue_dismissed"] = True
+        await self._async_save()
 
     async def async_set_channel_since(self, identifiers: Iterable[str], since: date) -> None:
         """Record the first import day for channels added after setup."""

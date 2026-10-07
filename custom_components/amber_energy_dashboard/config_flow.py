@@ -44,12 +44,14 @@ from .api import (
     Site,
 )
 from .const import (
+    ATTR_ACKNOWLEDGE_UNVERIFIED,
     ATTR_CONFIRM,
     ATTR_CONFIRM_BACKUP,
     ATTR_EXCLUDE_FLAGGED,
     CHANNEL_CONTROLLED_LOAD,
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
+    CONF_ADD_TO_ENERGY,
     CONF_CHANNEL,
     CONF_CHANNELS,
     CONF_FIXED_TIMES,
@@ -74,6 +76,7 @@ from .const import (
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
 )
+from .energy import async_preferences, has_grid
 from .migration import (
     STATUS_COMPLETED,
     STATUS_IN_PROGRESS,
@@ -244,6 +247,13 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         site = self._site
         assert site is not None
         errors: dict[str, str] = {}
+        # Offered only when the Energy dashboard has no grid source (section 18); an
+        # existing one is never changed.
+        energy = await async_preferences(self.hass)
+        offer_energy = energy is not None and not has_grid(energy.data)
+        schema = _SCHEDULE_SCHEMA
+        if offer_energy:
+            schema = schema.extend({vol.Optional(CONF_ADD_TO_ENERGY): BooleanSelector()})
         if user_input is not None:
             options, error = _schedule_options(user_input)
             if error:
@@ -259,13 +269,16 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                             {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
                             for c in site.channels
                         ],
+                        CONF_ADD_TO_ENERGY: offer_energy
+                        and bool(user_input.get(CONF_ADD_TO_ENERGY, True)),
                     },
                     options=options,
                 )
         return self.async_show_form(
             step_id="schedule",
             data_schema=self.add_suggested_values_to_schema(
-                _SCHEDULE_SCHEMA, user_input or {CONF_SCHEDULE_MODE: SCHEDULE_AUTOMATIC}
+                schema,
+                user_input or {CONF_SCHEDULE_MODE: SCHEDULE_AUTOMATIC, CONF_ADD_TO_ENERGY: True},
             ),
             errors=errors,
         )
@@ -509,7 +522,8 @@ class AmberOptionsFlow(OptionsFlow):
         report = self._report or {}
         parity = report.get("parity") or {}
         flagged = report.get("flagged") or {}
-        blocked = report.get("problems") or not parity.get("passed")
+        unverified = bool(parity.get("unverified"))
+        blocked = report.get("problems") or not (parity.get("passed") or unverified)
         if report.get("migration_status") == STATUS_COMPLETED:
             return self._show_result(
                 "The migration was already completed. Use Undo migration to run it again."
@@ -522,7 +536,9 @@ class AmberOptionsFlow(OptionsFlow):
             )
         errors: dict[str, str] = {}
         if user_input is not None:
-            if not user_input.get(ATTR_CONFIRM_BACKUP):
+            if unverified and not user_input.get(ATTR_ACKNOWLEDGE_UNVERIFIED):
+                errors["base"] = "not_acknowledged"
+            elif not user_input.get(ATTR_CONFIRM_BACKUP):
                 errors["base"] = "backup_not_confirmed"
             else:
                 try:
@@ -533,15 +549,18 @@ class AmberOptionsFlow(OptionsFlow):
                         confirm_backup=True,
                         picks=self._picks,
                         exclude_flagged=self._exclude_flagged,
+                        acknowledge_unverified=unverified,
                     )
                 except MigrationRefused as err:
                     return self._show_result(f"The migration did not run: {err}")
                 return self._show_result(format_result(result))
+        fields: dict[Any, Any] = {}
+        if unverified:
+            fields[vol.Required(ATTR_ACKNOWLEDGE_UNVERIFIED, default=False)] = BooleanSelector()
+        fields[vol.Required(ATTR_CONFIRM_BACKUP, default=False)] = BooleanSelector()
         return self.async_show_form(
             step_id="migrate_confirm",
-            data_schema=vol.Schema(
-                {vol.Required(ATTR_CONFIRM_BACKUP, default=False): BooleanSelector()}
-            ),
+            data_schema=vol.Schema(fields),
             errors=errors,
             description_placeholders={"report": format_report(report)},
         )

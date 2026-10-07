@@ -29,6 +29,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 import voluptuous as vol
 
 from custom_components.amber_energy_dashboard import (
+    energy as energy_mod,
     importer,
     migration,
 )
@@ -731,6 +732,8 @@ async def test_too_few_overlap_days(
         "only 2 comparable days (at least 3 needed); 2 days are legacy gaps"
     )
     assert report["parity"]["gaps"][0]["kind"] == "trailing"
+    assert report["parity"]["unverified"] is True  # 2 agreeing days, then the kit stopped
+    assert report["parity"]["unverified_reason"].startswith("Only 2 days have data in both")
 
 
 async def test_missing_day_on_one_side_is_a_mismatch(
@@ -982,7 +985,7 @@ async def test_energy_fallbacks(
     await energy.async_update(
         {"device_consumption": [{"stat_consumption": ADV[ROLE_IMPORT_ENERGY]}]}
     )
-    with patch.object(migration, "ENERGY_SOURCE_SCHEMA", side_effect=vol.Invalid("bad")):
+    with patch.object(energy_mod, "ENERGY_SOURCE_SCHEMA", side_effect=vol.Invalid("bad")):
         report = await _migrate(hass)
     assert report["energy"]["safe"] is False
     assert report["energy"]["other_uses"] == [ADV[ROLE_IMPORT_ENERGY]]
@@ -993,7 +996,7 @@ async def test_energy_fallbacks(
     text = migration.format_report(report)
     assert "Cannot be changed automatically" in text
 
-    with patch.object(migration, "ENERGY_SOURCE_SCHEMA", side_effect=vol.Invalid("bad")):
+    with patch.object(energy_mod, "ENERGY_SOURCE_SCHEMA", side_effect=vol.Invalid("bad")):
         report = await _migrate(hass, dry_run=False, confirm_backup=True)
     assert report["result"]["energy"]["changed"] is False
     assert "Energy dashboard not changed" in migration.format_result(report)
@@ -2181,3 +2184,157 @@ async def test_advanced_kit_stopped_with_an_earlier_pause(
     assert {r["start"]: r["state"] for r in stored[B1_COMP] if r["start"] in ours} == ours
     grid = (await async_get_manager(hass)).data["energy_sources"][0]
     assert (grid["stat_cost"], grid["stat_compensation"]) == (E1_COST, B1_COMP)
+
+
+# --- unverifiable history (2.1, section 18): an explicit acknowledgement ------------------
+
+
+async def _kit_stopped_before_first_day(
+    hass, aioclient_mock, hass_storage, *, hole: int = 3
+) -> tuple[list[date], dict]:
+    """A v1 kit whose last data is ``hole`` + 1 days before the integration's first day,
+    with no rows after it."""
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 10)
+    last = window[0] - timedelta(days=hole + 1)
+    pre = [last - timedelta(days=d) for d in range(4, -1, -1)]
+    rows = _legacy_rows(V1_KWH, hourly_days=[], lump_days=pre, window=window)
+    await _import_legacy(hass, V1_KWH, rows)
+    await _prefs(hass, V1[ROLE_IMPORT_ENERGY], V1[ROLE_EXPORT_ENERGY])
+    return window, rows
+
+
+async def test_kit_stopped_before_the_first_day_needs_acknowledgement(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """No day to compare: parity is unverified, the dry run says why and names the days
+    nothing covers; a real run refuses without the acknowledgement and runs with it."""
+    window, rows = await _kit_stopped_before_first_day(hass, aioclient_mock, hass_storage)
+    last = window[0] - timedelta(days=4)
+    before = await _rows(hass)
+
+    report = await _migrate(hass)
+
+    parity = report["parity"]
+    assert parity["passed"] is False
+    assert parity["unverified"] is True
+    assert (parity["compared_days"], parity["gap_days"]) == (0, 10)
+    assert parity["no_data"] == {
+        "first": (last + timedelta(days=1)).isoformat(),
+        "last": (window[0] - timedelta(days=1)).isoformat(),
+        "days": 3,
+    }
+    assert parity["unverified_reason"] == (
+        f"The YAML kit's last data is {last}, before the integration's first day "
+        f"({window[0]}), so the old history can't be checked against Amber's data. Neither "
+        f"covers {last + timedelta(days=1)} to {window[0] - timedelta(days=1)} (3 days); the "
+        "Energy dashboard will show no data for them."
+    )
+    assert f"Unverified: {parity['unverified_reason']} A real run needs your" in (
+        migration.format_report(report)
+    )
+    with pytest.raises(ServiceValidationError, match="run it again with acknowledge_unverified"):
+        await _migrate(hass, dry_run=False, confirm_backup=True)
+    assert _record(hass_storage) is None
+    assert await _rows(hass) == before
+
+    report = await _migrate(hass, dry_run=False, confirm_backup=True, acknowledge_unverified=True)
+
+    assert report["migration_status"] == "completed"
+    assert _record(hass_storage)["sources"]["acknowledge_unverified"] is True
+    stored = await _rows(hass)
+    boundary = importer.nem_day_start(window[0])
+    carry = _by_start(stored[E1])[boundary - HOUR]
+    assert carry["sum"] == pytest.approx(rows[ROLE_IMPORT_ENERGY][-1]["sum"])
+    _assert_continuous(stored[E1])
+    grid = (await async_get_manager(hass)).data["energy_sources"][0]
+    assert grid["stat_energy_from"] == E1
+
+
+async def test_stalled_kit_before_the_first_day_and_options_flow(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A kit that stalled the day before the integration's first day and kept writing
+    rows with 0 kWh: unverified, with no day uncovered. The options flow asks for the
+    acknowledgement before it runs."""
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 10)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(V1_KWH, hourly_days=[], lump_days=pre + window, window=window)
+    _stall(rows, window[0])
+    await _import_legacy(hass, V1_KWH, rows)
+    entry = hass.config_entries.async_get_entry(ENTRY_ID)
+
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "migrate"}
+    )
+    assert flow["step_id"] == "migrate_confirm"
+    assert "acknowledge_unverified" in flow["data_schema"].schema
+    text = flow["description_placeholders"]["report"]
+    assert f"The YAML kit's last data is {pre[-1]}, before the integration's first day" in text
+    assert "Neither covers" not in text
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"acknowledge_unverified": False, "confirm_backup": True}
+    )
+    assert flow["errors"] == {"base": "not_acknowledged"}
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"acknowledge_unverified": True, "confirm_backup": True}
+    )
+    assert "Migration status: completed." in flow["description_placeholders"]["result"]
+
+
+async def test_few_days_without_a_gap_still_refuses(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Only 2 days of the integration's data, both agreeing: waiting fixes it, so no
+    acknowledgement is offered and a real run refuses even with one."""
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 2)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(V1_KWH, hourly_days=[], lump_days=pre + window, window=window)
+    await _import_legacy(hass, V1_KWH, rows)
+
+    report = await _migrate(hass)
+    assert report["parity"]["unverified"] is False
+    assert report["parity"]["unverified_reason"] is None
+    assert report["parity"]["reason"] == "only 2 comparable days (at least 3 needed)"
+    with pytest.raises(ServiceValidationError, match="Parity check failed"):
+        await _migrate(hass, dry_run=False, confirm_backup=True, acknowledge_unverified=True)
+
+
+async def test_difference_with_few_days_still_refuses(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Two compared days, one of them different, then a stopped kit: a genuine difference
+    is never acknowledged away. One agreeing day before a stop is unverified."""
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 10)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(
+        V1_KWH,
+        hourly_days=[],
+        lump_days=pre + window[:2],
+        window=window,
+        tweak={(ROLE_IMPORT_ENERGY, window[1]): 0.5},
+    )
+    await _import_legacy(hass, V1_KWH, rows)
+
+    report = await _migrate(hass)
+    assert report["parity"]["unverified"] is False
+    assert report["parity"]["mismatch_count"] == 1
+    with pytest.raises(ServiceValidationError, match="Parity check failed"):
+        await _migrate(hass, dry_run=False, confirm_backup=True, acknowledge_unverified=True)
+
+
+async def test_one_compared_day_before_a_stop_is_unverified(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    window = await _entry_days(hass, aioclient_mock, hass_storage, 10)
+    pre = [window[0] - timedelta(days=d) for d in range(5, 0, -1)]
+    rows = _legacy_rows(V1_KWH, hourly_days=[], lump_days=pre + window[:1], window=window)
+    await _import_legacy(hass, V1_KWH, rows)
+
+    parity = (await _migrate(hass))["parity"]
+    assert parity["unverified"] is True
+    assert parity["no_data"] is None
+    assert parity["unverified_reason"] == (
+        "Only 1 day has data in both the YAML kit and the integration (at least 3 are "
+        "needed), so the old history can't be checked against Amber's data."
+    )

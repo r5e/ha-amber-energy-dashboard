@@ -24,10 +24,12 @@
         "description": "Amber publishes usage about a day late. Automatic picks a stable time for this installation each morning (between 06:30 and 08:30), with retries 3 and 6 hours later. Once the day is imported, the remaining attempts are skipped.",
         "data": {
           "schedule_mode": "Schedule",
-          "fixed_times": "Fixed times"
+          "fixed_times": "Fixed times",
+          "add_to_energy": "Add to the Energy dashboard"
         },
         "data_description": {
-          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15."
+          "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15.",
+          "add_to_energy": "Shown only when the Energy dashboard has no grid connection yet. Adds one with this site's grid consumption and cost and, with feed-in, the return to grid and compensation (controlled load as a second grid connection). The data appears after the first import."
         }
       },
       "reauth_confirm": {
@@ -110,9 +112,11 @@
         "title": "Migrate from the YAML kit: dry run",
         "description": "{report}",
         "data": {
+          "acknowledge_unverified": "I understand the old history can't be checked against Amber's data",
           "confirm_backup": "I have a current Home Assistant backup"
         },
         "data_description": {
+          "acknowledge_unverified": "Shown only when the YAML kit's data doesn't overlap the integration's, so parity can't check it. The dry run above says why.",
           "confirm_backup": "Required. Nothing has been changed yet; submitting runs the migration."
         }
       },
@@ -142,7 +146,8 @@
       "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
       "backup_not_confirmed": "Confirm that you have a current Home Assistant backup.",
       "invalid_pick": "{error}",
-      "not_confirmed": "Tick the box to confirm."
+      "not_confirmed": "Tick the box to confirm.",
+      "not_acknowledged": "Tick the acknowledgement: the old history can't be checked against Amber's data."
     },
     "abort": {
       "not_loaded": "The integration is not loaded; migration and undo need it running."
@@ -235,6 +240,31 @@
     "legacy_cleanup": {
       "title": "Finish removing the YAML kit ({entry})",
       "description": "The migration is complete. Remove these leftovers of the YAML kit when you are satisfied:\n\n{items}\n\nThis notice only lists them; nothing here is removed automatically. It is re-checked after each scheduled run and when Home Assistant starts, and clears itself once they are all gone. The old statistics are kept until you delete them with the delete_legacy_statistics action; see the migration guide."
+    },
+    "energy_not_used": {
+      "title": "The Energy dashboard isn't using Amber Energy Dashboard ({entry})",
+      "fix_flow": {
+        "step": {
+          "add": {
+            "title": "Add to the Energy dashboard",
+            "description": "The Energy dashboard has no grid connection yet. Submit to add this site's statistics:\n\n{sources}\n\nA copy of the current Energy dashboard settings is saved first."
+          },
+          "migrate": {
+            "title": "Migrate from the YAML kit",
+            "description": "Your Energy dashboard uses statistics from the earlier YAML kit. The migration carries your history across and switches the Energy dashboard to this integration's statistics.\n\nOpen **Settings > Devices & services > Amber Energy Dashboard**, choose the cog (options), then **Migrate from the YAML kit**. This notice clears itself once the Energy dashboard uses the new statistics."
+          },
+          "other": {
+            "title": "Choose the statistics in the Energy dashboard",
+            "description": "The Energy dashboard has a grid connection that doesn't use this integration's statistics, so it was left unchanged. To use them, edit the grid connection in **Settings > Dashboards > Energy** and choose:\n\n{sources}\n\nSubmit to dismiss this notice if you prefer to keep your current setup; it won't be shown again for this site."
+          }
+        },
+        "abort": {
+          "not_loaded": "The integration is not loaded.",
+          "energy_unavailable": "The Energy dashboard settings could not be read.",
+          "add_failed": "The Energy dashboard was not changed: {reason}",
+          "use_migration": "Use Migrate from the YAML kit in the integration's options. This notice clears itself afterwards."
+        }
+      }
     }
   },
   "services": {
@@ -305,6 +335,10 @@
         "exclude_flagged": {
           "name": "Leave out implausible rows",
           "description": "Leave out legacy rows the scan flags as implausible (such as a 99999 test spike) and re-derive the sums around them. Without it, flagged rows stop a real run."
+        },
+        "acknowledge_unverified": {
+          "name": "Acknowledge unverified history",
+          "description": "Go ahead when the old history can't be checked against Amber's data, because the YAML kit's data doesn't overlap the integration's (for example, the kit stopped before the integration's first day). Differences still stop the run."
         },
         "import_energy": {
           "name": "Grid import kWh",

@@ -4,14 +4,18 @@ from datetime import UTC, date, datetime, timedelta
 import math
 from typing import Any
 
+from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 import pytest
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
+)
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.amber_energy_dashboard import bill as bill_mod
+from custom_components.amber_energy_dashboard import bill as bill_mod, importer
 from custom_components.amber_energy_dashboard.const import (
     CONF_BILLING_DAY,
     CONF_FIXED_STATISTIC,
@@ -20,6 +24,7 @@ from custom_components.amber_energy_dashboard.const import (
     CONF_USAGE_MODE,
     DOMAIN,
 )
+from custom_components.amber_energy_dashboard.importer import HOUR
 from custom_components.amber_energy_dashboard.statistics import ChannelConfig, build_specs
 
 from .fake_amber import FakeAmber
@@ -367,11 +372,12 @@ async def test_options_turn_on_change_and_turn_off(
 async def test_cost_including_fixed_charges_statistic(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """Opt-in: each hour is the general cost plus the daily fixed charges (with GST) / 24,
-    from the retention boundary on; sums are continuous and the day records the amount."""
+    """Built from our own cost statistic, no API calls: each hour is the cost plus the
+    daily fixed charges (with GST) / 24, first hour included; the next day follows."""
     entry = await _entry(
         hass, aioclient_mock, hass_storage, days=4, options={CONF_FIXED_STATISTIC: True}
     )
+    manager = entry.runtime_data.manager
     rows = await _rows(hass, [E1_COST, FIXED])
     cost, fixed = rows[E1_COST], rows[FIXED]
     assert len(fixed) == len(cost) == 4 * 24
@@ -379,21 +385,128 @@ async def test_cost_including_fixed_charges_statistic(
         assert ours["start"] == base["start"]
         assert ours["state"] == pytest.approx(base["state"] + DAILY_FIXED / 24, abs=2e-6)
     assert fixed[-1]["sum"] == pytest.approx(cost[-1]["sum"] + DAILY_FIXED * 4, abs=1e-5)
-    state = entry.runtime_data.manager.store.as_dict()["chains"]["fixed"]
-    assert state["days"][YESTERDAY.isoformat()]["fixed_incl_gst"] == pytest.approx(
-        round(DAILY_FIXED, 6)
-    )
+    assert manager.store.fixed_schedule == [{"from": None, "daily_incl_gst": round(DAILY_FIXED, 6)}]
+    calls = len(aioclient_mock.mock_calls)
+    assert await manager.async_sync_derived() == {
+        FIXED: {"rows": 96, "written": 0, "from": None, "cleared": False}
+    }
+    assert len(aioclient_mock.mock_calls) == calls  # no API calls
 
-    # The next day continues from the stored sum.
+    # The next day continues; new charges apply from the day after the last imported day.
     clock.now = NOW + timedelta(days=1)
     aioclient_mock.clear_requests()
     FakeAmber(TODAY - timedelta(days=60), TODAY).install(aioclient_mock, [site_json()])
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "bill"}
+    )
+    await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**BILL, "network_daily": 1.7019, CONF_FIXED_STATISTIC: True}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
     await _run(hass)
     rows = await _rows(hass, [E1_COST, FIXED])
     assert len(rows[FIXED]) == 5 * 24
-    assert rows[FIXED][-1]["sum"] == pytest.approx(
-        rows[E1_COST][-1]["sum"] + DAILY_FIXED * 5, abs=1e-5
+    raised = DAILY_FIXED + 1.1
+    assert manager.store.fixed_schedule[-1] == {
+        "from": "2026-09-25T14:00:00+00:00",
+        "daily_incl_gst": round(raised, 6),
+    }
+    expected = rows[E1_COST][-1]["sum"] + DAILY_FIXED * 4 + raised
+    assert rows[FIXED][-1]["sum"] == pytest.approx(expected, abs=1e-5)
+    assert rows[FIXED][-1]["state"] == pytest.approx(
+        rows[E1_COST][-1]["state"] + raised / 24, abs=2e-6
     )
+
+
+async def test_fixed_statistic_follows_history_and_rewrites(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The statistic covers history copied before the integration's first day (daily lumps
+    accrue a whole day of charges each), includes a controlled load, follows a rewritten
+    cost day from that day on, and clears a stray row it no longer should have."""
+    channels = (
+        *((c.identifier, c.type, c.tariff) for c in CHANNELS),
+        ("E2", "controlledLoad", None),
+    )
+    from .test_manager import _setup_entry as setup  # noqa: PLC0415
+
+    _preload_store(hass_storage, retention_days=3)
+    fake = FakeAmber(TODAY - timedelta(days=60), YESTERDAY)
+
+    def with_controlled_load(day: date, records: list[dict[str, Any]]) -> None:
+        records[:] = make_usage_day(day, channels)
+
+    fake.mutate = with_controlled_load
+    entry = await setup(
+        hass,
+        aioclient_mock,
+        fake,
+        site=site_json(channels),
+        data={"channels": [{"identifier": i, "type": t, "tariff": tf} for i, t, tf in channels]},
+        options={CONF_SCHEDULE_MODE: "automatic", **BILL},
+    )
+    assert (await _run(hass))["status"] == "caught_up"
+    manager = entry.runtime_data.manager
+    e2_cost = E1_COST.replace("_e1_", "_e2_")
+    first = importer.nem_day_start(TODAY - timedelta(days=3))
+    # Copied history before the first day: two daily lumps and the carry row.
+    lumps = [
+        {"start": first - timedelta(days=2), "state": 0.0, "sum": 50.0},
+        {"start": first - timedelta(days=1), "state": 4.0, "sum": 54.0},
+        {"start": first - HOUR, "state": 0.0, "sum": 54.0},
+    ]
+    async_add_external_statistics(hass, manager.ctx.specs[1].metadata(), lumps)
+    await async_wait_recording_done(hass)
+    # The integration's own rows continue from 0 here, which a re-base would fix; the
+    # derived statistic just follows whatever the base rows are.
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "bill"}
+    )
+    await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**BILL, CONF_FIXED_STATISTIC: True}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    rows = await _rows(hass, [E1_COST, e2_cost, FIXED])
+    fixed = rows[FIXED]
+    assert fixed[0]["start"] == lumps[0]["start"].timestamp()
+    assert fixed[0]["sum"] == pytest.approx(50.0 + DAILY_FIXED / 24, abs=1e-5)
+    assert fixed[1]["state"] == pytest.approx(4.0 + DAILY_FIXED, abs=1e-5)  # a whole day
+    assert len(fixed) == 3 + 3 * 24
+    own = {r["start"]: r["state"] for r in rows[E1_COST]}
+    cl = {r["start"]: r["state"] for r in rows[e2_cost]}
+    last = fixed[-1]
+    assert last["state"] == pytest.approx(
+        own[last["start"]] + cl[last["start"]] + DAILY_FIXED / 24, abs=2e-6
+    )
+
+    # A rewritten cost day (as after a revision): the derived rows follow from that day.
+    day_start = importer.nem_day_start(YESTERDAY)
+    changed = [
+        {
+            **r,
+            "start": datetime.fromtimestamp(r["start"], UTC),
+            "state": r["state"] + 1.0,
+            "sum": r["sum"] + 1.0 * (i + 1),
+        }
+        for i, r in enumerate(x for x in rows[E1_COST] if x["start"] >= day_start.timestamp())
+    ]
+    async_add_external_statistics(hass, manager.ctx.specs[1].metadata(), changed)
+    await async_wait_recording_done(hass)
+    result = await manager.async_sync_derived()
+    assert result[FIXED]["written"] == 24
+    assert result[FIXED]["from"] == day_start.isoformat()
+
+    # A row the base statistics don't have: cleared and written again in full.
+    stray = {"start": first - timedelta(days=5), "state": 1.0, "sum": 1.0}
+    async_add_external_statistics(hass, manager.fixed_spec.metadata(), [stray])
+    await async_wait_recording_done(hass)
+    result = await manager.async_sync_derived()
+    assert result[FIXED]["cleared"] is True
+    assert result[FIXED]["written"] == 3 + 3 * 24
+    rows = await _rows(hass, [FIXED])
+    assert rows[FIXED][0]["start"] == lumps[0]["start"].timestamp()
 
 
 async def test_fixed_statistic_not_written_in_pricing_mode(
@@ -419,4 +532,4 @@ def test_no_fixed_statistic_without_a_general_channel() -> None:
     spec = fixed_cost_spec(SITE_ID, CHANNELS)
     assert spec is not None
     assert spec.statistic_id == FIXED
-    assert spec.name == "Amber general E1 cost including fixed charges"
+    assert spec.name == "Amber import cost including fixed charges"

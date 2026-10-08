@@ -148,6 +148,9 @@ class AmberStore:
             "first_import_at": None,
             "energy_setup": None,
             "energy_issue_dismissed": False,
+            "fixed_schedule": [],
+            "export_days": {},
+            "tariff": None,
         }
 
     async def async_load(self) -> None:
@@ -236,6 +239,22 @@ class AmberStore:
     def energy_setup(self) -> dict[str, Any] | None:
         """The last "Add to the Energy dashboard" outcome (section 18), or None."""
         return self._data["energy_setup"]
+
+    @property
+    def fixed_schedule(self) -> list[dict[str, Any]]:
+        """The daily fixed amounts (incl. GST) for the derived statistic, each with the
+        hour it applies from (None: from the start); section 19."""
+        return list(self._data["fixed_schedule"])
+
+    @property
+    def export_days(self) -> dict[str, dict[str, Any]]:
+        """Per-day export aggregates for the allowance (section 20), keyed by NEM date."""
+        return self._data["export_days"]
+
+    @property
+    def tariff(self) -> dict[str, Any] | None:
+        """The network and tariff codes detected from /sites at the last setup."""
+        return self._data["tariff"]
 
     @property
     def energy_issue_dismissed(self) -> bool:
@@ -401,6 +420,25 @@ class AmberStore:
     async def async_set_energy_setup(self, record: dict[str, Any]) -> None:
         """Replace the "Add to the Energy dashboard" record (saved immediately)."""
         self._data["energy_setup"] = record
+        await self._async_save()
+
+    async def async_set_fixed_schedule(self, schedule: list[dict[str, Any]]) -> None:
+        """Replace the fixed-amount schedule."""
+        self._data["fixed_schedule"] = schedule
+        await self._async_save()
+
+    async def async_set_export_day(self, day: date, record: dict[str, Any]) -> None:
+        """Store one day's export aggregates (the oldest beyond the day limit are pruned)."""
+        days = self._data["export_days"]
+        days[day.isoformat()] = record
+        if len(days) > MAX_DAY_ENTRIES:
+            for key in sorted(days)[: len(days) - MAX_DAY_ENTRIES]:
+                del days[key]
+        await self._async_save()
+
+    async def async_set_tariff(self, tariff: dict[str, Any]) -> None:
+        """Record the detected network and tariff codes."""
+        self._data["tariff"] = tariff
         await self._async_save()
 
     async def async_dismiss_energy_issue(self) -> None:

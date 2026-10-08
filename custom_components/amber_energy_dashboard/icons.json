@@ -61,6 +61,15 @@
       },
       "average_cost_per_day": {
         "default": "mdi:cash-clock"
+      },
+      "allowance_used": {
+        "default": "mdi:transmission-tower-export"
+      },
+      "allowance_remaining": {
+        "default": "mdi:battery-arrow-up-outline"
+      },
+      "export_charge": {
+        "default": "mdi:cash-minus"
       }
     }
   }

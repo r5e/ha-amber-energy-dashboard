@@ -1127,7 +1127,7 @@ async def test_options_flow_migrate_and_undo(
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
     assert flow["type"] is FlowResultType.MENU
-    assert flow["menu_options"] == ["settings", "bill", "migrate"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate"]
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )
@@ -1150,7 +1150,7 @@ async def test_options_flow_migrate_and_undo(
     assert flow["type"] is FlowResultType.CREATE_ENTRY
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
-    assert flow["menu_options"] == ["settings", "bill", "migrate", "undo_migration"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate", "undo_migration"]
     migrate = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )
@@ -1225,7 +1225,7 @@ async def test_options_flow_needs_loaded_entry(
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     flow = await hass.config_entries.options.async_init(entry.entry_id)
-    assert flow["menu_options"] == ["settings", "bill", "migrate"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate"]
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )

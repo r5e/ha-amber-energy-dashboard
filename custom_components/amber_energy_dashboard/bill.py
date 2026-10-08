@@ -71,11 +71,14 @@ def estimate(
     *,
     cycle_day: date,
     today: date,
+    export: Mapping[date, tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """The estimate for the cycle containing ``cycle_day``, from the Store's day records.
 
     ``days`` maps each date of the cycle to its Store record (or None). ``today`` is the
-    current NEM date (for "days into cycle").
+    current NEM date (for "days into cycle"). ``export`` (with the export allowance,
+    section 20) maps days to (penalty, refund) in AUD: the export credit is then shown
+    before the network's export charge, which gets its own line after the allowance.
     """
     start, end = cycle_for(cycle_day, settings.billing_day)
     feed_in = {c.identifier for c in channels if c.type == CHANNEL_FEED_IN}
@@ -116,14 +119,27 @@ def estimate(
         for day in imported
         for sid in compensation_ids
     )
+    penalty = refund = 0.0
+    if export is not None:
+        penalty = math.fsum(export[d][0] for d in imported if d in export)
+        refund = math.fsum(export[d][1] for d in imported if d in export)
     multiplier = 1 + settings.gst
     fixed = {
         name: settings.charges.get(name, 0.0) * len(covered) * multiplier
         for name in CHARGES
         if settings.charges.get(name)
     }
+    credit += refund  # the adjusted compensation
     bill_to_date = usage - credit + math.fsum(fixed.values())
     per_usage_day = (usage - credit) / len(imported)
+    export_lines = (
+        {
+            "export_credit": round(-(credit + penalty - refund), _DETAIL),
+            "network_export_charge": round(penalty - refund, _DETAIL),
+        }
+        if export is not None
+        else {"export_credit": round(-credit, _DETAIL)}
+    )
     result.update(
         {
             "data_from": first.isoformat(),
@@ -133,7 +149,7 @@ def estimate(
             "complete_from_cycle_start": first == start,
             "lines": {
                 "usage": round(usage, _DETAIL),
-                "export_credit": round(-credit, _DETAIL),
+                **export_lines,
                 **{name: round(value, _DETAIL) for name, value in fixed.items()},
             },
             "bill_to_date": round(bill_to_date, _CENTS),

@@ -1322,6 +1322,8 @@ async def async_migrate(
         return report
     _check_ready(plan, report, confirm_backup=confirm_backup)
     report["result"] = await _async_execute(hass, manager, plan)
+    # The copy and re-base rewrote the base statistics of the derived ones.
+    report["result"]["derived"] = await manager.async_sync_derived()
     report["migration_status"] = manager.store.migration["status"]
     report["cleanup"] = _cleanup_lines(manager.store.migration["automations"], plan.cleanup)
     return report

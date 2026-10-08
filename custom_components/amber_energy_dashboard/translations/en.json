@@ -71,6 +71,7 @@
         "menu_options": {
           "settings": "Import settings",
           "bill": "Bill estimate",
+          "allowance": "Export allowance",
           "migrate": "Migrate from the YAML kit",
           "undo_migration": "Undo migration"
         }
@@ -115,7 +116,22 @@
           "subscription_daily": "Per day, excluding GST.",
           "other_daily": "Any other fixed daily charge, per day, excluding GST.",
           "gst_percent": "Added to the fixed charges (default 10 %). Amber's usage figures already include GST.",
-          "fixed_statistic": "An extra statistic: the general channel's cost plus the fixed charges (including GST), spread evenly over each day's hours. Select it in the Energy dashboard instead of the cost if you want its totals to match your bill. Turning it on fetches the available history once (about 13 API calls); later changes to the charges apply from the next day written."
+          "fixed_statistic": "An extra statistic: the import cost plus the fixed charges (including GST), spread over each day's hours. It is built from this integration's own statistics, so it covers the whole history (including history copied from the YAML kit) with no API calls. Select it in the Energy dashboard instead of the cost if you want its totals to match your bill. Changed charges apply from the day after the last imported day."
+        }
+      },
+      "allowance": {
+        "title": "Export allowance",
+        "description": "Some networks charge for exports in a midday window, but only beyond a free allowance applied on the bill (for example Endeavour Energy's N61: 8 kWh a day, over the billing period). Amber's usage data charges every exported kWh in that window, so feed-in earnings look lower than on the bill. With this on, the integration measures the charge from your data, refunds it within the allowance in an extra \"adjusted compensation\" statistic, and uses it in the bill estimate.\n\n{detected}\n\nBilling day: {billing_day} (needed to total over the billing period).",
+        "data": {
+          "export_allowance": "Apply the export allowance",
+          "allowance_kwh_per_day": "Free allowance per day",
+          "allowance_totalling": "Allowance totalled over",
+          "penalty_period": "Charged period"
+        },
+        "data_description": {
+          "allowance_kwh_per_day": "kWh a day; the period's allowance is this times its days.",
+          "allowance_totalling": "Billing period: exports in the charged period are set against the whole period's allowance (as on the N61 bill). Daily: each day has its own allowance.",
+          "penalty_period": "The tariff period name in Amber's data in which exports are charged (solarSponge for N61)."
         }
       },
       "migrate_pick": {
@@ -170,7 +186,9 @@
       "backup_not_confirmed": "Confirm that you have a current Home Assistant backup.",
       "invalid_pick": "{error}",
       "not_confirmed": "Tick the box to confirm.",
-      "not_acknowledged": "Tick the acknowledgement: the old history can't be checked against Amber's data."
+      "not_acknowledged": "Tick the acknowledgement: the old history can't be checked against Amber's data.",
+      "needs_billing_day": "Totalling over the billing period needs the billing day (Bill estimate). Set it first, or total daily.",
+      "allowance_required": "Enter the free allowance per day."
     },
     "abort": {
       "not_loaded": "The integration is not loaded; migration and undo need it running."
@@ -188,6 +206,12 @@
         "full": "Full",
         "recovery": "Recovery-only",
         "pricing": "Pricing-only"
+      }
+    },
+    "allowance_totalling": {
+      "options": {
+        "billing_period": "Billing period",
+        "daily": "Each day"
       }
     }
   },
@@ -248,6 +272,15 @@
       },
       "average_cost_per_day": {
         "name": "Average cost per day"
+      },
+      "allowance_used": {
+        "name": "Export allowance used"
+      },
+      "allowance_remaining": {
+        "name": "Export allowance remaining"
+      },
+      "export_charge": {
+        "name": "Export charge after allowance"
       }
     }
   },

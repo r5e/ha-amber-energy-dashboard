@@ -175,6 +175,26 @@ cycle** and **Average cost per day** for the current cycle. The estimate runs a 
 because only complete imported days count, and it leaves out one-off charges such as card
 fees. Leave the billing day empty to turn it off.
 
+**Cost including fixed charges** (a checkbox in the same step) adds a statistic with your
+import cost plus the fixed charges, for an Energy dashboard whose totals match the bill. It
+covers your whole history. If you change the charges later, the new amounts apply from the
+day after the last imported day; earlier days keep the old ones.
+
+### Export allowance (optional)
+
+Some networks charge for exports in a midday window beyond a free allowance applied on the
+bill (Endeavour Energy's N61: 8 kWh a day, over the billing period). Amber's usage data
+charges every kWh in that window, so feed-in earnings look lower than on your bill. For N61
+with a billing day set, the integration turns this on by itself; otherwise choose **Export
+allowance** in the options menu and enter the allowance per day.
+
+It adds the sensors **Export allowance used**, **Export allowance remaining** and **Export
+charge after allowance**, uses the allowance in the bill estimate, and writes an
+**adjusted compensation** statistic. To show the adjusted earnings in the Energy dashboard,
+go to **Settings > Dashboards > Energy**, edit the grid connection, and under **Return to
+grid** choose **Use an entity tracking the total received** with the "compensation (export
+allowance applied)" statistic.
+
 ### Own energy sensors (optional)
 
 If you measure your own consumption (for example with CT clamps or smart plugs), click
@@ -213,7 +233,7 @@ Amber's usage data applies your network's export charges to every interval. Some
 offer a free export allowance (for example Endeavour Energy's two-way tariff N61, which has
 8 kWh per day free before a midday export charge applies), and your bill applies that
 allowance, but the usage data doesn't. So the dashboard can show lower feed-in earnings
-than the bill. Import costs match the bill to the cent (they include GST; the bill adds GST
+than the bill. The **Export allowance** option (section 5) corrects for it. Import costs match the bill to the cent (they include GST; the bill adds GST
 at the end).
 
 **My dashboard total doesn't include supply and subscription charges.**

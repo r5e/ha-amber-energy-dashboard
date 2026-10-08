@@ -73,7 +73,8 @@ costs a few API calls.
 | `amber_energy_dashboard:<site>_<ch>_cost` | AUD | Cost per hour on general and controlled-load channels. Positive means paid |
 | `amber_energy_dashboard:<site>_<ch>_compensation` | AUD | Feed-in earnings per hour. **Positive means earned**, as the Energy dashboard expects |
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
-| `amber_energy_dashboard:<site>_<ch>_cost_incl_fixed` | AUD | Optional (see [Bill estimate](#bill-estimate-optional)): the general channel's cost plus your daily fixed charges |
+| `amber_energy_dashboard:<site>_<ch>_cost_incl_fixed` | AUD | Optional (see [Bill estimate](#bill-estimate-optional)): the import cost plus your daily fixed charges |
+| `amber_energy_dashboard:<site>_<ch>_compensation_adjusted` | AUD | With the [export allowance](#export-allowance-two-way-network-tariffs): feed-in earnings with the export charge refunded within the free allowance, as on the bill |
 
 **Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
 if the Energy dashboard has no grid connection yet, setup offers **Add to the Energy
@@ -208,15 +209,43 @@ Four sensors then show, for the current cycle:
   so no estimate.
 - The `amber_energy_dashboard.bill_estimate` action returns the estimate for any cycle
   that is still in the integration's day records (give a date in it).
-- **Optional statistic, "cost including fixed charges":** the general channel's cost plus
-  the daily fixed charges (with GST) spread evenly over each day's hours. Select it in the
-  Energy dashboard instead of the plain cost if you want the dashboard's totals to match
-  your bill. Turning it on fetches the available history once (about 13 API calls).
-  Changed charges apply from the next day written.
+- **Optional statistic, "cost including fixed charges":** the import cost (general and
+  controlled load) plus the daily fixed charges (with GST), spread evenly over each day's
+  hours. It is built from the integration's own statistics, so it covers the whole history,
+  including history the migration copied from the YAML kit, with no API calls. Select it
+  in the Energy dashboard instead of the plain cost if you want the dashboard's totals to
+  match your bill. **Changed charges apply from the day after the last imported day**;
+  earlier days keep the charges they had.
 
-Export credits use Amber's billed compensation. On networks with a free export allowance
-(for example Endeavour N61), the bill can credit more than Amber's data shows; see the
-feed-in question under Troubleshooting.
+Export credits use Amber's billed compensation, or, with the export allowance below, the
+compensation with the allowance applied.
+
+## Export allowance (two-way network tariffs)
+
+Some networks charge for exports in a midday window, but only beyond a free allowance that
+is applied on the bill. Endeavour Energy's N61 allows 2,920 kWh a year, "calculated on a
+daily basis and applied to the billing period": 8 kWh × the days in the billing period,
+set against all exports in the solar sponge window (10:00 to 14:00) over the period. Amber's
+usage data charges every exported kWh in that window, so the feed-in earnings it shows can
+be lower than the bill's (in September 2026, $2.12 against the bill's $5.38).
+
+The integration detects the network and tariff from Amber at setup. For N61 with a billing
+day set (see Bill estimate), it is on by default; for other tariffs, turn it on under
+**Configure > Export allowance** and enter the allowance. It then:
+- measures the export charge and the peak reward from your data each day (Amber's rates,
+  which can differ from the network's price list), using the tariff period Amber gives for
+  each interval;
+- writes **adjusted compensation**: your feed-in earnings plus the charge refunded on window
+  exports within the allowance. Refunds stop once the period's window export passes the
+  allowance. Days older than Amber's history (about three months) are carried unchanged;
+- shows **Export allowance used**, **Export allowance remaining** and **Export charge after
+  allowance** for the current billing period;
+- uses the adjusted earnings in the bill estimate, with the export charge after the
+  allowance as its own line.
+
+To use it in the Energy dashboard, edit the grid connection's **Return to grid** and, for
+compensation, choose **Use an entity tracking the total received** with the "compensation
+(export allowance applied)" statistic.
 
 ## Price series (optional)
 
@@ -384,7 +413,8 @@ logger:
   export allowance instead, for example Endeavour Energy's two-way tariff N61, with
   8 kWh per day free before a midday export charge applies. Your bill applies that
   allowance, but the usage data does not, so the dashboard can show lower feed-in earnings
-  than the bill. Import costs match the bill to the cent.
+  than the bill. Turn on the [export allowance](#export-allowance-two-way-network-tariffs)
+  to correct for it. Import costs match the bill to the cent.
 - *Supply and subscription charges are missing.* Amber's usage data covers usage only.
   Daily network supply, metering and Amber's subscription are separate charges on your
   bill.

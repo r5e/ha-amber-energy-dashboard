@@ -4,81 +4,78 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - 2.1.0-dev3
+## [2.1.0-rc1] - 2026-10-09
+
+Release candidate for 2.1. Everything since 2.0.1. The bill estimate and the export
+allowance are off until configured (the allowance turns itself on for Endeavour Energy N61
+once a billing day is set).
 
 ### Added
 
-- **Export allowance** for two-way network tariffs (Endeavour Energy N61 detected and on
-  by default with a billing day; others configurable): the export charge and peak reward
-  are measured from Amber's data per day, the charge is refunded on window exports within
-  the billing period's allowance in an **adjusted compensation** statistic, sensors show
-  the allowance used, remaining and the export charge after it, and the bill estimate uses
-  the adjusted earnings with the export charge as its own line.
+**Bill estimate** (options: Bill estimate)
+- Options: the billing day (1 to 28), the daily fixed charges excluding GST as named on the
+  bill (network daily, metering, Amber subscription, other), and the GST rate (10 %).
+- Sensors: **Bill to date** (with each line in its attributes), **Projected bill**, **Days
+  into billing cycle** and **Average cost per day**. Cycle days are Amber's (AEST) days, as
+  on the bill. Only complete imported days count; the attributes say which day the data
+  runs to. One-off charges (such as card fees) are not included.
+- The `bill_estimate` action returns the estimate for any cycle still in the day records.
+- Optional statistic **import cost including fixed charges**: the import cost (general and
+  controlled load) plus the fixed charges, built from the integration's own statistics. It
+  covers the whole history (including history copied from the YAML kit) with no API
+  calls, and follows every rewrite of the cost. Changed charges apply from the day after
+  the last imported day.
 
-### Changed
+**Export allowance** (options: Export allowance)
+- For two-way network tariffs with a free export allowance applied on the bill. Endeavour
+  Energy N61 (8 kWh a day, over the billing period) is detected from Amber at setup and
+  turned on once a billing day is set; other tariffs can be configured (allowance, daily or
+  billing-period totalling, charged period).
+- The export charge and the peak reward are measured from Amber's data each day, by the
+  tariff period Amber gives for each interval.
+- Statistic **compensation (export allowance applied)**: feed-in earnings with the charge
+  refunded within the allowance, over the whole history.
+- Sensors **Export allowance used**, **Export allowance remaining** and **Export charge
+  after allowance**. The bill estimate uses the adjusted earnings, with the export charge
+  after the allowance as its own line.
 
-- **Cost including fixed charges** is built from the integration's own import cost
-  statistics (general and controlled load), so it covers the whole history (including
-  history copied from the YAML kit) with no API calls, and follows every rewrite of the
-  cost. Changed charges apply from the day after the last imported day.
-
-## 2.1.0-dev2
-
-### Added
-
-- **Bill estimate** (options: billing day, daily fixed charges excluding GST, GST rate):
-  sensors **Bill to date** (with the line breakdown), **Projected bill**, **Days into
-  billing cycle** and **Average cost per day**, and the `bill_estimate` action for any
-  cycle. Cycle days are Amber's (AEST) days, as on the bill; only complete imported days
-  count.
-- Optional statistic **cost including fixed charges** (general channel), for an Energy
-  dashboard whose totals match the bill.
-
-### Changed
-
-- The import settings step keeps the bill estimate's options.
-
-### Documentation
-
-- README and installation guide: the bill estimate. The installation guide's FAQ entry
-  about HACS offering a commit code (pre-release era) and the unused version-picker
-  screenshot are removed.
-
-## 2.1.0-dev1
-
-### Added
-
-- **Buttons** on the device: **Run now** (the `run_now` action) and, as a diagnostic
-  entity, **Re-check retention** (the `probe_retention` action).
-- **Add to the Energy dashboard** at the end of setup, offered when the Energy dashboard
-  has no grid connection (on by default): one grid connection with the general channel's
-  energy and cost and the feed-in's energy and compensation, and a second one for a
-  controlled load. An existing grid connection is never changed. The Energy dashboard
-  settings are saved (and read back) first, as the migration does.
+**Setup and maintenance**
+- **Buttons** on the device: **Run now** and, as a diagnostic entity, **Re-check
+  retention**.
+- **Add to the Energy dashboard** at the end of setup, when the Energy dashboard has no grid
+  connection (on by default). An existing grid connection is never changed; the Energy
+  dashboard settings are saved and read back first.
 - **Repairs item "The Energy dashboard isn't using Amber Energy Dashboard"**, a day after
-  the first import when nothing in the Energy dashboard uses the integration's
-  statistics. Its fix adds them (no grid connection), points to the migration (YAML kit
-  detected), or explains how to choose them and lets you dismiss it. It clears itself
-  once the statistics are in use.
+  the first import if nothing in the Energy dashboard uses the statistics. Its fix adds
+  them, points to the migration (YAML kit detected), or lets you dismiss it. It clears
+  itself once the statistics are in use.
 - **Migration: unverifiable history.** When the YAML kit's data doesn't overlap the
-  integration's (for example the kit stopped before the integration's first day), the
-  dry run explains why and names the days neither has, and the migration runs with an
-  explicit acknowledgement (options checkbox, or `acknowledge_unverified: true`).
+  integration's (for example a kit that stopped before the integration's first day), the
+  dry run explains why and names the days neither has; the migration then runs only with
+  an explicit acknowledgement (options checkbox, or `acknowledge_unverified: true`).
   Differences still stop it.
 
-### Changed
+### Fixed
 
-- **Own-sensor reconciliation sensors** are on their mapping's own device, "<name> (own
-  sensor)", linked to the site's device, and are named "Reconciliation". Home Assistant
-  gives a device only one sub-entry; on the site's device, alongside the new buttons, the
-  sensor could be dropped at startup. The entity ID stays the same.
+- **Own-sensor mappings removed the integration's other sensors (2.0.1).** Home Assistant
+  gives a device one config sub-entry; the reconciliation sensor of an own-sensor mapping
+  shared the site's device, so adding a mapping moved the device into the sub-entry and
+  Home Assistant removed the import status, "yesterday" and other sensors (and, with the
+  new buttons, could remove those instead). Each mapping now has its own device, "<name>
+  (own sensor)", linked to the site's; its reconciliation sensor is named
+  "Reconciliation", with the same entity ID. After updating, the removed sensors come back
+  with their old entity IDs.
+- The import settings step no longer drops options set in other steps.
 
 ### Documentation
 
-- README: why an hour of yesterday's usage appears after midnight in summer (NEM days),
-  and HACS's "icon not available".
+- README and installation guide: the bill estimate, the export allowance, and a table of
+  which statistics to select in the Energy dashboard, and when.
+- README: why an hour of yesterday's usage appears after midnight in summer (NEM days), and
+  HACS's "icon not available".
 - Installation guide: the version step is now a footnote for pre-releases; the new setup
-  option, the buttons, and the Repairs item.
+  option, the buttons and the Repairs item. The pre-release-era FAQ entry about HACS
+  offering a commit code, and the unused version-picker screenshot, are removed.
 
 ## [2.0.1] - 2026-10-07
 
@@ -356,6 +353,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.1.0-rc1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0-rc1
 [2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1
 [2.0.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0
 [2.0.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0-rc2

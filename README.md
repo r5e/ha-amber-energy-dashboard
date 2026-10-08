@@ -7,8 +7,9 @@ The Energy dashboard then shows what Amber really billed, hour by hour.
 This is an unofficial community project. It is not affiliated with or endorsed by
 Amber Electric.
 
-> **Version 2.0.1.** Version 2 replaces the earlier YAML kit (v1) with a proper
-> integration: set up in the UI, with no YAML at all. If you use the v1 kit, see the
+> **Version 2.1.0-rc1** (release candidate; the current release is 2.0.1). Version 2
+> replaces the earlier YAML kit (v1) with a proper integration: set up in the UI, with no
+> YAML at all. If you use the v1 kit, see the
 > **[migration guide](docs/MIGRATION.md)**. The v1 kit itself is kept in
 > [`legacy/v1/`](legacy/v1/).
 
@@ -86,6 +87,14 @@ grid section, set:
 - for controlled load, a second grid consumption with its own energy and cost;
 - "Return to grid" to the feed-in energy, with "Use an entity tracking the total
   received" set to its compensation.
+
+Two optional statistics can replace the defaults: the **cost including fixed charges**
+(from the [bill estimate](#bill-estimate-optional)) for a dashboard cost that matches the
+bill, and the **compensation with the export allowance applied** (from the [export
+allowance](#export-allowance-two-way-network-tariffs)) on two-way tariffs. The guide's
+[table](docs/INSTALL.md#6-add-it-to-the-energy-dashboard) says which to select and when.
+The cost including fixed charges already includes a controlled load's cost, so with it,
+leave the controlled-load connection's cost empty.
 
 Do **not** use "current price" here: that multiplies usage by a live price, and gives the
 approximate figures this integration exists to replace.
@@ -214,8 +223,9 @@ Four sensors then show, for the current cycle:
   hours. It is built from the integration's own statistics, so it covers the whole history,
   including history the migration copied from the YAML kit, with no API calls. Select it
   in the Energy dashboard instead of the plain cost if you want the dashboard's totals to
-  match your bill. **Changed charges apply from the day after the last imported day**;
-  earlier days keep the charges they had.
+  match your bill; it includes a controlled load's cost, so then leave the controlled-load
+  connection's cost empty. **Changed charges apply from the day after the last imported
+  day**; earlier days keep the charges they had.
 
 Export credits use Amber's billed compensation, or, with the export allowance below, the
 compensation with the allowance applied.
@@ -243,9 +253,10 @@ day set (see Bill estimate), it is on by default; for other tariffs, turn it on 
 - uses the adjusted earnings in the bill estimate, with the export charge after the
   allowance as its own line.
 
-To use it in the Energy dashboard, edit the grid connection's **Return to grid** and, for
-compensation, choose **Use an entity tracking the total received** with the "compensation
-(export allowance applied)" statistic.
+To use it in the Energy dashboard, select the "compensation (export allowance applied)"
+statistic as the grid connection's compensation (**Use an entity tracking the total
+received**), instead of the plain compensation. See the guide's
+[table](docs/INSTALL.md#6-add-it-to-the-energy-dashboard).
 
 ## Price series (optional)
 

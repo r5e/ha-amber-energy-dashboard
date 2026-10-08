@@ -4,7 +4,25 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - 2.1.0-dev2
+## [Unreleased] - 2.1.0-dev3
+
+### Added
+
+- **Export allowance** for two-way network tariffs (Endeavour Energy N61 detected and on
+  by default with a billing day; others configurable): the export charge and peak reward
+  are measured from Amber's data per day, the charge is refunded on window exports within
+  the billing period's allowance in an **adjusted compensation** statistic, sensors show
+  the allowance used, remaining and the export charge after it, and the bill estimate uses
+  the adjusted earnings with the export charge as its own line.
+
+### Changed
+
+- **Cost including fixed charges** is built from the integration's own import cost
+  statistics (general and controlled load), so it covers the whole history (including
+  history copied from the YAML kit) with no API calls, and follows every rewrite of the
+  cost. Changed charges apply from the day after the last imported day.
+
+## 2.1.0-dev2
 
 ### Added
 

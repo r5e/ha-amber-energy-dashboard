@@ -834,12 +834,21 @@ statistics (a secondary chain, so it follows revisions and rewrites).
   removed).
 - **Modes:** Pricing-only has no usage, so the sensors are unknown and the action refuses;
   the statistic is not written. Recovery-only uses whatever days are imported.
-- **Statistic including fixed charges:** a secondary chain (key `fixed`), so it follows
-  revisions, tail rewrites, crash recovery and retention like the price series. Each hour
-  = the general channel's cost from that day's usage records + the day's fixed charges
-  including GST ÷ 24 (NEM days always have 24 hours). It starts at the retention boundary
-  (about 13 calls when turned on). The fixed amount is the one set when each day is
-  written; it is recorded per day. Changed charges apply from the next day written.
+- **Statistic including fixed charges** (rebuilt at the M10 review): a **derived
+  statistic** (`derived.py`) built from the integration's own import cost statistics
+  (general and controlled load), not from usage records, so it covers the whole history,
+  including history copied from a YAML kit, with no API calls. Its sum at each row = the
+  cost sums (carried forward) + the accumulated fixed charges; the charges accrue with the
+  time between rows (an hourly row adds the daily amount ÷ 24, a copied daily lump a whole
+  day, the first row its own hour). **Sync by difference** after every run, every options
+  change and every migration: the expected rows are recomputed from the stored cost rows,
+  and the statistic is rewritten from the first row that differs (cleared and rewritten in
+  full if it holds a row the cost no longer has). So every rewrite of the cost (revision,
+  tail rewrite, crash recovery, backfill, migration) is followed without hooks in each
+  write path. Every write is read back.
+- **Changed charges** (accepted at the M10 review) apply from the day after the last
+  imported day: the Store keeps a schedule of daily amounts with the hour each applies
+  from (`fixed_schedule`), so earlier rows keep the amount they had.
 - **Action** `bill_estimate(date)`: the estimate for the cycle containing `date`
   (default today), for any cycle still in the Store's day records (about 400 days).
 - **Acceptance** (VM 9102, 2026-10-08): billing day 28, the three charges, GST 10 % →
@@ -847,7 +856,7 @@ statistics (a secondary chain, so it follows revisions and rewrites).
   23.9348, metering 13.1353, subscription 25.4761). The brief's sign is corrected: the
   targets are $168.96 now and $165.71 after M11's allowance adjustment.
 
-## 20. Export allowance for two-way network tariffs (Milestone 11, design only)
+## 20. Export allowance for two-way network tariffs (Milestone 11)
 
 **Facts** (reports/billing-reconciliation-2026-09.md):
 - Amber's feed-in `perKwh` = loss factor (about 0.974) × spot + a network component:
@@ -889,3 +898,39 @@ period).
 
 **Acceptance (September):** billed compensation $2.1238 + refund (174.789 kWh × 1.86 c =
 $3.2511) = **$5.3749**, against the bill's $5.38.
+
+**As built (M11):**
+- **Detection** at every setup from the `/sites` answer the setup already fetches: the
+  network and the channel tariff codes, recorded in the Store (`tariff`). On the test
+  account: network "Endeavour Energy", general N71, feed-in **N61** (the feed-in channel's
+  code identifies the two-way tariff). The table (`export.KNOWN_TARIFFS`) has Endeavour
+  Energy N61 only: 8 kWh a day, penalty period `solarSponge`, reward period `peak`,
+  billing-period totalling.
+- **Settings:** on by default for a known tariff with a billing day; otherwise off. The
+  options ("Export allowance") override: on/off, kWh per day, billing-period or daily
+  totalling, and the penalty period name. Billing-period totalling needs the billing day
+  (the step refuses without one; at runtime the feature is then off). An unknown tariff
+  needs the kWh per day. The reward period is the table's, else `peak`.
+- **Per-day aggregates** (Store `export_days`, keyed by NEM date, pruned with the day
+  records): window export per NEM hour and in total, the penalty and reward rates (c/kWh)
+  and amounts (AUD), the loss factor, and a fingerprint of the day's usage. Measured in
+  each run for imported days that lack them (inside retention: about 13 calls once for 90
+  days, using the run's 7-day windows) and for days whose records changed (a revision's
+  rewrite fetches them anyway). The loss factor is the median of earned ÷ spot over
+  off-period intervals with |spot| ≥ 5 c/kWh, falling back to the last measured one; a day
+  with neither has no rates (`measured` false) and no refund.
+- **Refunds:** for each allowance period (billing cycle, or day), allowance = kWh per day ×
+  the period's days; window exports are set against it hour by hour in time order, and the
+  penalty on the part within it is refunded at that day's measured rate. Days without
+  aggregates count nothing and are listed as unadjusted.
+- **Adjusted compensation** `…_{feed-in}_compensation_adjusted`: a derived statistic (as in
+  section 19) from the compensation statistic plus each hour's refund, over the whole
+  history; days before retention are carried unchanged.
+- **Sensors** (current period, up to yesterday): Export allowance used and remaining (kWh),
+  Export charge after allowance (AUD) = penalty − refund. Attributes: period, totalling,
+  allowance, window export, measured rates (median of the last 30 days), data through,
+  unadjusted days.
+- **Bill estimate:** with the allowance, the export credit line is the billed compensation
+  plus the full penalty (what the bill credits before the network's charge), and a
+  `network_export_charge` line is the penalty less the refund. Their sum is the adjusted
+  compensation.

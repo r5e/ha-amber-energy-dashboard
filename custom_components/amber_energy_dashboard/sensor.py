@@ -128,6 +128,63 @@ BILL_SENSORS = (
 )
 
 
+def _allowance(key: str) -> Callable[[dict[str, Any]], Any]:
+    def value(data: dict[str, Any]) -> Any:
+        return None if data.get("allowance") is None else data["allowance"][key]
+
+    return value
+
+
+def _allowance_attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+    summary = data.get("allowance")
+    if summary is None:
+        return None
+    return {
+        k: v
+        for k, v in summary.items()
+        if k not in ("allowance_used_kwh", "allowance_remaining_kwh", "export_charge")
+    }
+
+
+ALLOWANCE_SENSORS = (
+    AmberSensorDescription(
+        key="allowance_used",
+        translation_key="allowance_used",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=_allowance("allowance_used_kwh"),
+        attrs_fn=_allowance_attrs,
+    ),
+    AmberSensorDescription(
+        key="allowance_remaining",
+        translation_key="allowance_remaining",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=_allowance("allowance_remaining_kwh"),
+        attrs_fn=_allowance_attrs,
+    ),
+    AmberSensorDescription(
+        key="export_charge",
+        translation_key="export_charge",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY,
+        suggested_display_precision=2,
+        value_fn=_allowance("export_charge"),
+        attrs_fn=_allowance_attrs,
+    ),
+)
+
+
+def _remove(hass: HomeAssistant, site: str, descriptions: tuple[Any, ...]) -> None:
+    """Remove sensors of a feature that is off, rather than leave them unavailable."""
+    registry = er.async_get(hass)
+    for description in descriptions:
+        if entity_id := registry.async_get_entity_id("sensor", DOMAIN, f"{site}_{description.key}"):
+            registry.async_remove(entity_id)
+
+
 def _yesterday_value(statistic_id: str) -> Callable[[dict[str, Any]], float | None]:
     def value(data: dict[str, Any]) -> float | None:
         totals = data.get("yesterday_totals")
@@ -168,14 +225,15 @@ async def async_setup_entry(
     manager = entry.runtime_data.manager
     channel_types = {c.identifier: c.type for c in manager.ctx.channels}
     descriptions: list[AmberSensorDescription] = list(STATUS_SENSORS)
-    if manager.bill is not None:
-        descriptions.extend(BILL_SENSORS)
-    else:  # turned off: remove the bill sensors rather than leave them unavailable
-        registry = er.async_get(hass)
-        for description in BILL_SENSORS:
-            unique_id = f"{manager.ctx.site_id}_{description.key}"
-            if entity_id := registry.async_get_entity_id("sensor", DOMAIN, unique_id):
-                registry.async_remove(entity_id)
+    site = manager.ctx.site_id
+    for enabled, group in (
+        (manager.bill is not None, BILL_SENSORS),
+        (manager.allowance is not None, ALLOWANCE_SENSORS),
+    ):
+        if enabled:
+            descriptions.extend(group)
+        else:
+            _remove(hass, site, group)
     for spec in manager.ctx.specs:
         if spec.channel is None:
             continue

@@ -75,6 +75,12 @@ CONF_GST_PERCENT: Final = "gst_percent"
 CONF_FIXED_STATISTIC: Final = "fixed_statistic"
 SERVICE_BILL_ESTIMATE: Final = "bill_estimate"
 
+# Export allowance (options, section 20)
+CONF_ALLOWANCE: Final = "export_allowance"
+CONF_ALLOWANCE_KWH: Final = "allowance_kwh_per_day"
+CONF_ALLOWANCE_TOTALLING: Final = "allowance_totalling"
+CONF_PENALTY_PERIOD: Final = "penalty_period"
+
 # Own-sensor cost (config sub-entries)
 SUBENTRY_OWN_SENSOR: Final = "own_sensor"
 CONF_SENSOR: Final = "entity_id"

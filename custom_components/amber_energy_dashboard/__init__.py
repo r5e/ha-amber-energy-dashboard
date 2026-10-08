@@ -32,6 +32,7 @@ from .api import (
     AmberError,
     AmberRateLimitError,
     AmberServerError,
+    Site,
 )
 from .bill import CHARGES, DEFAULT_GST_PERCENT, BillSettings
 from .const import (
@@ -45,6 +46,9 @@ from .const import (
     ATTR_EXCLUDE_FLAGGED,
     ATTR_START_DATE,
     CONF_ADD_TO_ENERGY,
+    CONF_ALLOWANCE,
+    CONF_ALLOWANCE_KWH,
+    CONF_ALLOWANCE_TOTALLING,
     CONF_BILLING_DAY,
     CONF_CHANNEL,
     CONF_CHANNELS,
@@ -53,6 +57,7 @@ from .const import (
     CONF_GST_PERCENT,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
+    CONF_PENALTY_PERIOD,
     CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
@@ -79,6 +84,14 @@ from .const import (
 )
 from .devices import device_info
 from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
+from .export import (
+    DEFAULT_PENALTY_PERIOD,
+    DEFAULT_REWARD_PERIOD,
+    TOTALLING_PERIOD,
+    AllowanceSettings,
+    TwoWayTariff,
+    detect_tariff,
+)
 from .importer import ImportContext
 from .manager import AmberManager, OwnSensor, nem_today
 from .migration import (
@@ -143,8 +156,12 @@ class AmberRuntimeData:
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
 
 
-def settings_from_options(options: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
-    """Positional and keyword settings for the manager, from entry options."""
+def settings_from_options(
+    options: dict[str, Any], tariff: TwoWayTariff | None = None
+) -> tuple[tuple, dict[str, Any]]:
+    """Positional and keyword settings for the manager, from entry options (and the
+    two-way tariff detected at setup)."""
+    bill = bill_from_options(options)
     return (
         (
             schedule_from_options(options),
@@ -155,8 +172,38 @@ def settings_from_options(options: dict[str, Any]) -> tuple[tuple, dict[str, Any
             "usage_mode": options.get(CONF_USAGE_MODE, MODE_FULL),
             "price_series": bool(options.get(CONF_PRICE_SERIES, False)),
             "own_fallback": bool(options.get(CONF_OWN_FALLBACK, True)),
-            "bill": bill_from_options(options),
+            "bill": bill,
+            "allowance": allowance_from_options(options, tariff, bill),
         },
+    )
+
+
+def allowance_from_options(
+    options: dict[str, Any], tariff: TwoWayTariff | None, bill: BillSettings | None
+) -> AllowanceSettings | None:
+    """The export allowance settings, or None when it is off (section 20).
+
+    By default it is on for a known two-way tariff with a billing day set. The options
+    override the allowance, the totalling and the penalty period. Billing-period
+    totalling needs the billing day; without one only daily totalling works.
+    """
+    enabled = options.get(CONF_ALLOWANCE)
+    if enabled is None:
+        enabled = tariff is not None and bill is not None
+    per_day = options.get(CONF_ALLOWANCE_KWH) or (tariff.allowance_kwh_per_day if tariff else 0)
+    totalling = options.get(CONF_ALLOWANCE_TOTALLING) or (
+        tariff.totalling if tariff else TOTALLING_PERIOD
+    )
+    billing_day = bill.billing_day if bill else None
+    if not enabled or not per_day or (totalling == TOTALLING_PERIOD and billing_day is None):
+        return None
+    return AllowanceSettings(
+        allowance_kwh_per_day=float(per_day),
+        totalling=totalling,
+        penalty_period=options.get(CONF_PENALTY_PERIOD)
+        or (tariff.penalty_period if tariff else DEFAULT_PENALTY_PERIOD),
+        reward_period=tariff.reward_period if tariff else DEFAULT_REWARD_PERIOD,
+        billing_day=billing_day,
     )
 
 
@@ -420,6 +467,19 @@ def _resolve_entry(hass: HomeAssistant, entry_id: str | None) -> AmberConfigEntr
     return entries[0]
 
 
+async def _async_detect_tariff(store: AmberStore, site: Site) -> TwoWayTariff | None:
+    """The known two-way tariff from this setup's /sites answer; recorded in the Store."""
+    tariff = detect_tariff(site.network, [c.tariff for c in site.channels])
+    await store.async_set_tariff(
+        {
+            "network": site.network,
+            "tariffs": {c.identifier: c.tariff for c in site.channels},
+            "known": f"{tariff.network} {tariff.tariff}" if tariff else None,
+        }
+    )
+    return tariff
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
     """Set up one Amber site, validating the key with one GET /sites.
 
@@ -450,9 +510,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         specs=tuple(build_specs(site_id, channels)),
         lock=asyncio.Lock(),
     )
-    (schedule, patience_days, revision_days), extra = settings_from_options(dict(entry.options))
+    tariff = await _async_detect_tariff(store, site)
+    (schedule, patience_days, revision_days), extra = settings_from_options(
+        dict(entry.options), tariff
+    )
     own = own_sensors_from_entry(entry, channels)
-    known = {s.key for s in own} | {"price", "fixed"}
+    known = {s.key for s in own} | {"price"}
     for key in list(store.as_dict()["chains"]):
         if key not in known:
             await async_forget_chain(store, key)  # mapping removed; statistics are kept
@@ -466,6 +529,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         patience_days=patience_days,
         revision_days=revision_days,
         own_sensors=own,
+        tariff=tariff,
         **extra,
     )
     # The site's device first, so own-sensor devices can link to it (section 18).
@@ -521,9 +585,14 @@ async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -
     wanted = {
         sid for sid, sub in entry.subentries.items() if sub.subentry_type == SUBENTRY_OWN_SENSOR
     }
-    args, kwargs = settings_from_options(dict(entry.options))
-    # Own-sensor mappings, or turning the bill estimate on or off, change the entities.
-    if current != wanted or (manager.bill is None) != (kwargs["bill"] is None):
+    args, kwargs = settings_from_options(dict(entry.options), manager.tariff)
+    # Own-sensor mappings, or turning the bill estimate or the allowance on or off,
+    # change the entities.
+    if (
+        current != wanted
+        or (manager.bill is None) != (kwargs["bill"] is None)
+        or (manager.allowance is None) != (kwargs["allowance"] is None)
+    ):
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
     manager.async_update_settings(*args, **kwargs)

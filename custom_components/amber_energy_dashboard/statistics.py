@@ -205,7 +205,8 @@ def own_cost_spec(site_id: str, entity_id: str, channel: ChannelConfig) -> Stati
 
 
 def fixed_cost_spec(site_id: str, channels: Iterable[ChannelConfig]) -> StatisticSpec | None:
-    """The optional "import cost including fixed charges" statistic (section 19), on the
+    """The optional "import cost including fixed charges" statistic (section 19): the
+    import cost (general and controlled load) plus the fixed charges. Named after the
     first general channel; None for a site without one."""
     general = next((c for c in channels if c.type == CHANNEL_GENERAL), None)
     if general is None:
@@ -214,7 +215,25 @@ def fixed_cost_spec(site_id: str, channels: Iterable[ChannelConfig]) -> Statisti
         statistic_id(site_id, f"{general.identifier.lower()}_cost_incl_fixed"),
         Metric.COST,
         general.identifier,
-        f"Amber general {general.identifier} cost including fixed charges",
+        "Amber import cost including fixed charges",
+        CURRENCY,
+        None,
+    )
+
+
+def adjusted_compensation_spec(
+    site_id: str, channels: Iterable[ChannelConfig]
+) -> StatisticSpec | None:
+    """The feed-in compensation with the export allowance applied (section 20); None for
+    a site without a feed-in channel."""
+    feed_in = next((c for c in channels if c.type == CHANNEL_FEED_IN), None)
+    if feed_in is None:
+        return None
+    return StatisticSpec(
+        statistic_id(site_id, f"{feed_in.identifier.lower()}_compensation_adjusted"),
+        Metric.COMPENSATION,
+        feed_in.identifier,
+        f"Amber feed-in {feed_in.identifier} compensation (export allowance applied)",
         CURRENCY,
         None,
     )

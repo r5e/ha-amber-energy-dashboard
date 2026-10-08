@@ -53,6 +53,9 @@ from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
     CONF_ADD_TO_ENERGY,
+    CONF_ALLOWANCE,
+    CONF_ALLOWANCE_KWH,
+    CONF_ALLOWANCE_TOTALLING,
     CONF_BILLING_DAY,
     CONF_CHANNEL,
     CONF_CHANNELS,
@@ -62,6 +65,7 @@ from .const import (
     CONF_NMI,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
+    CONF_PENALTY_PERIOD,
     CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
@@ -81,6 +85,7 @@ from .const import (
     USAGE_MODES,
 )
 from .energy import async_preferences, has_grid
+from .export import DEFAULT_PENALTY_PERIOD, TOTALLING_PERIOD, TOTALLINGS
 from .migration import (
     STATUS_COMPLETED,
     STATUS_IN_PROGRESS,
@@ -157,6 +162,29 @@ _BILL_SCHEMA = vol.Schema(
     }
 )
 _BILL_KEYS = frozenset({CONF_BILLING_DAY, *CHARGES, CONF_GST_PERCENT, CONF_FIXED_STATISTIC})
+
+
+_ALLOWANCE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_ALLOWANCE): BooleanSelector(),
+        vol.Optional(CONF_ALLOWANCE_KWH): NumberSelector(
+            NumberSelectorConfig(
+                min=0, max=100, step="any", mode=NumberSelectorMode.BOX, unit_of_measurement="kWh"
+            )
+        ),
+        vol.Optional(CONF_ALLOWANCE_TOTALLING): SelectSelector(
+            SelectSelectorConfig(
+                options=list(TOTALLINGS),
+                mode=SelectSelectorMode.LIST,
+                translation_key=CONF_ALLOWANCE_TOTALLING,
+            )
+        ),
+        vol.Optional(CONF_PENALTY_PERIOD): TextSelector(),
+    }
+)
+_ALLOWANCE_KEYS = frozenset(
+    {CONF_ALLOWANCE, CONF_ALLOWANCE_KWH, CONF_ALLOWANCE_TOTALLING, CONF_PENALTY_PERIOD}
+)
 
 
 def _schedule_options(user_input: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -431,7 +459,7 @@ class AmberOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Menu: settings, migration, and undo once a migration has started."""
-        options = ["settings", "bill", "migrate"]
+        options = ["settings", "bill", "allowance", "migrate"]
         manager = self._manager()
         record = manager.store.migration if manager is not None else None
         if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
@@ -468,8 +496,10 @@ class AmberOptionsFlow(OptionsFlow):
                 options[CONF_OWN_FALLBACK] = bool(
                     user_input.get(CONF_OWN_FALLBACK, current.get(CONF_OWN_FALLBACK, True))
                 )
-                # The bill estimate has its own step; keep its options.
-                options.update({k: v for k, v in current.items() if k in _BILL_KEYS})
+                # The bill estimate and the allowance have their own steps; keep theirs.
+                options.update(
+                    {k: v for k, v in current.items() if k in _BILL_KEYS | _ALLOWANCE_KEYS}
+                )
                 return self.async_create_entry(data=options)
         current = dict(self.config_entry.options)
         suggested = user_input or {
@@ -509,6 +539,61 @@ class AmberOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="bill",
             data_schema=self.add_suggested_values_to_schema(_BILL_SCHEMA, suggested),
+        )
+
+    async def async_step_allowance(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The free export allowance of a two-way network tariff (section 20)."""
+        current = dict(self.config_entry.options)
+        manager = self._manager()
+        tariff = manager.tariff if manager is not None else None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            enabled = bool(user_input.get(CONF_ALLOWANCE))
+            totalling = user_input.get(CONF_ALLOWANCE_TOTALLING) or TOTALLING_PERIOD
+            per_day = user_input.get(CONF_ALLOWANCE_KWH)
+            if enabled and totalling == TOTALLING_PERIOD and not current.get(CONF_BILLING_DAY):
+                errors[CONF_ALLOWANCE_TOTALLING] = "needs_billing_day"
+            elif enabled and not per_day:
+                errors[CONF_ALLOWANCE_KWH] = "allowance_required"
+            else:
+                options = {k: v for k, v in current.items() if k not in _ALLOWANCE_KEYS}
+                options[CONF_ALLOWANCE] = enabled
+                if enabled:
+                    options[CONF_ALLOWANCE_KWH] = float(per_day)
+                    options[CONF_ALLOWANCE_TOTALLING] = totalling
+                    options[CONF_PENALTY_PERIOD] = (
+                        user_input.get(CONF_PENALTY_PERIOD) or DEFAULT_PENALTY_PERIOD
+                    )
+                return self.async_create_entry(data=options)
+        defaults: dict[str, Any] = {
+            CONF_ALLOWANCE: tariff is not None and bool(current.get(CONF_BILLING_DAY)),
+            CONF_ALLOWANCE_TOTALLING: tariff.totalling if tariff else TOTALLING_PERIOD,
+            CONF_PENALTY_PERIOD: tariff.penalty_period if tariff else DEFAULT_PENALTY_PERIOD,
+        }
+        if tariff is not None:
+            defaults[CONF_ALLOWANCE_KWH] = tariff.allowance_kwh_per_day
+        suggested = {
+            **defaults,
+            **{k: v for k, v in current.items() if k in _ALLOWANCE_KEYS},
+            **(user_input or {}),
+        }
+        detected = (
+            f"Detected {tariff.network} {tariff.tariff}: {tariff.allowance_kwh_per_day:g} kWh "
+            f"a day free, exports in {tariff.penalty_period} charged beyond it."
+            if tariff
+            else "No known two-way tariff was detected for this site; set the allowance "
+            "yourself if your network has one."
+        )
+        return self.async_show_form(
+            step_id="allowance",
+            data_schema=self.add_suggested_values_to_schema(_ALLOWANCE_SCHEMA, suggested),
+            errors=errors,
+            description_placeholders={
+                "detected": detected,
+                "billing_day": str(current.get(CONF_BILLING_DAY) or "not set"),
+            },
         )
 
     async def async_step_migrate(

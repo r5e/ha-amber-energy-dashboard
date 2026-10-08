@@ -66,6 +66,15 @@ from .const import (
     RETENTION_FALLBACK_DAYS,
     RETENTION_REVERIFY_BRACKET_DAYS,
 )
+from .derived import Derived, async_sync as async_sync_derived, fixed_extra, refund_extra
+from .export import (
+    AllowanceSettings,
+    TwoWayTariff,
+    day_aggregates as export_day_aggregates,
+    day_refunds as export_day_refunds,
+    period_summary as export_period_summary,
+    refunds as export_refunds,
+)
 from .importer import (
     HOUR,
     ImportContext,
@@ -79,7 +88,9 @@ from .schedule import ScheduleConfig, is_final_attempt, next_attempt
 from .statistics import (
     ChannelConfig,
     MeanSpec,
+    Metric,
     StatisticSpec,
+    adjusted_compensation_spec,
     fixed_cost_spec,
     price_specs,
 )
@@ -156,22 +167,17 @@ class OwnSensor:
 
 @dataclass(slots=True)
 class _Chain:
-    """A secondary chain: the price series, one own sensor, or the cost including fixed
-    charges."""
+    """A secondary chain: the price series, or one own sensor."""
 
     key: str
     state: ChainState
     mean_specs: list[MeanSpec] = field(default_factory=list)
     sensor: OwnSensor | None = None
-    fixed: StatisticSpec | None = None
-    """The "import cost including fixed charges" statistic (section 19)."""
 
     @property
     def ids(self) -> list[str]:
         if self.sensor is not None:
             return [self.sensor.spec.statistic_id]
-        if self.fixed is not None:
-            return [self.fixed.statistic_id]
         return [s.statistic_id for s in self.mean_specs]
 
 
@@ -219,6 +225,8 @@ class AmberManager:
         own_fallback: bool = True,
         own_sensors: Iterable[OwnSensor] = (),
         bill: BillSettings | None = None,
+        allowance: AllowanceSettings | None = None,
+        tariff: TwoWayTariff | None = None,
     ) -> None:
         """Create the manager (call async_start after the store is loaded)."""
         self.hass = hass
@@ -234,6 +242,9 @@ class AmberManager:
         self.own_fallback = own_fallback
         self.own_sensors = list(own_sensors)
         self.bill = bill
+        self.allowance = allowance
+        self.tariff = tariff
+        """The known two-way tariff detected from /sites at setup (section 20)."""
         self._cache: dict[date, list[UsageRecord]] = {}
         self._last_rewrite_count = 0
         self.status = STATUS_NEVER_RUN if store.last_run is None else store.last_run["status"]
@@ -284,6 +295,7 @@ class AmberManager:
         price_series: bool = False,
         own_fallback: bool = True,
         bill: BillSettings | None = None,
+        allowance: AllowanceSettings | None = None,
     ) -> None:
         """Apply new options (options flow) without reloading the entry.
 
@@ -296,9 +308,15 @@ class AmberManager:
         self.price_series = price_series
         self.own_fallback = own_fallback
         self.bill = bill
+        self.allowance = allowance
         self.async_stop()
         self._schedule_next()
         self._publish()
+        if self._derived():
+            # New charges or allowance settings: bring the derived statistics in line.
+            self.entry.async_create_background_task(
+                self.hass, self.async_sync_derived(), f"{DOMAIN} derived statistics"
+            )
 
     # --- scheduling ----------------------------------------------------------------
 
@@ -460,6 +478,10 @@ class AmberManager:
         else:
             outcome = {"status": STATUS_CAUGHT_UP, "reason": None}
         chain_results = await self._async_secondary(info)
+        if self.allowance_active:
+            info["export"] = await self._async_export_days()
+        if derived := await self._async_sync_derived_locked():
+            info["derived"] = derived
         if chain_results:
             info["chains"] = chain_results
             if not (self.usage_mode == MODE_FULL or backfill is not None):
@@ -1212,9 +1234,6 @@ class AmberManager:
             _Chain(sensor.key, chain_state(self.store, sensor.key), sensor=sensor)
             for sensor in self.own_sensors
         )
-        fixed = self.fixed_spec
-        if fixed is not None:
-            chains_.append(_Chain("fixed", chain_state(self.store, "fixed"), fixed=fixed))
         return chains_
 
     @property
@@ -1224,6 +1243,122 @@ class AmberManager:
         if self.bill is None or not self.bill.fixed_statistic or not self._usage_active:
             return None
         return fixed_cost_spec(self.ctx.site_id, self.ctx.channels)
+
+    # --- derived statistics and the export allowance (sections 19 and 20) -----------
+
+    @property
+    def allowance_active(self) -> bool:
+        """The export allowance applies: configured, with usage written and a feed-in."""
+        return (
+            self.allowance is not None
+            and self._usage_active
+            and any(c.type == CHANNEL_FEED_IN for c in self.ctx.channels)
+        )
+
+    def _derived(self) -> list[Derived]:
+        derived: list[Derived] = []
+        fixed = self.fixed_spec
+        if fixed is not None:
+            schedule = self.store.fixed_schedule
+            derived.append(
+                Derived(
+                    fixed,
+                    tuple(
+                        s.statistic_id
+                        for s in self.ctx.specs
+                        if s.metric is Metric.COST and s.channel is not None
+                    ),
+                    fixed_extra(schedule),
+                )
+            )
+        if self.allowance_active:
+            assert self.allowance is not None
+            spec = adjusted_compensation_spec(self.ctx.site_id, self.ctx.channels)
+            assert spec is not None
+            by_hour, _ = export_refunds(self.allowance, self.store.export_days)
+            base = next(s.statistic_id for s in self.ctx.specs if s.metric is Metric.COMPENSATION)
+            derived.append(Derived(spec, (base,), refund_extra(by_hour)))
+        return derived
+
+    async def async_sync_derived(self) -> dict[str, Any]:
+        """Sync the derived statistics under the run lock (options changes, migration)."""
+        async with self.ctx.lock:
+            return await self._async_sync_derived_locked()
+
+    async def _async_sync_derived_locked(self) -> dict[str, Any]:
+        if self.fixed_spec is not None and self.bill is not None:
+            await self._async_fixed_schedule(self.bill.daily_fixed_incl_gst)
+        return {
+            derived.spec.statistic_id: await async_sync_derived(self.hass, derived)
+            for derived in self._derived()
+        }
+
+    async def _async_fixed_schedule(self, daily: float) -> None:
+        """Record a new daily fixed amount: from the start when the statistic is new,
+        else from the day after the last imported day (section 19)."""
+        schedule = self.store.fixed_schedule
+        if schedule and math.isclose(schedule[-1]["daily_incl_gst"], daily, abs_tol=1e-9):
+            return
+        last = self.store.last_written
+        start = (
+            None
+            if not schedule or last is None
+            else nem_day_start(last + timedelta(days=1)).isoformat()
+        )
+        await self.store.async_set_fixed_schedule(
+            [*schedule, {"from": start, "daily_incl_gst": round(daily, 6)}]
+        )
+
+    async def _async_export_days(self) -> dict[str, Any]:
+        """Measure the export aggregates for imported days that lack them, or whose
+        usage changed (a revision): from the run's records, fetching the rest."""
+        assert self.allowance is not None
+        general = next(c.identifier for c in self.ctx.channels if c.type == CHANNEL_GENERAL)
+        feed_in = next(c.identifier for c in self.ctx.channels if c.type == CHANNEL_FEED_IN)
+        stored = self.store.export_days
+        boundary, last = self.store.retention_boundary, self.store.last_written
+        missing = [
+            day
+            for day in (_days(boundary, last) if boundary and last else ())
+            if (self.store.day(day) or {}).get("status") == STATUS_IMPORTED
+            and day.isoformat() not in stored
+        ]
+        changed = [
+            day
+            for day, records in self._cache.items()
+            if records
+            and day.isoformat() in stored
+            and stored[day.isoformat()]["fingerprint"] != importer.revision_fingerprint(records)
+        ]
+        measured: list[str] = []
+        loss_factors = [v["loss_factor"] for _, v in sorted(stored.items()) if v["loss_factor"]]
+        fallback = loss_factors[-1] if loss_factors else None
+        for day in sorted({*missing, *changed}):
+            records = await self._async_records_for(day, last or day)
+            record = export_day_aggregates(
+                records,
+                day,
+                self.allowance,
+                channels=(general, feed_in),
+                fallback_loss_factor=fallback,
+            )
+            if record is None:
+                continue
+            fallback = record["loss_factor"] or fallback
+            await self.store.async_set_export_day(day, record)
+            measured.append(day.isoformat())
+        return {"measured": measured}
+
+    def allowance_summary(self, day: date) -> dict[str, Any]:
+        """The allowance figures for the period containing ``day``."""
+        assert self.allowance is not None
+        first, last = self.allowance.period_for(day)
+        imported = [
+            d
+            for d in _days(first, last)
+            if (self.store.day(d) or {}).get("status") == STATUS_IMPORTED
+        ]
+        return export_period_summary(self.allowance, self.store.export_days, day, imported)
 
     async def _async_secondary(self, info: dict[str, Any]) -> dict[str, Any]:
         results: dict[str, Any] = {}
@@ -1407,23 +1542,6 @@ class AmberManager:
             raise
         tail = rewriting or (state.last_written is not None and day <= state.last_written)
         estimated = sum(1 for r in records if r.quality == "estimated")
-        if chain.fixed is not None:
-            assert self.bill is not None
-            spec = chain.fixed
-            hourly = importer.hourly_amounts({spec.channel: by_channel[spec.channel]}, [spec], day)[
-                spec.statistic_id
-            ]
-            fixed = self.bill.daily_fixed_incl_gst
-            await self._async_write_sum_chain(
-                chain,
-                day,
-                spec,
-                [amount + fixed / importer.DAY_HOURS for amount in hourly],
-                tail=tail,
-                details={"fixed_incl_gst": round(fixed, 6)},
-            )
-            await self._async_track_revision(day, records, estimated)
-            return "written"
         if chain.sensor is None:
             specs = [s for s in chain.mean_specs if s.channel in by_channel]
             rows = chains.price_rows(records, specs, day)
@@ -1765,6 +1883,9 @@ class AmberManager:
             "yesterday": yesterday,
             "yesterday_totals": totals,
             "bill": self.bill_estimate(nem_today()) if self.bill_available else None,
+            "allowance": self.allowance_summary(nem_today() - timedelta(days=1))
+            if self.allowance_active
+            else None,
         }
 
     @property
@@ -1777,11 +1898,20 @@ class AmberManager:
         assert self.bill is not None
         start, end = cycle_for(cycle_day, self.bill.billing_day)
         days = {day: self.store.day(day) for day in _days(start, end)}
-        return estimate(
+        export = (
+            export_day_refunds(self.allowance, self.store.export_days, start, end)
+            if self.allowance_active and self.allowance is not None
+            else None
+        )
+        result = estimate(
             self.bill,
             days,
             list(self.ctx.specs),
             self.ctx.channels,
             cycle_day=cycle_day,
             today=nem_today(),
+            export=export,
         )
+        if export is not None:
+            result["export_allowance"] = self.allowance_summary(cycle_day)
+        return result

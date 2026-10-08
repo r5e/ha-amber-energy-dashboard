@@ -132,6 +132,8 @@ Open the integration's device to see its status:
   You rarely need it.
 - **Re-check retention** (under Diagnostic) finds the oldest day Amber still holds again
   from scratch (at most 8 API calls). The daily check normally follows it by itself.
+- With the **bill estimate** or the **export allowance** turned on (section 5), their
+  sensors appear here too.
 - **Download diagnostics** produces a file for bug reports. Your API key and NMI are
   redacted from it.
 
@@ -176,9 +178,10 @@ because only complete imported days count, and it leaves out one-off charges suc
 fees. Leave the billing day empty to turn it off.
 
 **Cost including fixed charges** (a checkbox in the same step) adds a statistic with your
-import cost plus the fixed charges, for an Energy dashboard whose totals match the bill. It
-covers your whole history. If you change the charges later, the new amounts apply from the
-day after the last imported day; earlier days keep the old ones.
+import cost plus the fixed charges, for an Energy dashboard whose totals match the bill (see
+section 6 for where to select it). It covers your whole history. If you change the charges
+later, the new amounts apply from the day after the last imported day; earlier days keep
+the old ones.
 
 ### Export allowance (optional)
 
@@ -191,9 +194,7 @@ allowance** in the options menu and enter the allowance per day.
 It adds the sensors **Export allowance used**, **Export allowance remaining** and **Export
 charge after allowance**, uses the allowance in the bill estimate, and writes an
 **adjusted compensation** statistic. To show the adjusted earnings in the Energy dashboard,
-go to **Settings > Dashboards > Energy**, edit the grid connection, and under **Return to
-grid** choose **Use an entity tracking the total received** with the "compensation (export
-allowance applied)" statistic.
+select it as the grid connection's compensation (section 6).
 
 ### Own energy sensors (optional)
 
@@ -211,14 +212,24 @@ Dashboard"** appears. Its **Fix** adds them when there is no grid connection, po
 the [migration guide](MIGRATION.md) when the YAML kit is in use, or lets you dismiss it.
 
 To set it up by hand, go to **Settings > Dashboards > Energy**, and in the **Electricity
-grid** section, add or edit a grid connection:
+grid** section, add or edit a grid connection. For cost and compensation, always choose
+**Use an entity tracking the total costs** (or **the total received**), never "current
+price". Choose the statistics like this (`<ch>` is the channel, for example `e1`):
 
-- **Energy imported from grid:** the integration's **general** energy statistic.
-- **Energy exported to grid:** its **feed-in** energy statistic.
-- **Cost tracking:** choose **Use an entity tracking the total costs**, and select the
-  **general cost** statistic. Feed-in compensation is set the same way, if offered.
+| Field | Statistic | When |
+|---|---|---|
+| Grid consumption | general `…_<ch>_energy` | Always |
+| Cost | general `…_<ch>_cost` | The default: your usage at Amber's billed prices |
+| Cost | `…_<ch>_cost_incl_fixed` ("import cost including fixed charges") | If you turned it on under **Bill estimate** and want the dashboard's cost to match your bill. It already includes a controlled load's cost, so then leave the controlled-load connection's cost empty |
+| Return to grid | feed-in `…_<ch>_energy` | Always, if you export |
+| Compensation | feed-in `…_<ch>_compensation` | The default: your feed-in earnings as Amber's data pays them |
+| Compensation | `…_<ch>_compensation_adjusted` ("compensation (export allowance applied)") | With the **Export allowance** on (two-way tariffs such as N61): matches the export credit on your bill |
+| Controlled load | a second grid connection: controlled-load `…_<ch>_energy`, cost `…_<ch>_cost` | If you have a controlled load (leave its cost empty with the cost including fixed charges, as above) |
 
-Give the connection a clear display name, such as "Amber grid".
+The optional statistics cover your whole history, so switching to them also changes how
+past days are shown. "Add to the Energy dashboard" and the Repairs fix use the default
+statistics; switch to the optional ones by hand. Give the connection a clear display name,
+such as "Amber grid".
 
 ## 7. Migrating from the YAML kit
 

@@ -21,8 +21,11 @@ All notable changes to this project are recorded here. The format follows
 ### Changed
 
 - **Bill estimate charges as on the Amber bill:** **Daily supply charge** (the summary's
-  "Network Daily Supply Charges" rate, which includes metering), **Amber subscription** and
-  **Other daily charges**, all excluding GST, with descriptions of where to find them.
+  "Network Daily Supply Charges" rate, which includes metering), **Amber subscription**
+  (from the Amber Fees; 0 if it is currently free, for example a first-year offer) and
+  **Other daily charges** (optional, default 0), all in $ per day excluding GST, with help
+  text on where to find each. The daily supply charge and the subscription have no
+  default and must be entered.
   rc1's network, metering and subscription values are migrated automatically (network +
   metering become the daily supply charge); the estimate is unchanged.
 

@@ -188,23 +188,23 @@ the old ones.
 <!-- IMAGE PLACEHOLDER: docs/images/bill-summary.png - an annotated Amber bill charges
      summary, marking the billing period, the "Network Daily Supply Charges" line and its
      rate. To follow. -->
-<!-- IMAGE PLACEHOLDER: docs/images/bill-amber-fees.png - an annotated Amber fees section,
-     marking the membership (subscription) rate per day. To follow. -->
+<!-- IMAGE PLACEHOLDER: docs/images/bill-amber-fees.png - an annotated Amber Fees section,
+     marking the subscription rate per day. To follow. -->
 
 *(Annotated bill pictures are to follow.)*
 
-- **Billing day:** the first day of the period your bill covers. For a bill for 28 August
-  to 27 September, the billing day is **28**.
-- **Daily supply charge:** in the bill's **charges summary**, the **Network Daily Supply
-  Charges** line, as a rate in $ per day. This rate **already includes metering**, so
-  don't add the separate metering line on the bill again. Enter it **excluding GST**, as
-  printed (for example 1.0871).
-- **Amber subscription:** in the **Amber fees**, the membership fee as a rate in $ per day,
-  **excluding GST** (for example 0.7471). If your bill shows a monthly fee instead, divide
-  it by the days in the bill's period.
-- **Other daily charges:** any other fixed charge per day on the bill, excluding GST.
-  Leave it empty if there is none.
-- **GST:** 10 % in Australia. The bill adds GST to these charges; the integration does the
+- **Billing day:** the first day of your bill period. For "28 Aug – 27 Sep", enter
+  **28**.
+- **Daily supply charge** ($ per day, excluding GST): the **Network Daily Supply Charges**
+  rate in your bill's **charges summary** (for example 1.0871). It **already includes
+  metering**, so don't add the metering line separately. *(Picture: bill-summary.png.)*
+- **Amber subscription** ($ per day, excluding GST): from your bill's **Amber Fees**
+  section (for example 0.7471). **Enter 0 if your subscription is currently free** (for
+  example a first-year offer), and update it when the offer ends. *(Picture:
+  bill-amber-fees.png.)*
+- **Other daily charges** ($ per day, excluding GST): any other fixed daily charge on your
+  bill. Optional; 0 by default.
+- **GST:** 10 % by default. The bill adds GST to these charges; the integration does the
   same. Amber's usage figures already include GST, and export credits carry none.
 - **Not included:** one-off charges, such as card payment fees.
 

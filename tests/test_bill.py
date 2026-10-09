@@ -589,3 +589,77 @@ async def test_newer_entry_version_is_refused(
 
     entry = MockConfigEntry(domain=DOMAIN, version=2, data={})
     assert await async_migrate_entry(hass, entry) is False
+
+
+async def test_subscription_is_required_and_may_be_zero(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The daily supply charge and the Amber subscription have no default: with a billing
+    day they must be entered. 0 is valid (a free first-year subscription)."""
+    _preload_store(hass_storage, retention_days=10)
+    entry = await _setup_entry(
+        hass, aioclient_mock, FakeAmber(TODAY - timedelta(days=60), YESTERDAY)
+    )
+    await _run(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "bill"}
+    )
+    suggested = {
+        str(k): k.description["suggested_value"]
+        for k in flow["data_schema"].schema
+        if k.description and "suggested_value" in k.description
+    }
+    assert suggested == {"other_daily": 0.0, CONF_GST_PERCENT: 10.0}  # no charge defaults
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {CONF_BILLING_DAY: 20, "daily_supply": 1.0871}
+    )
+    assert flow["errors"] == {"amber_subscription": "charge_required"}
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {CONF_BILLING_DAY: 20, "daily_supply": 1.0871, "amber_subscription": 0}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["amber_subscription"] == 0.0
+    attrs = hass.states.get(f"{SENSOR}bill_to_date").attributes
+    assert "amber_subscription" not in attrs["lines"]
+    days = [date(2026, 9, d) for d in range(20, 26)]
+    cost = math.fsum(_day_money(d)[0] for d in days)
+    comp = math.fsum(_day_money(d)[1] for d in days)
+    state = hass.states.get(f"{SENSOR}bill_to_date")
+    assert float(state.state) == pytest.approx(cost - comp + 1.0871 * 1.1 * 6, abs=0.006)
+
+
+@pytest.mark.parametrize(
+    ("allowance", "credit_line", "total"), [(False, -2.1238, 168.96), (True, -5.3749, 165.71)]
+)
+def test_september_acceptance_figures(allowance: bool, credit_line: float, total: float) -> None:
+    """The September 2026 cycle with the migrated fields (daily supply 1.0871, Amber
+    subscription 0.7471, GST 10 %), from day totals that add up to the real cycle's:
+    usage $108.542390, compensation $2.123809, export penalty $3.251076 (all refunded
+    within the allowance). Without the allowance $168.96, with it $165.71."""
+    settings = bill_mod.BillSettings(
+        28,
+        bill_mod.migrate_charges(
+            {"network_daily": 0.7019, "metering_daily": 0.3852, "subscription_daily": 0.7471}
+        ),
+    )
+    assert settings.charges == {"daily_supply": 1.0871, "amber_subscription": 0.7471}
+    cycle = [date(2026, 8, 28) + timedelta(days=i) for i in range(31)]
+    days = {d: _record(108.542390 / 31, 2.123809 / 31) for d in cycle}
+    export = {d: (3.251076 / 31, 3.251076 / 31) for d in cycle} if allowance else None
+    result = bill_mod.estimate(
+        settings,
+        days,
+        build_specs(SITE_ID, CHANNELS),
+        CHANNELS,
+        cycle_day=date(2026, 9, 27),
+        today=date(2026, 10, 9),
+        export=export,
+    )
+    assert result["bill_to_date"] == total
+    assert result["lines"]["usage"] == 108.5424
+    assert result["lines"]["daily_supply"] == 37.0701
+    assert result["lines"]["amber_subscription"] == 25.4761
+    expected_credit = -(2.123809 + 3.251076) if allowance else credit_line
+    assert result["lines"]["export_credit"] == pytest.approx(expected_credit, abs=1e-4)

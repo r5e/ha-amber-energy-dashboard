@@ -579,10 +579,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     entry.async_on_unload(manager.async_stop)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
+    _schedule_startup_work(hass, entry, manager)
+    return True
+
+
+def _schedule_startup_work(
+    hass: HomeAssistant, entry: AmberConfigEntry, manager: AmberManager
+) -> None:
+    """Once Home Assistant has started: a run, or measuring missing export aggregates."""
     if manager.needs_startup_run:
         # First setup (no marker yet), or the previous run was interrupted: run as soon
         # as Home Assistant has started, rather than waiting for the next schedule slot.
-        trigger = "first_setup" if store.marker is None else "resume_after_interruption"
+        trigger = "first_setup" if manager.store.marker is None else "resume_after_interruption"
 
         async def _start_run(_hass: HomeAssistant) -> None:
             entry.async_create_background_task(
@@ -590,7 +598,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
             )
 
         entry.async_on_unload(async_at_started(hass, _start_run))
-    return True
+    else:
+        # Days lacking export aggregates (the allowance or the bill estimate was just
+        # turned on, which reloads the entry): measure them now, not at the next run.
+
+        async def _measure(_hass: HomeAssistant) -> None:
+            manager.async_start_export_measurement("setup")
+
+        entry.async_on_unload(async_at_started(hass, _measure))
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:

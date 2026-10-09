@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.0-rc2] - 2026-10-09
+
+### Fixed
+
+- **Stuck on "Waiting for Amber data" after joining Amber recently.** When the first
+  discovery of Amber's history fell back to 89 days, the import waited on each day before
+  you joined. Now:
+  - the site's start date from Amber is a lower bound for the history;
+  - a fallback is provisional and is discovered again the next day;
+  - empty days at the very start of the history are skipped at once when later days have
+    data.
+
+  A stuck install recovers by itself at its next run.
+
+### Changed
+
+- **Bill estimate charges as on the Amber bill:** **Daily supply charge** (the summary's
+  "Network Daily Supply Charges" rate, which includes metering), **Amber subscription** and
+  **Other daily charges**, all excluding GST, with descriptions of where to find them.
+  rc1's network, metering and subscription values are migrated automatically (network +
+  metering become the daily supply charge); the estimate is unchanged.
+
+### Documentation
+
+- Installation guide: "Finding these on your bill".
+
 ## [2.1.0-rc1] - 2026-10-09
 
 Release candidate for 2.1. Everything since 2.0.1. The bill estimate and the export
@@ -14,7 +40,8 @@ once a billing day is set).
 
 **Bill estimate** (options: Bill estimate)
 - Options: the billing day (1 to 28), the daily fixed charges excluding GST as named on the
-  bill (network daily, metering, Amber subscription, other), and the GST rate (10 %).
+  bill (network daily, metering, Amber subscription, other; simplified in rc2), and the
+  GST rate (10 %).
 - Sensors: **Bill to date** (with each line in its attributes), **Projected bill**, **Days
   into billing cycle** and **Average cost per day**. Cycle days are Amber's (AEST) days, as
   on the bill. Only complete imported days count; the attributes say which day the data
@@ -353,6 +380,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.1.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0-rc2
 [2.1.0-rc1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0-rc1
 [2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1
 [2.0.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0

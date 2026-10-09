@@ -7,7 +7,7 @@ The Energy dashboard then shows what Amber really billed, hour by hour.
 This is an unofficial community project. It is not affiliated with or endorsed by
 Amber Electric.
 
-> **Version 2.1.0-rc1** (release candidate; the current release is 2.0.1). Version 2
+> **Version 2.1.0-rc2** (release candidate; the current release is 2.0.1). Version 2
 > replaces the earlier YAML kit (v1) with a proper integration: set up in the UI, with no
 > YAML at all. If you use the v1 kit, see the
 > **[migration guide](docs/MIGRATION.md)**. The v1 kit itself is kept in
@@ -197,8 +197,11 @@ It catches CT calibration drift or a sensor that stopped reporting.
 ## Bill estimate (optional)
 
 Under **Configure > Bill estimate**, enter your **billing day** (1 to 28, the first day of
-each cycle on your bill), the **daily fixed charges excluding GST** as printed on your bill
-(network daily charge, metering, Amber subscription, other) and the **GST rate** (10 %).
+the period your bill covers) and, from your Amber bill's charges summary, excluding GST: the
+**daily supply charge** (the "Network Daily Supply Charges" rate, which already includes
+metering), the **Amber subscription** per day, any **other daily charges**, and the **GST
+rate** (10 %). The installation guide shows
+[where to find these on your bill](docs/INSTALL.md#finding-these-on-your-bill).
 Four sensors then show, for the current cycle:
 
 | Sensor | Meaning |
@@ -427,7 +430,8 @@ logger:
   than the bill. Turn on the [export allowance](#export-allowance-two-way-network-tariffs)
   to correct for it. Import costs match the bill to the cent.
 - *Supply and subscription charges are missing.* Amber's usage data covers usage only.
-  Daily network supply, metering and Amber's subscription are separate charges on your
+  The daily supply charge (network and metering) and Amber's subscription are separate
+  charges on your
   bill.
 - *Today and yesterday are missing.* Amber publishes each day about a day late. Yesterday
   normally appears in the morning.

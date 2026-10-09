@@ -53,4 +53,5 @@ async def async_get_config_entry_diagnostics(
         },
         "status": runtime.manager.status,
         "display_status": runtime.manager.display_status,
+        "export_measurement": runtime.manager.last_export_measurement,
     }

@@ -258,6 +258,10 @@ class AmberManager:
         self.after_run: Callable[[], Awaitable[None]] | None = None
         """Called after each run (the Energy dashboard check, section 18)."""
         self._final_attempt = False
+        self._no_feed_in: set[date] = set()
+        """Imported days found without feed-in records (nothing to measure; not refetched)."""
+        self.last_export_measurement: dict[str, Any] | None = None
+        """The last measurement of export aggregates outside a run (diagnostics)."""
 
     @property
     def _ids(self) -> list[str]:
@@ -307,12 +311,17 @@ class AmberManager:
         self.usage_mode = usage_mode
         self.price_series = price_series
         self.own_fallback = own_fallback
+        changed = (bill, allowance) != (self.bill, self.allowance)
         self.bill = bill
         self.allowance = allowance
         self.async_stop()
         self._schedule_next()
         self._publish()
-        if self._derived():
+        if changed and self.export_unmeasured:
+            # The allowance or the bill estimate changed: measure the days lacking export
+            # aggregates now (this also syncs the derived statistics).
+            self.async_start_export_measurement("options")
+        elif self._derived():
             # New charges or allowance settings: bring the derived statistics in line.
             self.entry.async_create_background_task(
                 self.hass, self.async_sync_derived(), f"{DOMAIN} derived statistics"
@@ -346,6 +355,9 @@ class AmberManager:
             _LOGGER.debug("Caught up; skipping scheduled attempt")
             self._delete_issue(ISSUE_BEHIND)
             self._publish()
+            # The day is imported, but days may still lack export aggregates (the
+            # allowance turned on since the last run).
+            await self.async_measure_export("scheduled")
         else:
             await self.async_run("scheduled (final)" if final else "scheduled", final=final)
         if self.after_scheduled is not None:
@@ -1409,13 +1421,8 @@ class AmberManager:
         general = next(c.identifier for c in self.ctx.channels if c.type == CHANNEL_GENERAL)
         feed_in = next(c.identifier for c in self.ctx.channels if c.type == CHANNEL_FEED_IN)
         stored = self.store.export_days
-        boundary, last = self.store.retention_boundary, self.store.last_written
-        missing = [
-            day
-            for day in (_days(boundary, last) if boundary and last else ())
-            if (self.store.day(day) or {}).get("status") == STATUS_IMPORTED
-            and day.isoformat() not in stored
-        ]
+        last = self.store.last_written
+        missing = self.export_unmeasured
         changed = [
             day
             for day, records in self._cache.items()
@@ -1436,11 +1443,70 @@ class AmberManager:
                 fallback_loss_factor=fallback,
             )
             if record is None:
+                self._no_feed_in.add(day)
                 continue
             fallback = record["loss_factor"] or fallback
             await self.store.async_set_export_day(day, record)
             measured.append(day.isoformat())
         return {"measured": measured}
+
+    @property
+    def export_unmeasured(self) -> list[date]:
+        """Imported days lacking export aggregates, while the allowance applies (days
+        before the feed-in channel existed, or found without feed-in records, excluded)."""
+        if not self.allowance_active:
+            return []
+        feed_in = next(c.identifier for c in self.ctx.channels if c.type == CHANNEL_FEED_IN)
+        stored = self.store.export_days
+        boundary, last = self.store.retention_boundary, self.store.last_written
+        return [
+            day
+            for day in (_days(boundary, last) if boundary and last else ())
+            if (self.store.day(day) or {}).get("status") == STATUS_IMPORTED
+            and day.isoformat() not in stored
+            and day not in self._no_feed_in
+            and self._channel_active(feed_in, day)
+        ]
+
+    @callback
+    def async_start_export_measurement(self, trigger: str) -> None:
+        """Measure the days lacking export aggregates in the background (no import run)."""
+        if self.export_unmeasured:
+            self.entry.async_create_background_task(
+                self.hass, self.async_measure_export(trigger), f"{DOMAIN} export aggregates"
+            )
+
+    async def async_measure_export(self, trigger: str) -> dict[str, Any] | None:
+        """Measure the days lacking export aggregates outside an import run: under the
+        run lock, with a run budget; then sync the derived statistics. None when there is
+        nothing to measure (no calls). API errors are logged; the next run retries."""
+        if not self.export_unmeasured:
+            return None
+        async with self.ctx.lock:
+            if not self.export_unmeasured:  # a run measured them meanwhile
+                return None
+            budget = self.ctx.client.start_run(RunBudget())
+            self._cache = {}
+            result: dict[str, Any] = {"trigger": trigger, "started": _utcnow().isoformat()}
+            try:
+                result.update(await self._async_export_days())
+                if derived := await self._async_sync_derived_locked():
+                    result["derived"] = derived
+            except AmberError as err:
+                result["error"] = f"{type(err).__name__}: {err}"
+                _LOGGER.warning("Measuring the export aggregates (%s) stopped: %s", trigger, err)
+            finally:
+                self.ctx.client.end_run()
+                self._cache = {}
+            result["calls"] = dict(budget.calls)
+            self.last_export_measurement = result
+            self._publish()
+            _LOGGER.info(
+                "Export aggregates measured (%s): %d day(s)",
+                trigger,
+                len(result.get("measured", [])),
+            )
+        return result
 
     def allowance_summary(self, day: date) -> dict[str, Any]:
         """The allowance figures for the period containing ``day``."""

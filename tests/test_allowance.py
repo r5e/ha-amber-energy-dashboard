@@ -9,6 +9,7 @@ component (-1.86 c in solarSponge, +3.47 c in peak).
 from datetime import date, datetime, timedelta
 import math
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -20,6 +21,7 @@ from custom_components.amber_energy_dashboard import (
     allowance_from_options,
     bill_from_options,
     export as export_mod,
+    manager as manager_mod,
 )
 from custom_components.amber_energy_dashboard.api import _parse_usage
 from custom_components.amber_energy_dashboard.const import (
@@ -31,6 +33,9 @@ from custom_components.amber_energy_dashboard.const import (
     CONF_SCHEDULE_MODE,
     CONF_USAGE_MODE,
     DOMAIN,
+)
+from custom_components.amber_energy_dashboard.diagnostics import (
+    async_get_config_entry_diagnostics,
 )
 from custom_components.amber_energy_dashboard.importer import nem_day_start
 
@@ -557,9 +562,6 @@ async def test_days_without_feed_in_and_pruning(
 ) -> None:
     """A day without feed-in records (a channel added later) has no aggregates; the
     stored aggregates are pruned like the day records."""
-    from unittest.mock import patch  # noqa: PLC0415
-
-    from custom_components.amber_energy_dashboard import manager as manager_mod  # noqa: PLC0415
     from custom_components.amber_energy_dashboard.storage import (  # noqa: PLC0415
         MAX_DAY_ENTRIES,
     )
@@ -573,3 +575,188 @@ async def test_days_without_feed_in_and_pruning(
         await store.async_set_export_day(first + timedelta(days=i), {"i": i})
     assert len(store.export_days) == MAX_DAY_ENTRIES
     assert min(store.export_days) == (first + timedelta(days=2)).isoformat()
+
+
+# --- measuring without an import run (2.1.0) ---------------------------------------------
+
+
+async def _options_step(hass: HomeAssistant, entry: Any, step: str, values: dict) -> None:
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": step}
+    )
+    await hass.config_entries.options.async_configure(flow["flow_id"], values)
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+def _used(hass: HomeAssistant) -> float:
+    return float(hass.states.get(f"{SENSOR}export_allowance_used").state)
+
+
+async def test_turning_the_allowance_on_measures_without_a_run(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The production report: with the day already imported, turning the allowance on
+    measured nothing until a run (0.0 used). Now the reload measures at once, in the
+    background, with no import run; the sensors and the adjusted statistic follow."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, options={CONF_ALLOWANCE: False})
+    manager = entry.runtime_data.manager
+    assert manager.store.export_days == {}
+    last_run = manager.store.last_run
+    calls = len(aioclient_mock.mock_calls)
+
+    await _options_step(hass, entry, "allowance", {CONF_ALLOWANCE: True, CONF_ALLOWANCE_KWH: 8})
+    manager = entry.runtime_data.manager
+    days = [TODAY - timedelta(days=d) for d in range(10, 0, -1)]
+    assert sorted(manager.store.export_days) == [d.isoformat() for d in days]
+    assert manager.store.last_run == last_run  # no import run
+    measurement = manager.last_export_measurement
+    assert measurement["trigger"] == "setup"
+    assert measurement["measured"] == [d.isoformat() for d in days]
+    assert ADJUSTED in measurement["derived"]
+    # /sites at the reload, then two 7-day windows of usage.
+    assert len(aioclient_mock.mock_calls) - calls == 1 + measurement["calls"]["sites_usage"] == 3
+    cycle = [d for d in days if d >= date(2026, 9, 20)]
+    assert _used(hass) == pytest.approx(math.fsum(_window_kwh(d) for d in cycle), abs=1e-3)
+    rows = await _rows(hass, [ADJUSTED])
+    assert len(rows[ADJUSTED]) == 10 * 24
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert diag["export_measurement"]["measured"] == measurement["measured"]
+
+    # A restart with every day measured makes no further calls.
+    calls = len(aioclient_mock.mock_calls)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert len(aioclient_mock.mock_calls) - calls == 1  # /sites only
+    assert entry.runtime_data.manager.last_export_measurement is None
+
+
+async def test_changing_the_allowance_measures_missing_days(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A change in the options (applied without a reload) measures the days lacking
+    aggregates; a change with nothing to measure makes no calls."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=3)
+    manager = entry.runtime_data.manager
+    calls = len(aioclient_mock.mock_calls)
+    await _options_step(hass, entry, "allowance", {CONF_ALLOWANCE: True, CONF_ALLOWANCE_KWH: 6})
+    assert manager is entry.runtime_data.manager  # applied in place
+    assert manager.allowance.allowance_kwh_per_day == 6.0
+    assert len(aioclient_mock.mock_calls) == calls
+    assert manager.last_export_measurement is None
+
+    manager.store.export_days.clear()  # as after the allowance was turned on
+    await _options_step(hass, entry, "allowance", {CONF_ALLOWANCE: True, CONF_ALLOWANCE_KWH: 7})
+    assert manager.last_export_measurement["trigger"] == "options"
+    assert len(manager.store.export_days) == 3
+    assert len(aioclient_mock.mock_calls) - calls == 1
+
+
+async def test_bill_change_measures_missing_days(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Changing the bill estimate also measures the days lacking aggregates."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=3)
+    manager = entry.runtime_data.manager
+    manager.store.export_days.clear()
+    await _options_step(hass, entry, "bill", {**BILL, CONF_BILLING_DAY: 21})
+    assert manager.bill.billing_day == 21
+    assert manager.last_export_measurement["trigger"] == "options"
+    assert len(manager.store.export_days) == 3
+
+
+async def test_skipped_scheduled_attempt_measures_missing_days(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A scheduled retry that skips because the day is imported still measures the days
+    lacking aggregates (no import run); with nothing missing it makes no calls."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=4)
+    manager = entry.runtime_data.manager
+    assert manager.caught_up
+    last_run = manager.store.last_run
+    manager.store.export_days.clear()
+    calls = len(aioclient_mock.mock_calls)
+    await manager._async_scheduled(False)
+    assert manager.store.last_run == last_run
+    assert manager.last_export_measurement["trigger"] == "scheduled"
+    assert len(manager.store.export_days) == 4
+    assert len(aioclient_mock.mock_calls) - calls == 1
+    assert _used(hass) > 0
+
+    calls = len(aioclient_mock.mock_calls)
+    manager.last_export_measurement = None
+    await manager._async_scheduled(False)
+    assert len(aioclient_mock.mock_calls) == calls
+    assert manager.last_export_measurement is None
+
+
+async def test_measurement_stops_on_api_errors_and_respects_the_budget(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An API error or a spent rate-limit budget stops the measurement (logged, nothing
+    raised); the next attempt measures the rest."""
+    fake = _fake()
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=10, fake=fake)
+    manager = entry.runtime_data.manager
+    manager.store.export_days.clear()
+
+    fake.remaining = 3  # below the reserve after the first call
+    result = await manager.async_measure_export("scheduled")
+    assert "AmberBudgetExhaustedError" in result["error"]
+    assert result["calls"] == {"sites_usage": 1}
+    assert len(manager.store.export_days) == 7  # the first window
+    assert "Measuring the export aggregates (scheduled) stopped" in caplog.text
+    assert manager.ctx.client.budget is None
+
+    fake.remaining = None
+    result = await manager.async_measure_export("scheduled")
+    assert "error" not in result
+    assert len(manager.store.export_days) == 10
+
+
+async def test_days_without_feed_in_are_not_fetched_again(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A day with no feed-in records has nothing to measure: it is not fetched again on
+    every attempt."""
+    measure = manager_mod.export_day_aggregates
+
+    def no_feed_in(records: Any, day: date, *args: Any, **kwargs: Any) -> Any:
+        return None if day == YESTERDAY else measure(records, day, *args, **kwargs)
+
+    with patch.object(manager_mod, "export_day_aggregates", no_feed_in):
+        entry = await _entry(hass, aioclient_mock, hass_storage, days=3)
+        manager = entry.runtime_data.manager
+        assert YESTERDAY.isoformat() not in manager.store.export_days
+        assert manager.export_unmeasured == []
+        calls = len(aioclient_mock.mock_calls)
+        await manager._async_scheduled(False)
+        await _run(hass)
+        assert len(aioclient_mock.mock_calls) == calls
+
+
+async def test_measurement_after_a_run_measured_meanwhile(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The measurement waits for the run lock; if the run measured the days meanwhile,
+    it does nothing. Without the allowance there is never anything to measure."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=3)
+    manager = entry.runtime_data.manager
+    manager.store.export_days.clear()
+    calls = len(aioclient_mock.mock_calls)
+    async with manager.ctx.lock:
+        manager.async_start_export_measurement("options")
+        await hass.async_block_till_done()
+        manager._no_feed_in.update(manager.export_unmeasured)  # as if measured meanwhile
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert manager.last_export_measurement is None
+    assert len(aioclient_mock.mock_calls) == calls
+
+    manager.allowance = None
+    assert manager.export_unmeasured == []
+    assert await manager.async_measure_export("scheduled") is None

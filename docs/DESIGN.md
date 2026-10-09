@@ -941,6 +941,13 @@ $3.2511) = **$5.3749**, against the bill's $5.38.
   rewrite fetches them anyway). The loss factor is the median of earned ÷ spot over
   off-period intervals with |spot| ≥ 5 c/kWh, falling back to the last measured one; a day
   with neither has no rates (`measured` false) and no refund.
+- **Measured without a run (2.1.0):** the days lacking aggregates are also measured, under
+  the run lock and with a run budget but without an import run, when the allowance or the
+  bill estimate is turned on (at the setup the reload makes) or changed in the options, and
+  at a scheduled retry that skips because the day is already imported. Nothing is fetched
+  when no day is missing. A day found without feed-in records (or before the feed-in
+  channel existed) is not fetched again. API errors stop it with a warning; the next
+  attempt continues.
 - **Refunds:** for each allowance period (billing cycle, or day), allowance = kWh per day ×
   the period's days; window exports are set against it hour by hour in time order, and the
   penalty on the part within it is refunded at that day's measured rate. Days without

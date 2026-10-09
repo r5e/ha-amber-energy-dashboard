@@ -275,6 +275,22 @@ count reported as a daily "move".
   not a boundary move. The retention value is kept (accepted in M4).
 - Days older than the boundary that return empty are marked `skipped_unavailable`, and
   the marker advances past them.
+- **Self-heal (2.1.0-rc2, from a forum report:** a new customer stuck on "Waiting for Amber
+  data" for a pre-join day at the 89-day boundary, after discovery had fallen back to
+  today − 89):
+  - **The site's start date** (`/sites` `activeFrom`) is a lower bound: the stored boundary
+    is raised to it (recorded as `site_start_applied`), and the walk never starts before
+    it. If the start day itself has no usage, discovery uses the start date rather than
+    falling back. `activeFrom` and `closedOn` are recorded in the Store (`site`, so in
+    diagnostics) and logged at setup.
+  - **A fallback boundary is provisional** (`provisional`, `needs_discovery`): discovery
+    runs again on the next run, at most once a day, until a real discovery succeeds.
+  - **Leading empty run:** while nothing has been imported, a run of empty days at the start
+    of the history followed by a day with data is skipped at once (`skipped_unavailable`,
+    no patience), and the boundary moves to that day. The retention record keeps
+    `self_heal` (when, which days, the previous method) and a warning is logged. This needs
+    no extra calls: the walk has fetched those days. Interior gaps (after something was
+    imported) keep the patience rule.
 
 **Patience.** Tracks the number of distinct calendar days on which a given date has
 returned empty. After `patience_days` (default 7), if any later day already has data
@@ -781,8 +797,11 @@ footnote, the new setup option (section 3) and the buttons (section 4).
 **Options** (options flow, a "Bill estimate" step; off until a billing day is set):
 - billing day of month, 1 to 28 (the cycle runs from that day to the day before it next
   month);
-- daily fixed charges **excluding GST**, as named fields: network daily, metering,
-  retailer subscription, other (AUD per day);
+- daily fixed charges **excluding GST**, as on the Amber bill's charges summary (rc2): the
+  **daily supply charge** (the summary's "Network Daily Supply Charges" rate, which already
+  includes metering), the **Amber subscription**, and **other daily charges** (AUD per
+  day). rc1's separate network, metering and subscription fields are migrated (config
+  entry 1.1 → 1.2: network + metering → daily supply; subscription → Amber subscription);
 - GST rate, default 10 %.
 
 **Sensors** (AUD, display only, no state class):

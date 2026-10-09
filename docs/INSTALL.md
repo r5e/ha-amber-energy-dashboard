@@ -169,10 +169,10 @@ options:
 
 ### Bill estimate (optional)
 
-Choose **Bill estimate** in the options menu, and enter your **billing day** (the first
-day of each cycle on your bill), the **daily fixed charges excluding GST** as printed on
-your bill (network daily charge, metering, Amber subscription, other), and the **GST rate**
-(10 %). The device then shows **Bill to date**, **Projected bill**, **Days into billing
+Choose **Bill estimate** in the options menu, and enter your **billing day**, the **daily
+supply charge**, the **Amber subscription** per day, any **other daily charges** (all
+excluding GST), and the **GST rate** (10 %). See [Finding these on your
+bill](#finding-these-on-your-bill) below. The device then shows **Bill to date**, **Projected bill**, **Days into billing
 cycle** and **Average cost per day** for the current cycle. The estimate runs a day behind,
 because only complete imported days count, and it leaves out one-off charges such as card
 fees. Leave the billing day empty to turn it off.
@@ -182,6 +182,31 @@ import cost plus the fixed charges, for an Energy dashboard whose totals match t
 section 6 for where to select it). It covers your whole history. If you change the charges
 later, the new amounts apply from the day after the last imported day; earlier days keep
 the old ones.
+
+#### Finding these on your bill
+
+<!-- IMAGE PLACEHOLDER: docs/images/bill-summary.png - an annotated Amber bill charges
+     summary, marking the billing period, the "Network Daily Supply Charges" line and its
+     rate. To follow. -->
+<!-- IMAGE PLACEHOLDER: docs/images/bill-amber-fees.png - an annotated Amber fees section,
+     marking the membership (subscription) rate per day. To follow. -->
+
+*(Annotated bill pictures are to follow.)*
+
+- **Billing day:** the first day of the period your bill covers. For a bill for 28 August
+  to 27 September, the billing day is **28**.
+- **Daily supply charge:** in the bill's **charges summary**, the **Network Daily Supply
+  Charges** line, as a rate in $ per day. This rate **already includes metering**, so
+  don't add the separate metering line on the bill again. Enter it **excluding GST**, as
+  printed (for example 1.0871).
+- **Amber subscription:** in the **Amber fees**, the membership fee as a rate in $ per day,
+  **excluding GST** (for example 0.7471). If your bill shows a monthly fee instead, divide
+  it by the days in the bill's period.
+- **Other daily charges:** any other fixed charge per day on the bill, excluding GST.
+  Leave it empty if there is none.
+- **GST:** 10 % in Australia. The bill adds GST to these charges; the integration does the
+  same. Amber's usage figures already include GST, and export credits carry none.
+- **Not included:** one-off charges, such as card payment fees.
 
 ### Export allowance (optional)
 
@@ -248,8 +273,9 @@ than the bill. The **Export allowance** option (section 5) corrects for it. Impo
 at the end).
 
 **My dashboard total doesn't include supply and subscription charges.**
-Amber's usage data covers usage only. Daily network supply, metering, and Amber's
-subscription are separate charges on your bill.
+Amber's usage data covers usage only. The daily supply charge (network and metering) and
+Amber's subscription are separate charges on your bill. The **Bill estimate** option
+(section 5) adds them.
 
 **Something else.**
 Download diagnostics from the integration's device page, and open an issue on GitHub with

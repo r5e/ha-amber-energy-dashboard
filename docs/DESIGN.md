@@ -799,8 +799,11 @@ footnote, the new setup option (section 3) and the buttons (section 4).
   month);
 - daily fixed charges **excluding GST**, as on the Amber bill's charges summary (rc2): the
   **daily supply charge** (the summary's "Network Daily Supply Charges" rate, which already
-  includes metering), the **Amber subscription**, and **other daily charges** (AUD per
-  day). rc1's separate network, metering and subscription fields are migrated (config
+  includes metering), the **Amber subscription** (from the Amber Fees; 0 is valid for a
+  free first-year offer), and **other daily charges** (optional, default 0), in AUD per
+  day. The daily supply charge and the subscription have no default and must be entered
+  with a billing day; GST defaults to 10 %. Every field has help text, and the step links
+  to INSTALL.md "Finding these on your bill". rc1's separate network, metering and subscription fields are migrated (config
   entry 1.1 → 1.2: network + metering → daily supply; subscription → Amber subscription);
 - GST rate, default 10 %.
 

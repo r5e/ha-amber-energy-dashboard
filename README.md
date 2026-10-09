@@ -199,8 +199,8 @@ It catches CT calibration drift or a sensor that stopped reporting.
 Under **Configure > Bill estimate**, enter your **billing day** (1 to 28, the first day of
 the period your bill covers) and, from your Amber bill's charges summary, excluding GST: the
 **daily supply charge** (the "Network Daily Supply Charges" rate, which already includes
-metering), the **Amber subscription** per day, any **other daily charges**, and the **GST
-rate** (10 %). The installation guide shows
+metering), the **Amber subscription** per day (0 if it is currently free), any **other
+daily charges**, and the **GST rate** (10 %). The installation guide shows
 [where to find these on your bill](docs/INSTALL.md#finding-these-on-your-bill).
 Four sensors then show, for the current cycle:
 

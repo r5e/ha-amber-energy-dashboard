@@ -165,6 +165,7 @@ _BILL_SCHEMA = vol.Schema(
         vol.Optional(CONF_FIXED_STATISTIC): BooleanSelector(),
     }
 )
+_REQUIRED_CHARGES = ("daily_supply", "amber_subscription")
 _BILL_KEYS = frozenset({CONF_BILLING_DAY, *CHARGES, CONF_GST_PERCENT, CONF_FIXED_STATISTIC})
 
 
@@ -529,23 +530,36 @@ class AmberOptionsFlow(OptionsFlow):
     async def async_step_bill(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """The bill estimate: billing day, daily fixed charges (ex GST), GST, statistic."""
         current = dict(self.config_entry.options)
+        errors: dict[str, str] = {}
         if user_input is not None:
-            options = {k: v for k, v in current.items() if k not in _BILL_KEYS}
+            # The daily supply charge and the subscription have no default: with a
+            # billing day they must be entered (0 is valid, for a free subscription).
             if user_input.get(CONF_BILLING_DAY):
-                options[CONF_BILLING_DAY] = int(user_input[CONF_BILLING_DAY])
-                options.update({name: float(user_input.get(name) or 0.0) for name in CHARGES})
-                options[CONF_GST_PERCENT] = float(
-                    user_input.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)
-                )
-                options[CONF_FIXED_STATISTIC] = bool(user_input.get(CONF_FIXED_STATISTIC))
-            return self.async_create_entry(data=options)
+                errors = {
+                    name: "charge_required"
+                    for name in _REQUIRED_CHARGES
+                    if user_input.get(name) is None
+                }
+            if not errors:
+                options = {k: v for k, v in current.items() if k not in _BILL_KEYS}
+                if user_input.get(CONF_BILLING_DAY):
+                    options[CONF_BILLING_DAY] = int(user_input[CONF_BILLING_DAY])
+                    options.update({name: float(user_input.get(name) or 0.0) for name in CHARGES})
+                    options[CONF_GST_PERCENT] = float(
+                        user_input.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)
+                    )
+                    options[CONF_FIXED_STATISTIC] = bool(user_input.get(CONF_FIXED_STATISTIC))
+                return self.async_create_entry(data=options)
         suggested = {
+            "other_daily": 0.0,
             CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
             **{k: v for k, v in current.items() if k in _BILL_KEYS},
+            **(user_input or {}),
         }
         return self.async_show_form(
             step_id="bill",
             data_schema=self.add_suggested_values_to_schema(_BILL_SCHEMA, suggested),
+            errors=errors,
             description_placeholders={"bill_help_url": BILL_HELP_URL},
         )
 

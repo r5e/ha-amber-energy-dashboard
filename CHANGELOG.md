@@ -4,47 +4,22 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.1.0-rc2] - 2026-10-09
+## [2.1.0] - 2026-10-10
 
-### Fixed
-
-- **Stuck on "Waiting for Amber data" after joining Amber recently.** When the first
-  discovery of Amber's history fell back to 89 days, the import waited on each day before
-  you joined. Now:
-  - the site's start date from Amber is a lower bound for the history;
-  - a fallback is provisional and is discovered again the next day;
-  - empty days at the very start of the history are skipped at once when later days have
-    data.
-
-  A stuck install recovers by itself at its next run.
-
-### Changed
-
-- **Bill estimate charges as on the Amber bill:** **Daily supply charge** (the summary's
-  "Network Daily Supply Charges" rate, which includes metering), **Amber subscription**
-  (from the Amber Fees; 0 if it is currently free, for example a first-year offer) and
-  **Other daily charges** (optional, default 0), all in $ per day excluding GST, with help
-  text on where to find each. The daily supply charge and the subscription have no
-  default and must be entered.
-  rc1's network, metering and subscription values are migrated automatically (network +
-  metering become the daily supply charge); the estimate is unchanged.
-
-### Documentation
-
-- Installation guide: "Finding these on your bill".
-
-## [2.1.0-rc1] - 2026-10-09
-
-Release candidate for 2.1. Everything since 2.0.1. The bill estimate and the export
-allowance are off until configured (the allowance turns itself on for Endeavour Energy N61
-once a billing day is set).
+Everything since 2.0.1 (release candidates rc1 and rc2 merged). The bill estimate and the
+export allowance are off until configured (the allowance turns itself on for Endeavour
+Energy N61 once a billing day is set).
 
 ### Added
 
 **Bill estimate** (options: Bill estimate)
-- Options: the billing day (1 to 28), the daily fixed charges excluding GST as named on the
-  bill (network daily, metering, Amber subscription, other; simplified in rc2), and the
-  GST rate (10 %).
+- Options, as on the Amber bill: the **billing day** (1 to 28), the **daily supply
+  charge** (the charges summary's "Network Daily Supply Charges" rate, which includes
+  metering), the **Amber subscription** (from the Amber Fees; 0 if it is currently free,
+  for example a first-year offer) and **other daily charges** (optional, default 0), all in
+  $ per day excluding GST, and the **GST rate** (10 %). The daily supply charge and the
+  subscription have no default and must be entered. Each field says where to find it on
+  the bill.
 - Sensors: **Bill to date** (with each line in its attributes), **Projected bill**, **Days
   into billing cycle** and **Average cost per day**. Cycle days are Amber's (AEST) days, as
   on the bill. Only complete imported days count; the attributes say which day the data
@@ -62,7 +37,9 @@ once a billing day is set).
   turned on once a billing day is set; other tariffs can be configured (allowance, daily or
   billing-period totalling, charged period).
 - The export charge and the peak reward are measured from Amber's data each day, by the
-  tariff period Amber gives for each interval.
+  tariff period Amber gives for each interval. Turning the allowance or the bill estimate
+  on, or changing either, measures the imported days straight away in the background,
+  without waiting for an import run.
 - Statistic **compensation (export allowance applied)**: feed-in earnings with the charge
   refunded within the allowance, over the whole history.
 - Sensors **Export allowance used**, **Export allowance remaining** and **Export charge
@@ -95,12 +72,24 @@ once a billing day is set).
   (own sensor)", linked to the site's; its reconciliation sensor is named
   "Reconciliation", with the same entity ID. After updating, the removed sensors come back
   with their old entity IDs.
+- **Stuck on "Waiting for Amber data" after joining Amber recently.** When the first
+  discovery of Amber's history fell back to 89 days, the import waited on each day before
+  you joined. Now:
+  - the site's start date from Amber is a lower bound for the history;
+  - a fallback is provisional and is discovered again the next day;
+  - empty days at the very start of the history are skipped at once when later days have
+    data.
+
+  A stuck install recovers by itself at its next run.
 - The import settings step no longer drops options set in other steps.
 
 ### Documentation
 
 - README and installation guide: the bill estimate, the export allowance, and a table of
   which statistics to select in the Energy dashboard, and when.
+- Installation guide: "Finding these on your bill", with an annotated bill; new pictures
+  of the device page, the options menu, the bill estimate and export allowance steps, and
+  the new sensors.
 - README: why an hour of yesterday's usage appears after midnight in summer (NEM days), and
   HACS's "icon not available".
 - Installation guide: the version step is now a footnote for pre-releases; the new setup
@@ -383,8 +372,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
-[2.1.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0-rc2
-[2.1.0-rc1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0-rc1
+[2.1.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0
 [2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1
 [2.0.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0
 [2.0.0-rc2]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0-rc2

@@ -49,7 +49,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
 
 E1, E1_COST, B1, B1_COMP, NET = ALL_IDS
 FIXED = f"{DOMAIN}:{SITE_ID.lower()}_e1_cost_incl_fixed"
-CHARGES = {"network_daily": 0.7019, "metering_daily": 0.3852, "subscription_daily": 0.7471}
+CHARGES = {"daily_supply": 1.0871, "amber_subscription": 0.7471}
 BILL = {CONF_BILLING_DAY: 20, **CHARGES, "other_daily": 0.0, CONF_GST_PERCENT: 10.0}
 DAILY_FIXED = sum(CHARGES.values()) * 1.1
 SENSOR = "sensor.amber_energy_dashboard_"
@@ -185,7 +185,7 @@ async def test_bill_sensors_match_the_imported_days(
     attrs = state.attributes
     assert attrs["lines"]["usage"] == pytest.approx(cost, abs=1e-4)
     assert attrs["lines"]["export_credit"] == pytest.approx(-comp, abs=1e-4)
-    assert attrs["lines"]["network_daily"] == pytest.approx(0.7019 * 6 * 1.1, abs=1e-4)
+    assert attrs["lines"]["daily_supply"] == pytest.approx(1.0871 * 6 * 1.1, abs=1e-4)
     assert (attrs["cycle_start"], attrs["cycle_end"], attrs["days_in_cycle"]) == (
         "2026-09-20",
         "2026-10-19",
@@ -355,11 +355,11 @@ async def test_options_turn_on_change_and_turn_off(
         if key.description and "suggested_value" in key.description
     }
     assert suggested[CONF_BILLING_DAY] == 24
-    assert suggested["network_daily"] == 0.7019
+    assert suggested["daily_supply"] == 1.0871
     await hass.config_entries.options.async_configure(flow["flow_id"], {})
     await hass.async_block_till_done()
     assert CONF_BILLING_DAY not in entry.options
-    assert "network_daily" not in entry.options
+    assert "daily_supply" not in entry.options
     assert hass.states.get(f"{SENSOR}bill_to_date") is None
     assert (
         er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{SITE_ID}_bill_to_date") is None
@@ -401,7 +401,7 @@ async def test_cost_including_fixed_charges_statistic(
         flow["flow_id"], {"next_step_id": "bill"}
     )
     await hass.config_entries.options.async_configure(
-        flow["flow_id"], {**BILL, "network_daily": 1.7019, CONF_FIXED_STATISTIC: True}
+        flow["flow_id"], {**BILL, "daily_supply": 2.0871, CONF_FIXED_STATISTIC: True}
     )
     await hass.async_block_till_done(wait_background_tasks=True)
     await _run(hass)
@@ -533,3 +533,56 @@ def test_no_fixed_statistic_without_a_general_channel() -> None:
     assert spec is not None
     assert spec.statistic_id == FIXED
     assert spec.name == "Amber import cost including fixed charges"
+
+
+async def test_rc1_charges_migrate_to_the_bill_summary_fields(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """2.1.0-rc1's options (network, metering and subscription) are folded into the daily
+    supply charge and the Amber subscription; other daily charges are kept; the estimate
+    is unchanged."""
+    _preload_store(hass_storage, retention_days=10)
+    old = {
+        CONF_SCHEDULE_MODE: "automatic",
+        CONF_BILLING_DAY: 20,
+        "network_daily": 0.7019,
+        "metering_daily": 0.3852,
+        "subscription_daily": 0.7471,
+        "other_daily": 0.1,
+        CONF_GST_PERCENT: 10.0,
+    }
+    entry = await _setup_entry(
+        hass, aioclient_mock, FakeAmber(TODAY - timedelta(days=60), YESTERDAY), options=old
+    )
+    assert entry.minor_version == 2
+    assert entry.options == {
+        CONF_SCHEDULE_MODE: "automatic",
+        CONF_BILLING_DAY: 20,
+        "daily_supply": 1.0871,
+        "amber_subscription": 0.7471,
+        "other_daily": 0.1,
+        CONF_GST_PERCENT: 10.0,
+    }
+    await _run(hass)
+    await hass.async_block_till_done()
+    lines = hass.states.get(f"{SENSOR}bill_to_date").attributes["lines"]
+    assert lines["daily_supply"] == pytest.approx((0.7019 + 0.3852) * 6 * 1.1, abs=1e-4)
+    assert lines["amber_subscription"] == pytest.approx(0.7471 * 6 * 1.1, abs=1e-4)
+    assert lines["other_daily"] == pytest.approx(0.1 * 6 * 1.1, abs=1e-4)
+
+
+def test_migrate_charges_without_rc1_fields() -> None:
+    options = {CONF_BILLING_DAY: 28, "daily_supply": 1.0}
+    assert bill_mod.migrate_charges(options) == options
+    assert bill_mod.migrate_charges({"metering_daily": 0.4}) == {"daily_supply": 0.4}
+
+
+async def test_newer_entry_version_is_refused(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock
+) -> None:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: PLC0415
+
+    from custom_components.amber_energy_dashboard import async_migrate_entry  # noqa: PLC0415
+
+    entry = MockConfigEntry(domain=DOMAIN, version=2, data={})
+    assert await async_migrate_entry(hass, entry) is False

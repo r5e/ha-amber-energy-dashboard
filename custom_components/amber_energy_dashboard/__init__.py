@@ -7,6 +7,7 @@ Milestone 3: Store, Guard 1, retention discovery, scheduled catch-up and display
 import asyncio
 from dataclasses import dataclass
 from datetime import date
+import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -34,7 +35,7 @@ from .api import (
     AmberServerError,
     Site,
 )
-from .bill import CHARGES, DEFAULT_GST_PERCENT, BillSettings
+from .bill import CHARGES, DEFAULT_GST_PERCENT, BillSettings, migrate_charges
 from .const import (
     ATTR_ACKNOWLEDGE_UNVERIFIED,
     ATTR_CONFIG_ENTRY_ID,
@@ -104,6 +105,8 @@ from .migration import (
 from .schedule import ScheduleConfig, parse_times
 from .statistics import ChannelConfig, build_specs, own_cost_spec
 from .storage import AmberStore, async_forget_chain
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
@@ -468,7 +471,19 @@ def _resolve_entry(hass: HomeAssistant, entry_id: str | None) -> AmberConfigEntr
 
 
 async def _async_detect_tariff(store: AmberStore, site: Site) -> TwoWayTariff | None:
-    """The known two-way tariff from this setup's /sites answer; recorded in the Store."""
+    """The known two-way tariff from this setup's /sites answer; recorded in the Store,
+    with the site's start and close dates (the start date bounds the retention)."""
+    dates = {
+        "active_from": site.active_from.isoformat() if site.active_from else None,
+        "closed_on": site.closed_on.isoformat() if site.closed_on else None,
+    }
+    if dates != store.site:
+        _LOGGER.info(
+            "Site active from %s%s",
+            dates["active_from"] or "(not given)",
+            f", closed on {dates['closed_on']}" if dates["closed_on"] else "",
+        )
+        await store.async_set_site(dates)
     tariff = detect_tariff(site.network, [c.tariff for c in site.channels])
     await store.async_set_tariff(
         {
@@ -596,6 +611,19 @@ async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
     manager.async_update_settings(*args, **kwargs)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
+    """1.1 -> 1.2: fold rc1's network, metering and subscription charges into the daily
+    supply charge and the Amber subscription (the bill estimate's figures are unchanged)."""
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        options = migrate_charges(entry.options)
+        if options != dict(entry.options):
+            _LOGGER.info("Bill estimate charges migrated to the daily supply charge")
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:

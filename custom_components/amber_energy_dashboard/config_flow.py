@@ -212,6 +212,9 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Amber Energy Dashboard."""
 
     VERSION = 1
+    MINOR_VERSION = 2
+    """1.2 (2.1.0-rc2): the bill estimate's charges as on the Amber bill (daily supply,
+    Amber subscription, other)."""
 
     def __init__(self) -> None:
         """Initialise flow state."""

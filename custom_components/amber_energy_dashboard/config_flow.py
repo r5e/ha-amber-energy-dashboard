@@ -147,6 +147,10 @@ def _money() -> NumberSelector:
     )
 
 
+BILL_HELP_URL = (
+    "https://github.com/r5e/ha-amber-energy-dashboard/blob/main/docs/INSTALL.md"
+    "#finding-these-on-your-bill"
+)
 _BILL_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_BILLING_DAY): NumberSelector(
@@ -542,6 +546,7 @@ class AmberOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="bill",
             data_schema=self.add_suggested_values_to_schema(_BILL_SCHEMA, suggested),
+            description_placeholders={"bill_help_url": BILL_HELP_URL},
         )
 
     async def async_step_allowance(

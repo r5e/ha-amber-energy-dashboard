@@ -119,7 +119,7 @@ days). That takes a minute or two and about 15 API calls.
 
 Open the integration's device to see its status:
 
-<img src="images/14-device-page.png" alt="The device page after setup" width="762">
+<img src="images/device-page.png" alt="The device page after setup" width="716">
 
 - **Import status** reads **Up to date** when everything is imported.
 - **Last imported date** is normally yesterday, because Amber publishes each day's usage
@@ -133,7 +133,9 @@ Open the integration's device to see its status:
 - **Re-check retention** (under Diagnostic) finds the oldest day Amber still holds again
   from scratch (at most 8 API calls). The daily check normally follows it by itself.
 - With the **bill estimate** or the **export allowance** turned on (section 5), their
-  sensors appear here too.
+  sensors appear here too:
+
+  <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="291">
 - **Download diagnostics** produces a file for bug reports. Your API key and NMI are
   redacted from it.
 
@@ -147,7 +149,7 @@ shows the entry for each site:
 On the integration's page, click the **cog** next to your site's entry to open the
 options:
 
-<img src="images/16-options-menu.png" alt="The options menu" width="575">
+<img src="images/options-menu.png" alt="The options menu" width="681">
 
 **Import settings** contains:
 
@@ -169,13 +171,17 @@ options:
 
 ### Bill estimate (optional)
 
-Choose **Bill estimate** in the options menu, and enter your **billing day**, the **daily
-supply charge**, the **Amber subscription** per day, any **other daily charges** (all
-excluding GST), and the **GST rate** (10 %). See [Finding these on your
-bill](#finding-these-on-your-bill) below. The device then shows **Bill to date**, **Projected bill**, **Days into billing
-cycle** and **Average cost per day** for the current cycle. The estimate runs a day behind,
-because only complete imported days count, and it leaves out one-off charges such as card
-fees. Leave the billing day empty to turn it off.
+Choose **Bill estimate** in the options menu:
+
+<img src="images/bill-estimate-step.png" alt="The bill estimate step" width="294">
+
+Enter your **billing day**, the **daily supply charge**, the **Amber subscription** per
+day, any **other daily charges** (all excluding GST), and the **GST rate** (10 %). See
+[Finding these on your bill](#finding-these-on-your-bill) below. The device then shows
+**Bill to date**, **Projected bill**, **Days into billing cycle** and **Average cost per
+day** for the current cycle. The estimate runs a day behind, because only complete
+imported days count, and it leaves out one-off charges such as card fees. Leave the
+billing day empty to turn it off.
 
 **Cost including fixed charges** (a checkbox in the same step) adds a statistic with your
 import cost plus the fixed charges, for an Energy dashboard whose totals match the bill (see
@@ -185,23 +191,17 @@ the old ones.
 
 #### Finding these on your bill
 
-<!-- IMAGE PLACEHOLDER: docs/images/bill-summary.png - an annotated Amber bill charges
-     summary, marking the billing period, the "Network Daily Supply Charges" line and its
-     rate. To follow. -->
-<!-- IMAGE PLACEHOLDER: docs/images/bill-amber-fees.png - an annotated Amber Fees section,
-     marking the subscription rate per day. To follow. -->
-
-*(Annotated bill pictures are to follow.)*
+<img src="images/bill-fields-explained.png" alt="Where each field comes from on an Amber bill" width="568">
 
 - **Billing day:** the first day of your bill period. For "28 Aug – 27 Sep", enter
   **28**.
 - **Daily supply charge** ($ per day, excluding GST): the **Network Daily Supply Charges**
   rate in your bill's **charges summary** (for example 1.0871). It **already includes
-  metering**, so don't add the metering line separately. *(Picture: bill-summary.png.)*
+  metering**, so don't add the metering line separately (see the picture above).
 - **Amber subscription** ($ per day, excluding GST): from your bill's **Amber Fees**
   section (for example 0.7471). **Enter 0 if your subscription is currently free** (for
-  example a first-year offer), and update it when the offer ends. *(Picture:
-  bill-amber-fees.png.)*
+  example a first-year offer), and update it when the offer ends (see the picture
+  above).
 - **Other daily charges** ($ per day, excluding GST): any other fixed daily charge on your
   bill. Optional; 0 by default.
 - **GST:** 10 % by default. The bill adds GST to these charges; the integration does the
@@ -214,12 +214,16 @@ Some networks charge for exports in a midday window beyond a free allowance appl
 bill (Endeavour Energy's N61: 8 kWh a day, over the billing period). Amber's usage data
 charges every kWh in that window, so feed-in earnings look lower than on your bill. For N61
 with a billing day set, the integration turns this on by itself; otherwise choose **Export
-allowance** in the options menu and enter the allowance per day.
+allowance** in the options menu and enter the allowance per day:
+
+<img src="images/export-allowance-step.png" alt="The export allowance step, with N61 detected" width="416">
 
 It adds the sensors **Export allowance used**, **Export allowance remaining** and **Export
 charge after allowance**, uses the allowance in the bill estimate, and writes an
 **adjusted compensation** statistic. To show the adjusted earnings in the Energy dashboard,
-select it as the grid connection's compensation (section 6).
+select it as the grid connection's compensation (section 6). Turning the allowance on (or
+changing it) measures your imported days straight away, in the background, with a few API
+calls; you don't need to press **Run now**.
 
 ### Own energy sensors (optional)
 

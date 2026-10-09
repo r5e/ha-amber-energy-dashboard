@@ -1027,17 +1027,20 @@ async def test_discovery_stops_run_on_auth_or_budget(
     assert store.retention["method"].startswith("fallback")
 
 
-async def test_young_site_without_data_falls_back(
+async def test_young_site_without_data_starts_at_its_start_date(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock
 ) -> None:
-    """activeFrom is recent but has no data yet: fall back rather than guess."""
+    """activeFrom is recent but has no data yet: start at the start date (2.1.0-rc2;
+    before, this fell back to 89 days, which left new customers waiting on days before
+    they joined). The walk skips ahead once data appears."""
     start = TODAY - timedelta(days=5)
     fake = FakeAmber(TODAY + timedelta(days=1), TODAY + timedelta(days=1))
     days, info = await _discover(
         hass, aioclient_mock, fake, site=site_json(activeFrom=start.isoformat())
     )
-    assert days == 89
-    assert info["method"] == "fallback (not bracketed)"
+    assert days == 5
+    assert info["method"] == "site start date (no usage on it)"
+    assert info["provisional"] is False
     assert fake.calls == [(start, start)]
 
 

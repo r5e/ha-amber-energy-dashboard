@@ -465,7 +465,14 @@ class AmberManager:
             if outcome is not None:
                 return outcome
         retention = self.store.retention or {}
-        if self.store.retention_boundary is None or retention.get("needs_discovery"):
+        if self.store.retention_boundary is None or (
+            retention.get("needs_discovery")
+            # A provisional (fallback) boundary is rediscovered at most once a day.
+            and not (
+                retention.get("provisional")
+                and retention.get("measured_on") == nem_today().isoformat()
+            )
+        ):
             await self._async_discover_retention()
             info["retention"] = "discovered"
         elif retention.get("last_verified") != nem_today().isoformat():
@@ -625,10 +632,47 @@ class AmberManager:
     async def _async_walk(
         self, recovery: date | None, imported: list[str], info: dict[str, Any]
     ) -> dict[str, Any]:
-        today = nem_today()
-        yesterday = today - timedelta(days=1)
+        yesterday = nem_today() - timedelta(days=1)
+        start = await self._async_walk_start(recovery, yesterday, info)
+        day = start
+        leading: date | None = None
+        """The first of a run of empty days at the very start of the history."""
+        while day <= yesterday:
+            end = min(day + timedelta(days=FETCH_WINDOW_DAYS - 1), yesterday)
+            by_date = await self._async_fetch_window(day, end)
+            while day <= end:
+                day_records = by_date.get(day, [])
+                if not day_records and self.store.last_written is None:
+                    leading = leading or day  # nothing imported before it: no patience
+                elif not day_records:
+                    waiting = await self._async_patience(day, by_date, end, yesterday, info)
+                    if waiting is not None:
+                        return waiting
+                else:
+                    if leading is not None:
+                        await self._async_skip_leading(leading, day, info)
+                        leading = None
+                    mode = "recovery" if day == recovery else "catch_up"
+                    await self._async_write(day, day_records, mode)
+                    imported.append(day.isoformat())
+                day += timedelta(days=1)
+        if leading is not None:
+            return {
+                "status": STATUS_WAITING,
+                "reason": f"no usage from {leading} to {yesterday} yet",
+                "waiting_for": leading.isoformat(),
+            }
+        return {"status": STATUS_CAUGHT_UP, "reason": None}
+
+    async def _async_walk_start(
+        self, recovery: date | None, yesterday: date, info: dict[str, Any]
+    ) -> date:
+        """The day the walk starts from; days older than retention (or than the site's
+        start date) are skipped first."""
         boundary = self.store.retention_boundary
         assert boundary is not None
+        if self.active_from is not None and boundary < self.active_from:
+            boundary = self.active_from  # a boundary stored before the start date applied
         marker = self.store.marker
         if recovery is not None:
             start = recovery
@@ -655,23 +699,42 @@ class AmberManager:
             }
             _LOGGER.warning("Skipped %s to %s: older than Amber's retention", start, last)
             start = last + timedelta(days=1)
+        return start
 
-        day = start
-        while day <= yesterday:
-            end = min(day + timedelta(days=FETCH_WINDOW_DAYS - 1), yesterday)
-            by_date = await self._async_fetch_window(day, end)
-            while day <= end:
-                day_records = by_date.get(day, [])
-                if not day_records:
-                    waiting = await self._async_patience(day, by_date, end, yesterday, info)
-                    if waiting is not None:
-                        return waiting
-                else:
-                    mode = "recovery" if day == recovery else "catch_up"
-                    await self._async_write(day, day_records, mode)
-                    imported.append(day.isoformat())
-                day += timedelta(days=1)
-        return {"status": STATUS_CAUGHT_UP, "reason": None}
+    async def _async_skip_leading(self, first: date, data_day: date, info: dict[str, Any]) -> None:
+        """Self-heal: empty days at the very start of the history, followed by data, are
+        before Amber's real boundary (for example a fallback boundary, or a start date with
+        no usage yet). Skip them at once and move the boundary to the first day with data."""
+        last = data_day - timedelta(days=1)
+        days = (data_day - first).days
+        await self.store.async_mark_skipped(
+            first, last, STATUS_SKIPPED_UNAVAILABLE, "before the first day with usage data"
+        )
+        old = (self.store.retention or {}).get("method")
+        heal = {
+            "at": _utcnow().isoformat(),
+            "skipped_from": first.isoformat(),
+            "skipped_to": last.isoformat(),
+            "days": days,
+            "previous_method": old,
+        }
+        await self._store_retention(
+            data_day,
+            f"first day with data ({days} empty days before it skipped)",
+            0,
+            {},
+            previous=self.store.retention_boundary,
+            self_heal=heal,
+        )
+        info["skipped_leading"] = heal
+        _LOGGER.warning(
+            "Retention self-heal: %s to %s had no usage and nothing was imported before them; "
+            "skipped them and moved the boundary to %s (was: %s)",
+            first,
+            last,
+            data_day,
+            old,
+        )
 
     async def _async_patience(
         self,
@@ -984,13 +1047,34 @@ class AmberManager:
                     counter[0],
                     probes,
                     previous=previous,
+                    needs_discovery=True,
+                    provisional=True,
                 )
                 raise
-        if boundary is None and method == "bisection":
-            method = "fallback (not bracketed)"
+        guess = today - timedelta(days=RETENTION_FALLBACK_DAYS)
+        failed = boundary is None and method != "bisection"
+        provisional = failed
+        if boundary is None and self.active_from is not None and self.active_from > guess:
+            # A young site: start at its start date. If that day has no usage, the walk
+            # skips the empty days up to the first day with data at once.
+            boundary = self.active_from
+            method = (
+                f"{method}, from the site start date"
+                if failed
+                else "site start date (no usage on it)"
+            )
         if boundary is None:
-            boundary = today - timedelta(days=RETENTION_FALLBACK_DAYS)
-        await self._store_retention(boundary, method, counter[0], probes, previous=previous)
+            method = method if failed else "fallback (not bracketed)"
+            boundary, provisional = guess, True
+        await self._store_retention(
+            boundary,
+            method,
+            counter[0],
+            probes,
+            previous=previous,
+            needs_discovery=provisional,
+            provisional=provisional,
+        )
 
     async def _async_verify_retention(self) -> dict[str, Any]:
         """Daily check of the stored boundary date (DESIGN section 8).
@@ -1134,8 +1218,14 @@ class AmberManager:
         *,
         previous: date | None = None,
         needs_discovery: bool = False,
+        provisional: bool = False,
+        self_heal: dict[str, Any] | None = None,
     ) -> None:
         today = nem_today()
+        start_date = None
+        if self.active_from is not None and boundary < self.active_from:
+            # No usage before the site's start date (/sites activeFrom).
+            boundary, start_date = self.active_from, self.active_from.isoformat()
         info = {
             "measured_on": today.isoformat(),
             "last_verified": today.isoformat(),
@@ -1145,6 +1235,9 @@ class AmberManager:
             "boundary": boundary.isoformat(),
             "previous_boundary": None if previous is None else previous.isoformat(),
             "needs_discovery": needs_discovery,
+            "provisional": provisional,
+            "site_start_applied": start_date,
+            "self_heal": self_heal,
         }
         if previous is not None and previous != boundary:
             _LOGGER.warning(

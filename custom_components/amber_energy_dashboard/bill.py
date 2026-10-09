@@ -21,8 +21,28 @@ from typing import Any, Final
 from .const import CHANNEL_FEED_IN
 from .statistics import ChannelConfig, Metric, StatisticSpec
 
-CHARGES: Final = ("network_daily", "metering_daily", "subscription_daily", "other_daily")
-"""The named daily fixed charges, in AUD per day excluding GST."""
+CHARGES: Final = ("daily_supply", "amber_subscription", "other_daily")
+"""The named daily fixed charges, in AUD per day excluding GST, as on the Amber bill's
+charges summary: the network daily supply charge (which includes metering), Amber's
+subscription, and any other daily charge."""
+LEGACY_CHARGES: Final = {
+    "network_daily": "daily_supply",
+    "metering_daily": "daily_supply",
+    "subscription_daily": "amber_subscription",
+}
+"""2.1.0-rc1's charge options, and the option each one is added into (2.1.0-rc2)."""
+
+
+def migrate_charges(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Options with rc1's charges folded into the rc2 fields: network + metering = daily
+    supply, subscription = Amber subscription; other daily charges are kept."""
+    out = {k: v for k, v in options.items() if k not in LEGACY_CHARGES}
+    for old, new in LEGACY_CHARGES.items():
+        if old in options:
+            out[new] = round(float(out.get(new) or 0.0) + float(options[old] or 0.0), 6)
+    return out
+
+
 DEFAULT_GST_PERCENT: Final = 10.0
 MAX_BILLING_DAY: Final = 28
 _CENTS: Final = 2

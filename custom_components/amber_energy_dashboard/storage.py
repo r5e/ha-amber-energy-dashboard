@@ -151,6 +151,7 @@ class AmberStore:
             "fixed_schedule": [],
             "export_days": {},
             "tariff": None,
+            "site": None,
         }
 
     async def async_load(self) -> None:
@@ -255,6 +256,11 @@ class AmberStore:
     def tariff(self) -> dict[str, Any] | None:
         """The network and tariff codes detected from /sites at the last setup."""
         return self._data["tariff"]
+
+    @property
+    def site(self) -> dict[str, Any] | None:
+        """The site's start and close dates from /sites at the last setup."""
+        return self._data["site"]
 
     @property
     def energy_issue_dismissed(self) -> bool:
@@ -434,6 +440,11 @@ class AmberStore:
         if len(days) > MAX_DAY_ENTRIES:
             for key in sorted(days)[: len(days) - MAX_DAY_ENTRIES]:
                 del days[key]
+        await self._async_save()
+
+    async def async_set_site(self, site: dict[str, Any]) -> None:
+        """Record the site's start and close dates."""
+        self._data["site"] = site
         await self._async_save()
 
     async def async_set_tariff(self, tariff: dict[str, Any]) -> None:

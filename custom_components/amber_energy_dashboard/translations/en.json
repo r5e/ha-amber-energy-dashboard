@@ -99,22 +99,20 @@
       },
       "bill": {
         "title": "Bill estimate",
-        "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the charges as printed on your bill, excluding GST. Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
+        "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the rates from your Amber bill's charges summary, excluding GST: see [Finding these on your bill](https://github.com/r5e/ha-amber-energy-dashboard/blob/main/docs/INSTALL.md#finding-these-on-your-bill). Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
         "data": {
           "billing_day": "Billing day of the month",
-          "network_daily": "Network daily charge",
-          "metering_daily": "Metering charge",
-          "subscription_daily": "Amber subscription",
+          "daily_supply": "Daily supply charge",
+          "amber_subscription": "Amber subscription",
           "other_daily": "Other daily charges",
           "gst_percent": "GST rate",
           "fixed_statistic": "Also write cost including fixed charges"
         },
         "data_description": {
-          "billing_day": "The first day of each billing cycle (1 to 28), as on your bill. Cycle days are Amber's days (AEST), like the bill.",
-          "network_daily": "Per day, excluding GST.",
-          "metering_daily": "Per day, excluding GST.",
-          "subscription_daily": "Per day, excluding GST.",
-          "other_daily": "Any other fixed daily charge, per day, excluding GST.",
+          "billing_day": "The first day of the period your bill covers (1 to 28). Cycle days are Amber's days (AEST), like the bill.",
+          "daily_supply": "$ per day, excluding GST: the \"Network Daily Supply Charges\" rate in your bill's charges summary. It already includes metering, so don't add the metering line again.",
+          "amber_subscription": "$ per day, excluding GST: Amber's membership fee per day, from the Amber fees on your bill.",
+          "other_daily": "Optional: any other fixed daily charge on your bill, $ per day, excluding GST.",
           "gst_percent": "Added to the fixed charges (default 10 %). Amber's usage figures already include GST.",
           "fixed_statistic": "An extra statistic: the import cost plus the fixed charges (including GST), spread over each day's hours. It is built from this integration's own statistics, so it covers the whole history (including history copied from the YAML kit) with no API calls. Select it in the Energy dashboard instead of the cost if you want its totals to match your bill. Changed charges apply from the day after the last imported day."
         }

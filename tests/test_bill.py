@@ -317,6 +317,9 @@ async def test_options_turn_on_change_and_turn_off(
             flow["flow_id"], {"next_step_id": "bill"}
         )
         assert flow["step_id"] == "bill"
+        assert flow["description_placeholders"]["bill_help_url"].endswith(
+            "INSTALL.md#finding-these-on-your-bill"
+        )
         result = await hass.config_entries.options.async_configure(flow["flow_id"], values)
         await hass.async_block_till_done()
         return result

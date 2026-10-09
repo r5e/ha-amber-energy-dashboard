@@ -99,7 +99,7 @@
       },
       "bill": {
         "title": "Bill estimate",
-        "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the rates from your Amber bill's charges summary, excluding GST: see [Finding these on your bill](https://github.com/r5e/ha-amber-energy-dashboard/blob/main/docs/INSTALL.md#finding-these-on-your-bill). Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
+        "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the rates from your Amber bill's charges summary, excluding GST: see [Finding these on your bill]({bill_help_url}). Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
         "data": {
           "billing_day": "Billing day of the month",
           "daily_supply": "Daily supply charge",

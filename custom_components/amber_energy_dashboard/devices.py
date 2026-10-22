@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from .manager import OwnSensor
 
 MANUFACTURER = "Amber Electric (unofficial integration)"
-DEFAULT_TITLE = "Amber Electric"
+DEFAULT_TITLE = "Amber Energy Dashboard"
 SITE_DEVICE_NAME = "Amber Energy Dashboard (site)"
 ENTITY_ID_PREFIX = "Amber Energy Dashboard"
 """The site device's name until 2.1.0, which new site entities' IDs still start with."""

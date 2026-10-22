@@ -271,7 +271,7 @@ async def test_issue_raised_24_hours_after_first_import(
     assert issue is not None
     assert issue.is_fixable
     assert issue.severity is ir.IssueSeverity.WARNING
-    assert issue.translation_placeholders == {"entry": "Amber Electric"}
+    assert issue.translation_placeholders == {"entry": "Amber Energy Dashboard"}
 
     # Any preference that references one of the entry's statistics clears it at once
     # (the energy manager's update listener), here a device using the net cost.

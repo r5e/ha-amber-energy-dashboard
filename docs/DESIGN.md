@@ -736,10 +736,10 @@ Dashboard (site)": Home Assistant lists it under its own heading "Devices that d
 belong to a sub-entry", which the old name "Amber Energy Dashboard" did not explain.
 Entity IDs do not change: existing ones are kept by the entity registry, and new site
 entities suggest the ID 2.1.0 gave them (`<platform>.amber_energy_dashboard_<name>`, from
-the English name). The entry's default title is "Amber Electric" (the NMI is not shown);
-with several sites, "Amber Electric (…1234)", the NMI's last 4 digits. Titles the
-integration chose (including 2.1.0's "Amber <NMI>") follow the default as sites are added
-or removed; a title the user set is kept.
+the English name). The entry's default title is "Amber Energy Dashboard" (the NMI is not
+shown); with several sites, "Amber Energy Dashboard (…1234)", the NMI's last 4 digits.
+Titles the integration chose (including 2.1.0's "Amber <NMI>") follow the default as sites
+are added or removed; a title the user set is kept.
 
 **Buttons** (button platform, on the site's device):
 - **Run now** (`button.<device>_run_now`, under Controls): the same as the `run_now`

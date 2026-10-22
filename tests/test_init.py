@@ -160,11 +160,11 @@ def _site_entry(hass: HomeAssistant, site_id: str, nmi: str, title: str) -> Mock
 async def test_title_migrated_to_one_without_the_nmi(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """Until 2.1.0 the default title was "Amber <NMI>"; it becomes "Amber Electric"."""
+    """Until 2.1.0 the default title was "Amber <NMI>"; it becomes "Amber Energy Dashboard"."""
     aioclient_mock.get(SITES_URL, json=[site_json()])
     entry = _entry(hass)
     await _setup_entry(hass, entry)
-    assert entry.title == "Amber Electric"
+    assert entry.title == "Amber Energy Dashboard"
 
 
 async def test_title_chosen_by_the_user_is_kept(
@@ -181,25 +181,28 @@ async def test_titles_with_several_sites(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     """With a second site, both default titles show the NMI's last 4 digits; after one
-    is removed, the other goes back to "Amber Electric". A renamed one is never changed."""
+    is removed, the other goes back to "Amber Energy Dashboard". A renamed one is never changed."""
     aioclient_mock.get(
         SITES_URL,
         json=[site_json(nmi="6000000123"), site_json(id=SITE_2, nmi="6000000456")],
     )
     first = _site_entry(hass, SITE_ID, "6000000123", "Amber 6000000123")
     await _setup_entry(hass, first)
-    assert first.title == "Amber Electric"
+    assert first.title == "Amber Energy Dashboard"
     second = _site_entry(hass, SITE_2, "6000000456", "Amber 6000000456")
     await _setup_entry(hass, second)
-    assert (first.title, second.title) == ("Amber Electric (…0123)", "Amber Electric (…0456)")
+    assert (first.title, second.title) == (
+        "Amber Energy Dashboard (…0123)",
+        "Amber Energy Dashboard (…0456)",
+    )
 
     await hass.config_entries.async_remove(second.entry_id)
     await hass.async_block_till_done()
-    assert first.title == "Amber Electric"
+    assert first.title == "Amber Energy Dashboard"
 
     third = _site_entry(hass, SITE_2, "6000000456", "Holiday house")
     await _setup_entry(hass, third)
-    assert (first.title, third.title) == ("Amber Electric (…0123)", "Holiday house")
+    assert (first.title, third.title) == ("Amber Energy Dashboard (…0123)", "Holiday house")
 
 
 async def test_title_update_leaves_the_manager_alone(

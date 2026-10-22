@@ -93,7 +93,7 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["options"] == {CONF_SCHEDULE_MODE: "automatic"}
-    assert result["title"] == "Amber Electric"  # no NMI in the title (2.1.1)
+    assert result["title"] == "Amber Energy Dashboard"  # no NMI in the title (2.1.1)
     assert result["result"].unique_id == SITE_ID
     assert result["data"] == {
         CONF_API_KEY: KEY,
@@ -212,9 +212,9 @@ async def test_second_site_title_shows_last_nmi_digits(
 ) -> None:
     """With a site already configured, a new entry's title tells them apart by the
     NMI's last 4 digits, and nothing more of it."""
-    MockConfigEntry(domain=DOMAIN, unique_id="01OTHERSITE", title="Amber Electric").add_to_hass(
-        hass
-    )
+    MockConfigEntry(
+        domain=DOMAIN, unique_id="01OTHERSITE", title="Amber Energy Dashboard"
+    ).add_to_hass(hass)
     aioclient_mock.get(SITES_URL, json=[site_json(nmi="6000000456")])
     result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
@@ -226,7 +226,7 @@ async def test_second_site_title_shows_last_nmi_digits(
         result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Amber Electric (…0456)"
+    assert result["title"] == "Amber Energy Dashboard (…0456)"
 
 
 def _entry(hass: HomeAssistant) -> MockConfigEntry:

@@ -29,9 +29,9 @@ follow on the integration page.
 - The site's device is named **Amber Energy Dashboard (site)**. Home Assistant lists it
   under "Devices that don't belong to a sub-entry"; the name now says what it is. Entity
   IDs are unchanged, on existing and new installs; friendly names start with the new name.
-- The entry's default title is **Amber Electric**, without the NMI. With a second site,
-  titles show the NMI's last 4 digits, for example **Amber Electric (…1234)**. Existing
-  entries titled "Amber <NMI>" are renamed; a title you chose is kept.
+- The entry's default title is **Amber Energy Dashboard**, without the NMI. With a second
+  site, titles show the NMI's last 4 digits, for example **Amber Energy Dashboard
+  (…1234)**. Existing entries titled "Amber <NMI>" are renamed; a title you chose is kept.
 - INSTALL.md explains the integration page's layout.
 
 ## [2.1.0] - 2026-10-10

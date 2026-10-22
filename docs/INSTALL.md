@@ -146,9 +146,9 @@ shows the entry for each site:
 
 ### How the integration page is laid out
 
-Each site's entry is titled **Amber Electric**. If you add a second site, both titles get
-the last four digits of the site's NMI, for example **Amber Electric (…1234)**. Rename an
-entry (its **⋮** menu) and the integration leaves your name alone.
+Each site's entry is titled **Amber Energy Dashboard**. If you add a second site, both
+titles get the last four digits of the site's NMI, for example **Amber Energy Dashboard
+(…1234)**. Rename an entry (its **⋮** menu) and the integration leaves your name alone.
 
 Under each entry, Home Assistant lists the devices:
 

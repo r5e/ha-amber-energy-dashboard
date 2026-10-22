@@ -1364,7 +1364,7 @@ async def test_upgrade_from_2_1_0_relinks_and_renames(
         for e in er.async_entries_for_config_entry(entities, entry.entry_id)
     }
     assert after.items() >= before.items()
-    assert entry.title == "Amber Electric"
+    assert entry.title == "Amber Energy Dashboard"
     assert devices.async_get(site_device).name == "Amber Energy Dashboard (site)"
     assert entities.async_get("button.amber_energy_dashboard_run_now").device_id == site_device
     for sub_id in ("sub_house", "sub_export"):

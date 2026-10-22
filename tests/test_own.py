@@ -342,6 +342,41 @@ async def test_reconciliation_shows_own_minus_amber(
     assert hass.states.get(state.entity_id).state == "unknown"
 
 
+async def test_reconciliation_feed_in_against_billed_export(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A feed-in mapping is reconciled against Amber's feed-in kWh (2.1.1; 2.1.0 had no
+    sensor, and so no device, for it), with the same attributes as a general mapping."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    days = [TODAY - timedelta(days=2), YESTERDAY]
+    await _import_sensor(hass, EXPORT, {d: _energy_like(d, "B1", 0.97) for d in days})
+    entry = await _setup_entry(
+        hass,
+        aioclient_mock,
+        fake,
+        subentries=[_sub(EXPORT, "B1", sub_id="sub_export", name="Solar export")],
+    )
+    await _run(hass)
+    await hass.async_block_till_done()
+
+    [state] = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
+    assert state.entity_id == "sensor.solar_export_own_sensor_reconciliation"
+    assert state.attributes["friendly_name"] == "Solar export (own sensor) Reconciliation"
+    amber = math.fsum(r["kwh"] for r in make_usage_day(YESTERDAY) if r["channelIdentifier"] == "B1")
+    assert amber > 0
+    assert float(state.state) == pytest.approx(-amber * 0.03, abs=1e-3)
+    assert state.attributes["difference_percent"] == pytest.approx(-3.0, abs=0.01)
+    assert state.attributes["amber_kwh"] == pytest.approx(amber, abs=1e-3)
+    assert state.attributes["own_kwh"] == pytest.approx(amber * 0.97, abs=1e-3)
+    assert state.attributes["date"] == YESTERDAY.isoformat()
+    recon = er.async_get(hass).async_get(state.entity_id)
+    device = dr.async_get(hass).async_get(recon.device_id)
+    assert device.name == "Solar export (own sensor)"
+    assert device.config_subentry_id == recon.config_subentry_id == "sub_export"
+    assert device.via_device_id == entry.runtime_data.device_id
+
+
 # --- price series ----------------------------------------------------------------------------
 
 
@@ -1225,6 +1260,48 @@ async def test_reconciliation_name_falls_back_to_entity_id(
     await hass.async_block_till_done()
     [state] = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
     assert state.attributes["friendly_name"] == f"{SENSOR} (own sensor) Reconciliation"
+
+
+@pytest.mark.parametrize(("entity_id", "channel"), [(SENSOR, "E1"), (EXPORT, "B1")])
+async def test_fresh_mapping_is_on_its_device_at_creation(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    entity_id: str,
+    channel: str,
+) -> None:
+    """A mapping added in the UI to a loaded entry (general or feed-in) has its device and
+    its entity on it as soon as the flow finishes, before any later reload or restart
+    (2.1.1: seen detached once in production on HA 2026.10, and not reproduced since)."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    await _import_sensor(hass, entity_id, {YESTERDAY: _energy_like(YESTERDAY, channel)})
+    flow = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "own_sensor"), context={"source": "user"}
+    )
+    flow = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {"entity_id": entity_id, "channel": channel}
+    )
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()  # the reload the new mapping schedules
+
+    [subentry_id] = list(entry.subentries)
+    entities = er.async_get(hass)
+    [recon] = [
+        e
+        for e in er.async_entries_for_config_entry(entities, entry.entry_id)
+        if e.config_subentry_id == subentry_id
+    ]
+    device = dr.async_get(hass).async_get(recon.device_id)
+    assert device is not None
+    assert device.config_subentry_id == subentry_id
+    assert device.via_device_id == entry.runtime_data.device_id
+    assert [e.entity_id for e in er.async_entries_for_device(entities, device.id)] == [
+        recon.entity_id
+    ]
+    assert hass.states.get(recon.entity_id) is not None
 
 
 async def test_own_sensor_entities_have_their_own_device(

@@ -22,7 +22,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import AmberConfigEntry
-from .const import CHANNEL_FEED_IN, CHANNEL_GENERAL, DOMAIN
+from .const import CHANNEL_FEED_IN, DOMAIN
 from .devices import device_info, own_sensor_device_info
 from .manager import STATUSES
 from .statistics import CURRENCY, Metric
@@ -272,8 +272,6 @@ async def async_setup_entry(
         AmberSensor(manager.coordinator, entry, description) for description in descriptions
     )
     for sensor in manager.own_sensors:
-        if sensor.channel.type != CHANNEL_GENERAL:
-            continue
         description = AmberSensorDescription(
             key=f"reconciliation_{sensor.subentry_id}",
             translation_key="reconciliation",

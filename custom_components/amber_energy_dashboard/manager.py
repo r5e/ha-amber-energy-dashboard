@@ -1979,11 +1979,10 @@ class AmberManager:
             )
 
     def _reconciliation(self) -> dict[str, dict[str, Any] | None]:
-        """Own kWh minus Amber general kWh for the last day both have (Full mode only)."""
+        """Own kWh minus Amber's kWh on the mapped channel (general, controlled load or
+        feed-in) for the last day both have (Full mode only)."""
         result: dict[str, dict[str, Any] | None] = {}
         for sensor in self.own_sensors:
-            if sensor.channel.type != CHANNEL_GENERAL:
-                continue
             result[sensor.subentry_id] = None
             if self.usage_mode != MODE_FULL:
                 continue

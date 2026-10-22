@@ -193,6 +193,32 @@ async def test_failed_discovery_on_a_young_site(
     assert manager.store.retention["provisional"] is True
 
 
+async def test_first_discovery_stopped_on_a_young_site(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock
+) -> None:
+    """With no stored boundary yet, a failure that stops discovery (the rate-limit budget)
+    stores the fallback, raised to the site's start date, and says so."""
+    start = TODAY - timedelta(days=40)
+    fake = FakeAmber(start, YESTERDAY)
+    entry = await _setup_entry(
+        hass, aioclient_mock, fake, site=site_json(activeFrom=start.isoformat())
+    )
+    manager = entry.runtime_data.manager
+    assert manager.store.retention_boundary is None
+    with (
+        patch.object(
+            manager,
+            "_search_boundary",
+            side_effect=manager_mod.AmberBudgetExhaustedError("x", "sites_usage"),
+        ),
+        pytest.raises(manager_mod.AmberBudgetExhaustedError),
+    ):
+        await manager._async_discover_retention()
+    assert manager.store.retention_boundary == start
+    assert manager.store.retention["site_start_applied"] == start.isoformat()
+    assert manager.store.retention["provisional"] is True
+
+
 async def test_interior_gap_keeps_patience(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:

@@ -144,6 +144,26 @@ shows the entry for each site:
 
 <img src="images/15-integration-page.png" alt="The integration page" width="758">
 
+### How the integration page is laid out
+
+Each site's entry is titled **Amber Electric**. If you add a second site, both titles get
+the last four digits of the site's NMI, for example **Amber Electric (…1234)**. Rename an
+entry (its **⋮** menu) and the integration leaves your name alone.
+
+Under each entry, Home Assistant lists the devices:
+
+- **Amber Energy Dashboard (site)** is the site's device, with the status sensors, the
+  Yesterday sensors and the buttons described above. Home Assistant always lists it under
+  the heading **Devices that don't belong to a sub-entry**. That heading is Home
+  Assistant's, not an error: the site's device belongs to the entry itself.
+- Each **own energy sensor** you add (section 5) is a sub-entry, listed by the sensor's
+  name. It has its own device, **<sensor name> (own sensor)**, which holds that mapping's
+  **Reconciliation** sensor and links back to the site's device.
+
+<!-- TODO(screenshot): the integration page with the site device and two own-sensor
+     mappings (one general, one feed-in). The maintainer to supply as images/integration-layout.png. -->
+*(Screenshot to follow.)*
+
 ## 5. Settings
 
 On the integration's page, click the **cog** next to your site's entry to open the

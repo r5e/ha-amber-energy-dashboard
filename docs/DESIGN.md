@@ -285,6 +285,14 @@ count reported as a daily "move".
     diagnostics) and logged at setup.
   - **A fallback boundary is provisional** (`provisional`, `needs_discovery`): discovery
     runs again on the next run, at most once a day, until a real discovery succeeds.
+- **A failed check never moves a stored boundary (2.1.1,** seen on a lab clone with
+  intermittent DNS failures, where each failed rediscovery stored today − 89 and moved a
+  verified boundary forward a day at a time). A rediscovery that fails (a connection error,
+  an API error, the budget) keeps the stored record, recorded as method
+  `unresolved (<error>)` with `needs_discovery` still set, and tries again at the next
+  discovery. An unresolved daily check keeps `last_verified`, and the daily check does not
+  run while a rediscovery is pending. The today − 89 fallback applies only when there is no
+  stored boundary yet.
   - **Leading empty run:** while nothing has been imported, a run of empty days at the start
     of the history followed by a day with data is skipped at once (`skipped_unavailable`,
     no patience), and the boundary moves to that day. The retention record keeps
@@ -408,9 +416,10 @@ earliest changed day.
 - Price history depth (section 4, item 2) does not limit this in practice; the sensor's own
   statistics and Amber's usage retention do.
 
-**Reconciliation** (Full mode, for each sensor mapped to a general channel): a display
+**Reconciliation** (Full mode, for each own-sensor mapping: general, controlled load or,
+from 2.1.1, feed-in, which 2.1.0 left without a sensor or a device): a display
 sensor (no `state_class`) for the last NEM day that both Amber and the sensor have. Its
-state is own kWh − Amber general kWh; the percentage and both totals are attributes. It
+state is own kWh − Amber's kWh on the mapped channel (billed export for feed-in); the percentage and both totals are attributes. It
 catches CT calibration drift and dropped sensors. In other modes it is unknown. It sits on
 the mapping's own device, "<source friendly name> (own sensor)" (linked to the site's
 device), and is named "Reconciliation" (M9: a device belongs to one config sub-entry, so
@@ -722,7 +731,17 @@ Milestones 10 and 11 are design only until their milestones start.
 
 ## 18. Usability (Milestone 9)
 
-**Buttons** (button platform, on the integration's device):
+**Site device and entry title (2.1.1).** The site's device is named "Amber Energy
+Dashboard (site)": Home Assistant lists it under its own heading "Devices that don't
+belong to a sub-entry", which the old name "Amber Energy Dashboard" did not explain.
+Entity IDs do not change: existing ones are kept by the entity registry, and new site
+entities suggest the ID 2.1.0 gave them (`<platform>.amber_energy_dashboard_<name>`, from
+the English name). The entry's default title is "Amber Electric" (the NMI is not shown);
+with several sites, "Amber Electric (…1234)", the NMI's last 4 digits. Titles the
+integration chose (including 2.1.0's "Amber <NMI>") follow the default as sites are added
+or removed; a title the user set is kept.
+
+**Buttons** (button platform, on the site's device):
 - **Run now** (`button.<device>_run_now`, under Controls): the same as the `run_now`
   service, a catch-up run under the run lock.
 - **Re-check retention** (`button.<device>_re_check_retention`, a diagnostic entity): the

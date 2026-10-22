@@ -487,7 +487,10 @@ class AmberManager:
         ):
             await self._async_discover_retention()
             info["retention"] = "discovered"
-        elif retention.get("last_verified") != nem_today().isoformat():
+        elif (
+            not retention.get("needs_discovery")
+            and retention.get("last_verified") != nem_today().isoformat()
+        ):
             info["retention"] = await self._async_verify_retention()
         info["revisions"] = await self._async_check_revisions()
         if backfill is not None:
@@ -1050,6 +1053,17 @@ class AmberManager:
             if boundary is not None and not bracketed:
                 method = "oldest day seen with data (not bracketed older)"
         except (_DiscoveryIncomplete, AmberError) as err:
+            if previous is not None:
+                # A failed rediscovery never moves a stored boundary (2.1.1): a fallback
+                # here moved a verified boundary forward during an outage, and days older
+                # than the boundary are skipped without being fetched. Keep it, and try
+                # again at the next discovery.
+                await self._keep_retention(
+                    previous, f"unresolved ({type(err).__name__})", counter[0], probes
+                )
+                if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
+                    raise
+                return
             boundary = None
             method = f"fallback ({type(err).__name__})"
             if isinstance(err, AmberAuthError | AmberBudgetExhaustedError):
@@ -1087,6 +1101,24 @@ class AmberManager:
             needs_discovery=provisional,
             provisional=provisional,
         )
+
+    async def _keep_retention(self, boundary: date, method: str, calls: int, probes: dict) -> None:
+        """Record a failed rediscovery: the stored record is kept (boundary, provisional,
+        last verification, start date, self-heal), with this attempt and a new request
+        for discovery."""
+        info = {
+            **(self.store.retention or {}),
+            "measured_on": nem_today().isoformat(),
+            "method": method,
+            "calls": calls,
+            "probes": probes,
+            "previous_boundary": boundary.isoformat(),
+            "needs_discovery": True,
+        }
+        _LOGGER.warning(
+            "Usage retention check failed (%s); keeping the boundary %s", method, boundary
+        )
+        await self.store.async_set_retention(boundary, info)
 
     async def _async_verify_retention(self) -> dict[str, Any]:
         """Daily check of the stored boundary date (DESIGN section 8).
@@ -1152,6 +1184,8 @@ class AmberManager:
             probes,
             previous=boundary,
             needs_discovery=new is None,
+            # An unresolved check verified nothing: keep the last verification date.
+            last_verified=None if new else (self.store.retention or {}).get("last_verified"),
         )
         return {
             "method": method,
@@ -1232,7 +1266,10 @@ class AmberManager:
         needs_discovery: bool = False,
         provisional: bool = False,
         self_heal: dict[str, Any] | None = None,
+        last_verified: str | None = None,
     ) -> None:
+        """Record the boundary. ``last_verified`` keeps an earlier verification date when
+        the boundary was kept rather than checked (a failed rediscovery)."""
         today = nem_today()
         start_date = None
         if self.active_from is not None and boundary < self.active_from:
@@ -1240,7 +1277,7 @@ class AmberManager:
             boundary, start_date = self.active_from, self.active_from.isoformat()
         info = {
             "measured_on": today.isoformat(),
-            "last_verified": today.isoformat(),
+            "last_verified": last_verified or today.isoformat(),
             "method": method,
             "calls": calls,
             "probes": probes,
@@ -1835,7 +1872,9 @@ class AmberManager:
                 self.ctx.client.end_run()
             info = self.store.retention or {}
             method = info.get("method", "")
-            if method.startswith("fallback (") and method != "fallback (not bracketed)":
+            if method.startswith(("fallback (", "unresolved (")) and method != (
+                "fallback (not bracketed)"
+            ):
                 await self._restore_retention(previous_boundary, previous_info)
                 raise AmberError(f"retention probe failed: {info['method']}")
             boundary = self.store.retention_boundary

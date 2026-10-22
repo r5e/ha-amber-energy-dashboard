@@ -165,8 +165,8 @@ async def test_failed_discovery_on_a_young_site(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock
 ) -> None:
     """Discovery fails on a site younger than 89 days: the start date is used, but it is
-    still provisional. A failure that stops the run (the rate-limit budget) stores the
-    fallback raised to the start date, and says so."""
+    still provisional. A later failure that stops the run (the rate-limit budget) keeps
+    that boundary (2.1.1: a failed rediscovery never moves it)."""
     start = TODAY - timedelta(days=40)
     fake = FakeAmber(start, YESTERDAY)
     entry = await _setup_entry(
@@ -189,7 +189,7 @@ async def test_failed_discovery_on_a_young_site(
     ):
         await manager._async_discover_retention()
     assert manager.store.retention_boundary == start
-    assert manager.store.retention["site_start_applied"] == start.isoformat()
+    assert manager.store.retention["method"] == "unresolved (AmberBudgetExhaustedError)"
     assert manager.store.retention["provisional"] is True
 
 

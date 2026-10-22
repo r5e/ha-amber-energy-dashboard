@@ -29,6 +29,8 @@ class FakeAmber:
         self.remaining: int | None = None
         """If set, sent as RateLimit-Remaining (decremented per call)."""
         self.calls: list[tuple[date, date]] = []
+        self.error: BaseException | None = None
+        """If set, every /usage call raises it (a network outage, for example)."""
 
     def has(self, day: date) -> bool:
         """True if the fake has data for ``day``."""
@@ -52,6 +54,8 @@ class FakeAmber:
         start = date.fromisoformat(url.query["startDate"])
         end = date.fromisoformat(url.query["endDate"])
         self.calls.append((start, end))
+        if self.error is not None:
+            raise self.error
         headers = {}
         if self.remaining is not None:
             self.remaining -= 1

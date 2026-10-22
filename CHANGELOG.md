@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.1.1] - Unreleased
+## [2.1.1] - 2026-10-23
 
 Fixes from the first production use of own-sensor mappings, and naming that is easier to
 follow on the integration page.

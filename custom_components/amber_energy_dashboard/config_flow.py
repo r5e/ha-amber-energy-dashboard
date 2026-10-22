@@ -84,6 +84,7 @@ from .const import (
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
 )
+from .devices import entry_title
 from .energy import async_preferences, has_grid
 from .export import DEFAULT_PENALTY_PERIOD, TOTALLING_PERIOD, TOTALLINGS
 from .migration import (
@@ -325,7 +326,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_FIXED_TIMES] = error
             else:
                 return self.async_create_entry(
-                    title=f"Amber {site.nmi}",
+                    title=entry_title(site.nmi, bool(self._async_current_entries())),
                     data={
                         CONF_API_KEY: self._api_key,
                         CONF_SITE_ID: site.id,

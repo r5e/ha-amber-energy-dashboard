@@ -1,4 +1,5 @@
-"""The integration's devices: one per site, and one per own-sensor mapping (section 18)."""
+"""The integration's devices (one per site, and one per own-sensor mapping, section 18),
+and the config entry's title."""
 
 from typing import TYPE_CHECKING
 
@@ -10,6 +11,18 @@ if TYPE_CHECKING:
     from .manager import OwnSensor
 
 MANUFACTURER = "Amber Electric (unofficial integration)"
+DEFAULT_TITLE = "Amber Electric"
+
+
+def entry_title(nmi: str, several_sites: bool) -> str:
+    """The default entry title (2.1.1). It names no NMI, except its last 4 digits when
+    several sites are configured, to tell them apart."""
+    return f"{DEFAULT_TITLE} (…{nmi[-4:]})" if several_sites else DEFAULT_TITLE
+
+
+def is_default_title(title: str, nmi: str) -> bool:
+    """True for a title the integration chose (until 2.1.0 "Amber <NMI>"), not the user."""
+    return title in (f"Amber {nmi}", entry_title(nmi, False), entry_title(nmi, True))
 
 
 def device_info(site: str) -> DeviceInfo:

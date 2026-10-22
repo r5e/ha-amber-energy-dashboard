@@ -5,14 +5,20 @@ Milestone 3: Store, Guard 1, retention discovery, scheduled catch-up and display
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
     ConfigEntryNotReady,
@@ -56,6 +62,7 @@ from .const import (
     CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
     CONF_GST_PERCENT,
+    CONF_NMI,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
     CONF_PENALTY_PERIOD,
@@ -83,7 +90,7 @@ from .const import (
     SERVICE_UNDO_MIGRATION,
     SUBENTRY_OWN_SENSOR,
 )
-from .devices import device_info
+from .devices import device_info, entry_title, is_default_title
 from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
 from .export import (
     DEFAULT_PENALTY_PERIOD,
@@ -154,6 +161,8 @@ class AmberRuntimeData:
     """The site's device in the device registry."""
     last_import: dict[str, Any] | None = None
     last_error: dict[str, str] | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+    """The options the manager runs with (an entry update may change only the title)."""
 
 
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
@@ -551,7 +560,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id, **device_info(site_id)
     )
-    entry.runtime_data = AmberRuntimeData(context=ctx, manager=manager, device_id=device.id)
+    entry.runtime_data = AmberRuntimeData(
+        context=ctx, manager=manager, device_id=device.id, options=dict(entry.options)
+    )
+    async_update_titles(hass)
     if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
         # Chosen in the config flow: carried out once (section 18).
         await async_add_to_energy(hass, manager, "setup")
@@ -608,13 +620,29 @@ def _schedule_startup_work(
         entry.async_on_unload(async_at_started(hass, _measure))
 
 
+@callback
+def async_update_titles(hass: HomeAssistant, removed: str | None = None) -> None:
+    """Give every entry still on a default title the current default (2.1.1: no NMI, or
+    its last 4 digits with several sites). A title the user chose is kept."""
+    entries = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != removed]
+    for entry in entries:
+        nmi = entry.data.get(CONF_NMI, "")
+        title = entry_title(nmi, len(entries) > 1)
+        if entry.title != title and is_default_title(entry.title, nmi):
+            hass.config_entries.async_update_entry(entry, title=title)
+
+
 async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
     """Apply option changes in place; reload only when own-sensor mappings changed."""
-    manager = entry.runtime_data.manager
+    runtime = entry.runtime_data
+    manager = runtime.manager
     current = {s.subentry_id for s in manager.own_sensors}
     wanted = {
         sid for sid, sub in entry.subentries.items() if sub.subentry_type == SUBENTRY_OWN_SENSOR
     }
+    if current == wanted and dict(entry.options) == runtime.options:
+        return  # the title (or nothing the manager uses) changed
+    runtime.options = dict(entry.options)
     args, kwargs = settings_from_options(dict(entry.options), manager.tariff)
     # Own-sensor mappings, or turning the bill estimate or the allowance on or off,
     # change the entities.
@@ -649,3 +677,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bo
 async def async_remove_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
     """Delete the entry's Store when the entry is removed (statistics are kept)."""
     await AmberStore(hass, entry.entry_id).async_remove()
+    async_update_titles(hass, removed=entry.entry_id)

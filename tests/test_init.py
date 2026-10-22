@@ -134,3 +134,87 @@ async def test_setup_transient_failure_retries(
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert _reauth_sources(hass) == []
+
+
+# --- entry titles (2.1.1) -------------------------------------------------------------------
+
+SITE_2 = "01FAKESITE0000000000000002"
+
+
+def _site_entry(hass: HomeAssistant, site_id: str, nmi: str, title: str) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=site_id,
+        title=title,
+        data={
+            CONF_API_KEY: "psk_test",
+            CONF_SITE_ID: site_id,
+            CONF_NMI: nmi,
+            CONF_CHANNELS: [{"identifier": "E1", "type": "general", "tariff": None}],
+        },
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_title_migrated_to_one_without_the_nmi(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Until 2.1.0 the default title was "Amber <NMI>"; it becomes "Amber Electric"."""
+    aioclient_mock.get(SITES_URL, json=[site_json()])
+    entry = _entry(hass)
+    await _setup_entry(hass, entry)
+    assert entry.title == "Amber Electric"
+
+
+async def test_title_chosen_by_the_user_is_kept(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A renamed entry keeps its name."""
+    aioclient_mock.get(SITES_URL, json=[site_json()])
+    entry = _site_entry(hass, SITE_ID, "FAKENMI000", "Our house")
+    await _setup_entry(hass, entry)
+    assert entry.title == "Our house"
+
+
+async def test_titles_with_several_sites(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """With a second site, both default titles show the NMI's last 4 digits; after one
+    is removed, the other goes back to "Amber Electric". A renamed one is never changed."""
+    aioclient_mock.get(
+        SITES_URL,
+        json=[site_json(nmi="6000000123"), site_json(id=SITE_2, nmi="6000000456")],
+    )
+    first = _site_entry(hass, SITE_ID, "6000000123", "Amber 6000000123")
+    await _setup_entry(hass, first)
+    assert first.title == "Amber Electric"
+    second = _site_entry(hass, SITE_2, "6000000456", "Amber 6000000456")
+    await _setup_entry(hass, second)
+    assert (first.title, second.title) == ("Amber Electric (…0123)", "Amber Electric (…0456)")
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.async_block_till_done()
+    assert first.title == "Amber Electric"
+
+    third = _site_entry(hass, SITE_2, "6000000456", "Holiday house")
+    await _setup_entry(hass, third)
+    assert (first.title, third.title) == ("Amber Electric (…0123)", "Holiday house")
+
+
+async def test_title_update_leaves_the_manager_alone(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A title change (another site's setup, or a rename) does not reschedule the manager;
+    an options change still applies."""
+    aioclient_mock.get(SITES_URL, json=[site_json()])
+    entry = _entry(hass)
+    await _setup_entry(hass, entry)
+    manager = entry.runtime_data.manager
+    with patch.object(manager, "async_update_settings") as update:
+        hass.config_entries.async_update_entry(entry, title="Renamed")
+        await hass.async_block_till_done()
+        update.assert_not_called()
+        hass.config_entries.async_update_entry(entry, options={"patience_days": 9})
+        await hass.async_block_till_done()
+        update.assert_called_once()

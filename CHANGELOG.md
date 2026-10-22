@@ -4,6 +4,36 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] - Unreleased
+
+Fixes from the first production use of own-sensor mappings, and naming that is easier to
+follow on the integration page.
+
+### Fixed
+
+- **Feed-in own sensors:** a mapping to a feed-in channel now gets a **Reconciliation**
+  sensor (your sensor's kWh minus Amber's billed export kWh, with the same attributes as a
+  general mapping) and its own device. 2.1.0 created neither, so the mapping showed no
+  device.
+- **Own-sensor devices:** a mapping's Reconciliation sensor is linked to the mapping's
+  device when the mapping is added, and an existing one that isn't is linked on update.
+  Entity IDs don't change.
+- **Retention boundary:** a failed retention check (for example a network or DNS outage)
+  no longer moves the stored boundary. Before, each failed rediscovery stored a fallback
+  of today − 89 days, which could move a verified boundary forward a day at a time, and
+  older days Amber still had were then skipped. The boundary is now kept, and discovery is
+  tried again later.
+
+### Changed
+
+- The site's device is named **Amber Energy Dashboard (site)**. Home Assistant lists it
+  under "Devices that don't belong to a sub-entry"; the name now says what it is. Entity
+  IDs are unchanged, on existing and new installs; friendly names start with the new name.
+- The entry's default title is **Amber Electric**, without the NMI. With a second site,
+  titles show the NMI's last 4 digits, for example **Amber Electric (…1234)**. Existing
+  entries titled "Amber <NMI>" are renamed; a title you chose is kept.
+- INSTALL.md explains the integration page's layout.
+
 ## [2.1.0] - 2026-10-10
 
 Everything since 2.0.1 (release candidates rc1 and rc2 merged). The bill estimate and the
@@ -372,6 +402,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.1.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.1
 [2.1.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0
 [2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1
 [2.0.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.0

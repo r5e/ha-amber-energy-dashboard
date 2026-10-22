@@ -54,10 +54,13 @@ async def test_buttons_on_the_device(
     assert device.identifiers == {(DOMAIN, SITE_ID)}
     assert run_now.device_id == re_check.device_id == device.id
     assert run_now.config_entry_id == entry.entry_id
-    assert hass.states.get(RUN_NOW).attributes["friendly_name"] == "Amber Energy Dashboard Run now"
+    assert (
+        hass.states.get(RUN_NOW).attributes["friendly_name"]
+        == "Amber Energy Dashboard (site) Run now"
+    )
     assert (
         hass.states.get(RE_CHECK).attributes["friendly_name"]
-        == "Amber Energy Dashboard Re-check retention"
+        == "Amber Energy Dashboard (site) Re-check retention"
     )
 
 

@@ -23,7 +23,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpda
 
 from . import AmberConfigEntry
 from .const import CHANNEL_FEED_IN, DOMAIN
-from .devices import device_info, own_sensor_device_info
+from .devices import async_site_entity_ids, device_info, own_sensor_device_info
 from .manager import STATUSES
 from .statistics import CURRENCY, Metric
 
@@ -268,8 +268,12 @@ async def async_setup_entry(
                 attrs_fn=_yesterday_attrs,
             )
         )
+    entity_ids = await async_site_entity_ids(hass, "sensor", descriptions)
     async_add_entities(
-        AmberSensor(manager.coordinator, entry, description) for description in descriptions
+        AmberSensor(
+            manager.coordinator, entry, description, entity_id=entity_ids.get(description.key)
+        )
+        for description in descriptions
     )
     for sensor in manager.own_sensors:
         description = AmberSensorDescription(
@@ -307,10 +311,14 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
         entry: AmberConfigEntry,
         description: AmberSensorDescription,
         device: DeviceInfo | None = None,
+        entity_id: str | None = None,
     ) -> None:
-        """Initialise the sensor (on the site's device unless ``device`` is given)."""
+        """Initialise the sensor (on the site's device unless ``device`` is given;
+        ``entity_id`` is only a suggestion for a new one)."""
         super().__init__(coordinator)
         self.entity_description = description
+        if entity_id is not None:
+            self.entity_id = entity_id
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
         self._attr_device_info = device or device_info(site)

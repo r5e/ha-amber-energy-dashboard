@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import AmberConfigEntry, async_probe_retention
-from .devices import device_info
+from .devices import async_site_entity_ids, device_info
 from .manager import AmberManager
 
 PARALLEL_UPDATES = 0
@@ -44,7 +44,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create the buttons for one site."""
-    async_add_entities(AmberButton(entry, description) for description in BUTTONS)
+    entity_ids = await async_site_entity_ids(hass, "button", BUTTONS)
+    async_add_entities(
+        AmberButton(entry, description, entity_ids.get(description.key)) for description in BUTTONS
+    )
 
 
 class AmberButton(ButtonEntity):
@@ -53,9 +56,16 @@ class AmberButton(ButtonEntity):
     entity_description: AmberButtonDescription
     _attr_has_entity_name = True
 
-    def __init__(self, entry: AmberConfigEntry, description: AmberButtonDescription) -> None:
-        """Initialise the button."""
+    def __init__(
+        self,
+        entry: AmberConfigEntry,
+        description: AmberButtonDescription,
+        entity_id: str | None = None,
+    ) -> None:
+        """Initialise the button (``entity_id`` is only a suggestion for a new one)."""
         self.entity_description = description
+        if entity_id is not None:
+            self.entity_id = entity_id
         self._manager = entry.runtime_data.manager
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"

@@ -1304,6 +1304,109 @@ async def test_fresh_mapping_is_on_its_device_at_creation(
     assert hass.states.get(recon.entity_id) is not None
 
 
+async def test_upgrade_from_2_1_0_relinks_and_renames(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """2.1.0 state as seen in production: the site device named "Amber Energy Dashboard",
+    the title "Amber <NMI>", a general mapping's entity not on its device, and a feed-in
+    mapping with no entity or device. After the update (a reload here) every mapping's
+    entity is on its own device, the site device is "Amber Energy Dashboard (site)", the
+    title has no NMI, and no entity ID changed (one the user renamed included)."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    days = {YESTERDAY: _energy_like(YESTERDAY, "E1")}
+    await _import_sensor(hass, SENSOR, days)
+    await _import_sensor(hass, EXPORT, {YESTERDAY: _energy_like(YESTERDAY, "B1")})
+    entry = await _setup_entry(
+        hass,
+        aioclient_mock,
+        fake,
+        subentries=[_sub(SENSOR, "E1"), _sub(EXPORT, "B1", sub_id="sub_export")],
+    )
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    site_device = entry.runtime_data.device_id
+
+    def recon(sub_id: str) -> er.RegistryEntry | None:
+        return next(
+            (
+                e
+                for e in er.async_entries_for_config_entry(entities, entry.entry_id)
+                if e.config_subentry_id == sub_id
+            ),
+            None,
+        )
+
+    # Back to 2.1.0.
+    await hass.config_entries.async_unload(entry.entry_id)
+    hass.config_entries.async_update_entry(entry, title="Amber FAKENMI000")
+    devices.async_update_device(site_device, name="Amber Energy Dashboard")
+    house = recon("sub_house")
+    entities.async_update_entity(house.entity_id, device_id=None)
+    export = recon("sub_export")
+    entities.async_remove(export.entity_id)
+    devices.async_remove_device(export.device_id)
+    entities.async_update_entity(
+        "sensor.amber_energy_dashboard_days_behind", new_entity_id="sensor.amber_lag"
+    )
+    before = {
+        e.unique_id: e.entity_id
+        for e in er.async_entries_for_config_entry(entities, entry.entry_id)
+    }
+    assert "sensor.amber_lag" in before.values()
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await _run(hass)
+    await hass.async_block_till_done()
+
+    after = {
+        e.unique_id: e.entity_id
+        for e in er.async_entries_for_config_entry(entities, entry.entry_id)
+    }
+    assert after.items() >= before.items()
+    assert entry.title == "Amber Electric"
+    assert devices.async_get(site_device).name == "Amber Energy Dashboard (site)"
+    assert entities.async_get("button.amber_energy_dashboard_run_now").device_id == site_device
+    for sub_id in ("sub_house", "sub_export"):
+        entity = recon(sub_id)
+        device = devices.async_get(entity.device_id)
+        assert device.config_entries_subentries == {entry.entry_id: {sub_id}}
+        assert device.via_device_id == site_device
+        assert hass.states.get(entity.entity_id).state != "unavailable"
+    assert recon("sub_house").entity_id == house.entity_id
+
+
+async def test_new_install_site_names_and_entity_ids(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A new install's site device is "Amber Energy Dashboard (site)"; its entities keep
+    the IDs 2.1.0 gave them (no "_site" in them), and their names show the device's."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    await _run(hass)
+    await hass.async_block_till_done()
+    devices = dr.async_get(hass)
+    assert devices.async_get(entry.runtime_data.device_id).name == ("Amber Energy Dashboard (site)")
+    ids = sorted(
+        e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    )
+    assert ids == [
+        "button.amber_energy_dashboard_re_check_retention",
+        "button.amber_energy_dashboard_run_now",
+        "sensor.amber_energy_dashboard_days_behind",
+        "sensor.amber_energy_dashboard_import_status",
+        "sensor.amber_energy_dashboard_last_imported_date",
+        "sensor.amber_energy_dashboard_next_scheduled_run",
+        "sensor.amber_energy_dashboard_yesterday_b1_compensation",
+        "sensor.amber_energy_dashboard_yesterday_b1_energy",
+        "sensor.amber_energy_dashboard_yesterday_e1_cost",
+        "sensor.amber_energy_dashboard_yesterday_e1_energy",
+    ]
+    state = hass.states.get("sensor.amber_energy_dashboard_days_behind")
+    assert state.attributes["friendly_name"] == "Amber Energy Dashboard (site) Days behind"
+
+
 async def test_own_sensor_entities_have_their_own_device(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,

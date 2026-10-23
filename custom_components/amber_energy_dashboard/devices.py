@@ -41,7 +41,9 @@ def is_default_title(title: str, nmi: str, site_name: str | None = None) -> bool
 def displayed_site_name(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     """The site's name wherever the integration shows it: the name the user gave the
     site's device on Home Assistant's device page, else the one from setup (2.2)."""
-    device = dr.async_get(hass).async_get_device({(DOMAIN, entry.data.get(CONF_SITE_ID, ""))})
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, entry.data.get(CONF_SITE_ID, "")), entry.entry_id
+    )
     return (device.name_by_user if device else None) or entry.data.get(CONF_SITE_NAME)
 
 

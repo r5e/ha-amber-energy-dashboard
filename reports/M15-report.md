@@ -88,7 +88,7 @@ mappings), after saving the post-hang state as `post-hang-1023`.
   - E9's `sensor.whole_house_energy_consumed_own_sensor_reconciliation` is on its own
     device.
   - **B9: no entity, no device** (production's item 2).
-  - Title "Amber NMI …1234", device "Amber Energy Dashboard".
+  - Title "Amber <NMI>" (the full NMI, redacted here), device "Amber Energy Dashboard".
 - Renamed `sensor.amber_energy_dashboard_days_behind` to `sensor.amber_lag`, recorded all
   18 entity IDs by unique ID, and took snapshot `m15-210-mapped`.
 

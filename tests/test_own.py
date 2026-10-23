@@ -642,7 +642,8 @@ async def test_pricing_mode_writes_no_usage_but_prices_and_own_cost(
 async def test_subentry_flow_validation_and_removal(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """Only cumulative energy sensors; no duplicates; removal keeps the statistics."""
+    """An appliance (2.2): only cumulative energy sensors, a name, no sensor priced twice;
+    the name is fixed at creation; removal keeps the statistics."""
     _preload_store(hass_storage, retention_days=1)
     fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
     entry = await _setup_entry(hass, aioclient_mock, fake)
@@ -653,43 +654,46 @@ async def test_subentry_flow_validation_and_removal(
 
     async def start():
         return await hass.config_entries.subentries.async_init(
-            (entry.entry_id, "own_sensor"), context={"source": "user"}
+            (entry.entry_id, "appliance"), context={"source": "user"}
         )
 
     flow = await start()
     assert flow["step_id"] == "user"
+    assert "channel" not in flow["data_schema"].schema  # one channel to price on
     flow = await hass.config_entries.subentries.async_configure(
-        flow["flow_id"], {"entity_id": "sensor.power", "channel": "E1"}
+        flow["flow_id"], {"name": "House", "entity_id": "sensor.power"}
     )
     assert flow["errors"] == {"entity_id": "not_cumulative_energy"}
     flow = await hass.config_entries.subentries.async_configure(
-        flow["flow_id"], {"entity_id": "sensor.missing", "channel": "E1"}
+        flow["flow_id"], {"name": "House", "entity_id": "sensor.missing"}
     )
     assert flow["errors"] == {"entity_id": "sensor_not_found"}
-    attrs = dict(hass.states.get(SENSOR).attributes, friendly_name="House meter")
-    hass.states.async_set(SENSOR, "0", attrs)
     flow = await hass.config_entries.subentries.async_configure(
-        flow["flow_id"], {"entity_id": SENSOR, "channel": "E1"}
+        flow["flow_id"], {"name": "  ", "entity_id": SENSOR}
+    )
+    assert flow["errors"] == {"name": "name_required"}
+    flow = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {"name": " House meter ", "entity_id": SENSOR}
     )
     assert flow["type"] is FlowResultType.CREATE_ENTRY
+    assert flow["title"] == "House meter · appliance (general E1)"
     assert flow["data"] == {"entity_id": SENSOR, "channel": "E1", "name": "House meter"}
     await hass.async_block_till_done()
-    # The name is fixed at creation: renaming the source later does not rename the entity.
-    hass.states.async_set(SENSOR, "0", dict(attrs, friendly_name="Renamed"))
-    await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
     assert entry.runtime_data.manager.own_sensors[0].name == "House meter"
-    recon = [s for s in hass.states.async_all("sensor") if "reconciliation" in s.entity_id]
-    assert [s.attributes["friendly_name"] for s in recon] == [
-        "House meter (own sensor) Reconciliation"
+    states = [
+        s for s in hass.states.async_all("sensor") if s.entity_id.startswith("sensor.house_meter")
+    ]
+    assert sorted(s.attributes["friendly_name"] for s in states) == [
+        "House meter Yesterday cost",
+        "House meter Yesterday energy",
     ]
     mgr = entry.runtime_data.manager
     assert [s.entity_id for s in mgr.own_sensors] == [SENSOR]  # reloaded with the mapping
     dup = await start()
     dup = await hass.config_entries.subentries.async_configure(
-        dup["flow_id"], {"entity_id": SENSOR, "channel": "E1"}
+        dup["flow_id"], {"name": "Again", "entity_id": SENSOR}
     )
-    assert dup["type"] is FlowResultType.ABORT and dup["reason"] == "already_configured"
+    assert dup["errors"] == {"entity_id": "sensor_in_use"}
 
     await _run(hass)
     assert len(await _own_rows(hass)) == 24
@@ -1262,46 +1266,54 @@ async def test_reconciliation_name_falls_back_to_entity_id(
     assert state.attributes["friendly_name"] == f"{SENSOR} (own sensor) Reconciliation"
 
 
-@pytest.mark.parametrize(("entity_id", "channel"), [(SENSOR, "E1"), (EXPORT, "B1")])
+@pytest.mark.parametrize(
+    ("subentry_type", "user_input"),
+    [
+        ("grid_meter", {"name": "Mains", "import_entity_id": SENSOR, "export_entity_id": EXPORT}),
+        ("appliance", {"name": "Heat pump", "entity_id": SENSOR}),
+    ],
+)
 async def test_fresh_mapping_is_on_its_device_at_creation(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     clock: Clock,
     hass_storage: dict,
-    entity_id: str,
-    channel: str,
+    subentry_type: str,
+    user_input: dict[str, str],
 ) -> None:
-    """A mapping added in the UI to a loaded entry (general or feed-in) has its device and
-    its entity on it as soon as the flow finishes, before any later reload or restart
-    (2.1.1: seen detached once in production on HA 2026.10, and not reproduced since)."""
+    """A mapping added in the UI to a loaded entry (a grid meter with import and export,
+    or an appliance) has its device and its entities on it as soon as the flow finishes,
+    before any later reload or restart (2.1.1: seen detached once in production on HA
+    2026.10, and not reproduced since)."""
     _preload_store(hass_storage, retention_days=2)
     fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
     entry = await _setup_entry(hass, aioclient_mock, fake)
-    await _import_sensor(hass, entity_id, {YESTERDAY: _energy_like(YESTERDAY, channel)})
+    await _import_sensor(hass, SENSOR, {YESTERDAY: _energy_like(YESTERDAY, "E1")})
+    await _import_sensor(hass, EXPORT, {YESTERDAY: _energy_like(YESTERDAY, "B1")})
     flow = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "own_sensor"), context={"source": "user"}
+        (entry.entry_id, subentry_type), context={"source": "user"}
     )
-    flow = await hass.config_entries.subentries.async_configure(
-        flow["flow_id"], {"entity_id": entity_id, "channel": channel}
-    )
+    flow = await hass.config_entries.subentries.async_configure(flow["flow_id"], user_input)
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()  # the reload the new mapping schedules
 
     [subentry_id] = list(entry.subentries)
     entities = er.async_get(hass)
-    [recon] = [
+    mapped = [
         e
         for e in er.async_entries_for_config_entry(entities, entry.entry_id)
         if e.config_subentry_id == subentry_id
     ]
-    device = dr.async_get(hass).async_get(recon.device_id)
+    device = dr.async_get(hass).async_get(mapped[0].device_id)
     assert device is not None
+    assert device.name == user_input["name"]
     assert device.config_subentry_id == subentry_id
     assert device.via_device_id == entry.runtime_data.device_id
-    assert [e.entity_id for e in er.async_entries_for_device(entities, device.id)] == [
-        recon.entity_id
-    ]
-    assert hass.states.get(recon.entity_id) is not None
+    assert sorted(e.entity_id for e in er.async_entries_for_device(entities, device.id)) == sorted(
+        e.entity_id for e in mapped
+    )
+    assert len(mapped) == (3 if subentry_type == "grid_meter" else 2)
+    assert all(hass.states.get(e.entity_id) is not None for e in mapped)
 
 
 async def test_upgrade_from_2_1_0_relinks_and_renames(

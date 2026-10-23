@@ -59,9 +59,13 @@ from .const import (
     CONF_BILLING_DAY,
     CONF_CHANNEL,
     CONF_CHANNELS,
+    CONF_EXPORT_CHANNEL,
+    CONF_EXPORT_SENSOR,
     CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
     CONF_GST_PERCENT,
+    CONF_IMPORT_CHANNEL,
+    CONF_IMPORT_SENSOR,
     CONF_NMI,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
@@ -80,13 +84,21 @@ from .const import (
     ROLES,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
-    SUBENTRY_OWN_SENSOR,
+    SUBENTRY_APPLIANCE,
+    SUBENTRY_GRID_METER,
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
 )
 from .devices import entry_title
 from .energy import async_preferences, has_grid
 from .export import DEFAULT_PENALTY_PERIOD, TOTALLING_PERIOD, TOTALLINGS
+from .meters import (
+    appliance_title,
+    appliance_unique_id,
+    grid_meter_title,
+    grid_meter_unique_id,
+    mapped_entities,
+)
 from .migration import (
     STATUS_COMPLETED,
     STATUS_IN_PROGRESS,
@@ -98,6 +110,7 @@ from .migration import (
     format_result,
 )
 from .schedule import format_times, parse_times
+from .statistics import CHANNEL_LABELS, ChannelConfig
 from .storage import AmberStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -207,13 +220,6 @@ def _schedule_options(user_input: dict[str, Any]) -> tuple[dict[str, Any], str |
     }, None
 
 
-_CHANNEL_LABELS = {
-    CHANNEL_GENERAL: "general",
-    CHANNEL_CONTROLLED_LOAD: "controlled load",
-    CHANNEL_FEED_IN: "feed-in",
-}
-
-
 class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Amber Energy Dashboard."""
 
@@ -296,7 +302,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return await self.async_step_schedule()
         channel_list = "\n".join(
-            f"- {c.identifier}: {_CHANNEL_LABELS[c.type]}"
+            f"- {c.identifier}: {CHANNEL_LABELS[c.type]}"
             + (f" (tariff {c.tariff})" if c.tariff else "")
             for c in site.channels
         )
@@ -360,8 +366,12 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_get_supported_subentry_types(
         cls, config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
-        """Own-sensor cost mappings are config sub-entries, one per sensor."""
-        return {SUBENTRY_OWN_SENSOR: OwnSensorSubentryFlow}
+        """Grid meters and appliances are config sub-entries (2.2). The 2.1 own-sensor
+        mappings are still loaded, but no longer offered; a Repairs issue converts them."""
+        return {
+            SUBENTRY_GRID_METER: GridMeterSubentryFlow,
+            SUBENTRY_APPLIANCE: ApplianceSubentryFlow,
+        }
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
@@ -399,7 +409,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                     ]
                 },
             )
-        labels = {c.identifier: _CHANNEL_LABELS[c.type] for c in site.channels}
+        labels = {c.identifier: CHANNEL_LABELS[c.type] for c in site.channels}
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=vol.Schema({}),
@@ -788,63 +798,164 @@ class AmberOptionsFlow(OptionsFlow):
         return self.async_create_entry(data=dict(self.config_entry.options))
 
 
-class OwnSensorSubentryFlow(ConfigSubentryFlow):
-    """Map a cumulative energy sensor to an Amber channel for own-sensor cost."""
+def _energy_sensor_error(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Why an entity can't be priced: missing, or not a cumulative energy sensor."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return "sensor_not_found"
+    attrs = state.attributes
+    if attrs.get("device_class") != "energy" or attrs.get("state_class") not in (
+        "total",
+        "total_increasing",
+    ):
+        return "not_cumulative_energy"
+    return None
+
+
+def _check_sensors(
+    hass: HomeAssistant, entry: ConfigEntry, sensors: dict[str, str | None]
+) -> dict[str, str]:
+    """Errors by field: each sensor must be a cumulative energy sensor that no other
+    mapping uses (its cost statistic's ID comes from its entity ID)."""
+    used = mapped_entities(entry)
+    errors: dict[str, str] = {}
+    seen: set[str] = set()
+    for key, entity_id in sensors.items():
+        if not entity_id:
+            continue
+        if entity_id in used:
+            errors[key] = "sensor_in_use"
+        elif entity_id in seen:
+            errors[key] = "same_sensor"
+        elif error := _energy_sensor_error(hass, entity_id):
+            errors[key] = error
+        seen.add(entity_id)
+    return errors
+
+
+def _energy_selector() -> EntitySelector:
+    return EntitySelector(EntitySelectorConfig(domain="sensor", device_class="energy"))
+
+
+def _channel_selector(channels: list[ChannelConfig]) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(
+                    value=c.identifier, label=f"{c.identifier} ({CHANNEL_LABELS[c.type]})"
+                )
+                for c in channels
+            ],
+            mode=SelectSelectorMode.LIST,
+        )
+    )
+
+
+def _import_channels(entry: ConfigEntry) -> list[ChannelConfig]:
+    """The channels an import is priced on: general first, then controlled load."""
+    channels = [ChannelConfig.from_dict(c) for c in entry.data[CONF_CHANNELS]]
+    return [c for c in channels if c.type == CHANNEL_GENERAL] + [
+        c for c in channels if c.type == CHANNEL_CONTROLLED_LOAD
+    ]
+
+
+class GridMeterSubentryFlow(ConfigSubentryFlow):
+    """A meter on the main supply: import priced on the general (or controlled load)
+    channel, and optionally export priced on the feed-in channel (section 21)."""
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
-        """Choose the sensor and the channel whose billed price applies."""
+        """Name the meter and choose its sensors."""
         entry = self._get_entry()
-        channels = entry.data[CONF_CHANNELS]
+        imports = _import_channels(entry)
+        if not imports:
+            return self.async_abort(reason="no_import_channel")
+        feed_in = next(
+            (
+                ChannelConfig.from_dict(c)
+                for c in entry.data[CONF_CHANNELS]
+                if c["type"] == CHANNEL_FEED_IN
+            ),
+            None,
+        )
         errors: dict[str, str] = {}
         if user_input is not None:
-            entity_id = user_input[CONF_SENSOR]
-            state = self.hass.states.get(entity_id)
-            attrs = state.attributes if state else {}
-            mapped = [
-                s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_OWN_SENSOR
-            ]
-            if any(sub.unique_id == entity_id for sub in mapped):
-                return self.async_abort(reason="already_configured")
-            if state is None:
-                errors[CONF_SENSOR] = "sensor_not_found"
-            elif attrs.get("device_class") != "energy" or attrs.get("state_class") not in (
-                "total",
-                "total_increasing",
-            ):
-                errors[CONF_SENSOR] = "not_cumulative_energy"
-            else:
-                channel = next(c for c in channels if c["identifier"] == user_input[CONF_CHANNEL])
-                name = attrs.get("friendly_name") or entity_id
+            name = user_input[CONF_NAME].strip()
+            import_id = user_input[CONF_IMPORT_SENSOR]
+            export_id = user_input.get(CONF_EXPORT_SENSOR) or None
+            errors = _check_sensors(
+                self.hass, entry, {CONF_IMPORT_SENSOR: import_id, CONF_EXPORT_SENSOR: export_id}
+            )
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            if not errors:
+                data = {
+                    CONF_NAME: name,
+                    CONF_IMPORT_SENSOR: import_id,
+                    CONF_IMPORT_CHANNEL: user_input.get(CONF_IMPORT_CHANNEL)
+                    or imports[0].identifier,
+                }
+                if export_id and feed_in is not None:
+                    data[CONF_EXPORT_SENSOR] = export_id
+                    data[CONF_EXPORT_CHANNEL] = feed_in.identifier
                 return self.async_create_entry(
-                    title=f"{name} ({_CHANNEL_LABELS[channel['type']]} {channel['identifier']})",
-                    data={
-                        CONF_SENSOR: entity_id,
-                        CONF_CHANNEL: channel["identifier"],
-                        CONF_NAME: name,  # fixed at creation; names the reconciliation entity
-                    },
-                    unique_id=entity_id,
+                    title=grid_meter_title(name),
+                    data=data,
+                    unique_id=grid_meter_unique_id(import_id),
                 )
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_SENSOR): EntitySelector(
-                    EntitySelectorConfig(domain="sensor", device_class="energy")
-                ),
-                vol.Required(CONF_CHANNEL, default=channels[0]["identifier"]): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(
-                                value=c["identifier"],
-                                label=f"{c['identifier']} ({_CHANNEL_LABELS[c['type']]})",
-                            )
-                            for c in channels
-                        ],
-                        mode=SelectSelectorMode.LIST,
-                    )
-                ),
-            }
-        )
+        fields: dict[Any, Any] = {
+            vol.Required(CONF_NAME): TextSelector(),
+            vol.Required(CONF_IMPORT_SENSOR): _energy_selector(),
+        }
+        if len(imports) > 1:
+            fields[vol.Required(CONF_IMPORT_CHANNEL, default=imports[0].identifier)] = (
+                _channel_selector(imports)
+            )
+        if feed_in is not None:
+            fields[vol.Optional(CONF_EXPORT_SENSOR)] = _energy_selector()
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input or {}),
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(fields), user_input or {CONF_NAME: "Whole house meter"}
+            ),
+            errors=errors,
+        )
+
+
+class ApplianceSubentryFlow(ConfigSubentryFlow):
+    """Any single energy sensor, priced on the general (or controlled load) channel,
+    without reconciliation (section 21)."""
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Name the appliance, choose its sensor and the channel it is priced on."""
+        entry = self._get_entry()
+        imports = _import_channels(entry)
+        if not imports:
+            return self.async_abort(reason="no_import_channel")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = user_input[CONF_NAME].strip()
+            entity_id = user_input[CONF_SENSOR]
+            errors = _check_sensors(self.hass, entry, {CONF_SENSOR: entity_id})
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            if not errors:
+                ident = user_input.get(CONF_CHANNEL) or imports[0].identifier
+                channel = next(c for c in imports if c.identifier == ident)
+                return self.async_create_entry(
+                    title=appliance_title(name, channel),
+                    data={CONF_NAME: name, CONF_SENSOR: entity_id, CONF_CHANNEL: ident},
+                    unique_id=appliance_unique_id(entity_id),
+                )
+        fields: dict[Any, Any] = {
+            vol.Required(CONF_NAME): TextSelector(),
+            vol.Required(CONF_SENSOR): _energy_selector(),
+        }
+        if len(imports) > 1:
+            fields[vol.Required(CONF_CHANNEL, default=imports[0].identifier)] = _channel_selector(
+                imports
+            )
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(vol.Schema(fields), user_input or {}),
             errors=errors,
         )

@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
-from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
+from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -57,7 +57,6 @@ from .const import (
     CONF_ALLOWANCE_KWH,
     CONF_ALLOWANCE_TOTALLING,
     CONF_BILLING_DAY,
-    CONF_CHANNEL,
     CONF_CHANNELS,
     CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
@@ -69,7 +68,6 @@ from .const import (
     CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
-    CONF_SENSOR,
     CONF_SITE_ID,
     CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
@@ -88,9 +86,8 @@ from .const import (
     SERVICE_PROBE_RETENTION,
     SERVICE_RUN_NOW,
     SERVICE_UNDO_MIGRATION,
-    SUBENTRY_OWN_SENSOR,
 )
-from .devices import device_info, entry_title, is_default_title
+from .devices import device_info, entry_title, is_default_title, site_model
 from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
 from .export import (
     DEFAULT_PENALTY_PERIOD,
@@ -101,7 +98,8 @@ from .export import (
     detect_tariff,
 )
 from .importer import ImportContext
-from .manager import AmberManager, OwnSensor, nem_today
+from .manager import AmberManager, nem_today
+from .meters import async_update_convert_issue, own_sensors_from_entry
 from .migration import (
     MigrationRefused,
     async_check_cleanup,
@@ -110,7 +108,7 @@ from .migration import (
     async_undo,
 )
 from .schedule import ScheduleConfig, parse_times
-from .statistics import ChannelConfig, build_specs, own_cost_spec
+from .statistics import ChannelConfig, build_specs
 from .storage import AmberStore, async_forget_chain
 
 _LOGGER = logging.getLogger(__name__)
@@ -163,6 +161,8 @@ class AmberRuntimeData:
     last_error: dict[str, str] | None = None
     options: dict[str, Any] = field(default_factory=dict)
     """The options the manager runs with (an entry update may change only the title)."""
+    converting: bool = False
+    """Sub-entries are being converted (section 21): one reload follows, at the end."""
 
 
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
@@ -229,31 +229,6 @@ def bill_from_options(options: dict[str, Any]) -> BillSettings | None:
         gst_percent=float(options.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)),
         fixed_statistic=bool(options.get(CONF_FIXED_STATISTIC, False)),
     )
-
-
-def own_sensors_from_entry(
-    entry: ConfigEntry, channels: tuple[ChannelConfig, ...]
-) -> list[OwnSensor]:
-    """The own-sensor mappings (config sub-entries) whose channel still exists."""
-    by_ident = {c.identifier: c for c in channels}
-    sensors = []
-    for subentry in entry.subentries.values():
-        if subentry.subentry_type != SUBENTRY_OWN_SENSOR:
-            continue
-        channel = by_ident.get(subentry.data[CONF_CHANNEL])
-        if channel is None:
-            continue
-        entity_id = subentry.data[CONF_SENSOR]
-        sensors.append(
-            OwnSensor(
-                subentry.subentry_id,
-                entity_id,
-                channel,
-                own_cost_spec(entry.data[CONF_SITE_ID], entity_id, channel),
-                subentry.data.get(CONF_NAME, entity_id),
-            )
-        )
-    return sensors
 
 
 def schedule_from_options(options: dict[str, Any]) -> ScheduleConfig:
@@ -539,9 +514,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         dict(entry.options), tariff
     )
     own = own_sensors_from_entry(entry, channels)
-    known = {s.key for s in own} | {"price"}
     for key in list(store.as_dict()["chains"]):
-        if key not in known:
+        if key.startswith("own:") and key.split(":")[1] not in entry.subentries:
             await async_forget_chain(store, key)  # mapping removed; statistics are kept
     manager = AmberManager(
         hass,
@@ -558,12 +532,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     )
     # The site's device first, so own-sensor devices can link to it (section 18).
     device = dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id, **device_info(site_id)
+        config_entry_id=entry.entry_id, **device_info(site_id, site_model(site.network, site.nmi))
     )
     entry.runtime_data = AmberRuntimeData(
         context=ctx, manager=manager, device_id=device.id, options=dict(entry.options)
     )
     async_update_titles(hass)
+    async_update_convert_issue(hass, entry, channels)
     if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
         # Chosen in the config flow: carried out once (section 18).
         await async_add_to_energy(hass, manager, "setup")
@@ -577,6 +552,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
 
     async def _started(_hass: HomeAssistant) -> None:
         await async_listen_for_changes(hass)
+        await manager.async_refresh_calibration()
         await _check_all()
 
     # Re-check the YAML kit's leftovers and the Energy dashboard once Home Assistant has
@@ -633,13 +609,14 @@ def async_update_titles(hass: HomeAssistant, removed: str | None = None) -> None
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
-    """Apply option changes in place; reload only when own-sensor mappings changed."""
+    """Apply option changes in place; reload only when the mappings (grid meters,
+    appliances, 2.1 own sensors) changed."""
     runtime = entry.runtime_data
+    if runtime.converting:
+        return
     manager = runtime.manager
     current = {s.subentry_id for s in manager.own_sensors}
-    wanted = {
-        sid for sid, sub in entry.subentries.items() if sub.subentry_type == SUBENTRY_OWN_SENSOR
-    }
+    wanted = {s.subentry_id for s in own_sensors_from_entry(entry, manager.ctx.channels)}
     if current == wanted and dict(entry.options) == runtime.options:
         return  # the title (or nothing the manager uses) changed
     runtime.options = dict(entry.options)

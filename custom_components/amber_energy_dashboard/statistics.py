@@ -23,7 +23,7 @@ from .const import (
 
 CURRENCY = "AUD"
 
-_CHANNEL_LABELS = {
+CHANNEL_LABELS = {
     CHANNEL_GENERAL: "general",
     CHANNEL_CONTROLLED_LOAD: "controlled load",
     CHANNEL_FEED_IN: "feed-in",
@@ -101,7 +101,7 @@ def build_specs(site_id: str, channels: Iterable[ChannelConfig]) -> list[Statist
         if ident in seen:
             raise ValueError(f"duplicate channel identifier {channel.identifier!r}")
         seen.add(ident)
-        label = f"Amber {_CHANNEL_LABELS[channel.type]} {channel.identifier}"
+        label = f"Amber {CHANNEL_LABELS[channel.type]} {channel.identifier}"
         specs.append(
             StatisticSpec(
                 statistic_id(site_id, f"{ident}_energy"),
@@ -175,7 +175,7 @@ def price_specs(site_id: str, channels: Iterable[ChannelConfig]) -> list[MeanSpe
         MeanSpec(
             statistic_id(site_id, f"{c.identifier.lower()}_price"),
             c.identifier,
-            f"Amber {_CHANNEL_LABELS[c.type]} {c.identifier} price",
+            f"Amber {CHANNEL_LABELS[c.type]} {c.identifier} price",
         )
         for c in channels
     ]
@@ -190,15 +190,23 @@ def sensor_slug(entity_id: str) -> str:
     return slug.strip("_") or "sensor"
 
 
-def own_cost_spec(site_id: str, entity_id: str, channel: ChannelConfig) -> StatisticSpec:
-    """The own-sensor cost statistic. Feed-in mappings are positive when earned."""
+def own_cost_spec(
+    site_id: str, entity_id: str, channel: ChannelConfig, label: str | None = None
+) -> StatisticSpec:
+    """The own-sensor cost statistic. Feed-in mappings are positive when earned.
+
+    The ID comes from the sensor's entity ID only, for every kind of mapping, so a 2.1
+    mapping converted to a grid meter or an appliance (2.2) keeps its statistic. ``label``
+    (from the mapping's name) only names it.
+    """
     slug = sensor_slug(entity_id)
     feed_in = channel.type == CHANNEL_FEED_IN
+    metric = "compensation" if feed_in else "cost"
     return StatisticSpec(
         statistic_id(site_id, f"own_{slug}_cost"),
         Metric.COMPENSATION if feed_in else Metric.COST,
         channel.identifier,
-        f"Amber own {slug} {'compensation' if feed_in else 'cost'}",
+        f"{label} {metric} (Amber prices)" if label else f"Amber own {slug} {metric}",
         CURRENCY,
         None,
     )

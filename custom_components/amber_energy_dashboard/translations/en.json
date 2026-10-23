@@ -280,6 +280,24 @@
       },
       "export_charge": {
         "name": "Export charge after allowance"
+      },
+      "import_reconciliation": {
+        "name": "Import reconciliation"
+      },
+      "export_reconciliation": {
+        "name": "Export reconciliation"
+      },
+      "calibration_offset": {
+        "name": "Calibration offset"
+      },
+      "appliance_yesterday_energy": {
+        "name": "Yesterday energy"
+      },
+      "appliance_yesterday_cost": {
+        "name": "Yesterday cost"
+      },
+      "appliance_yesterday_compensation": {
+        "name": "Yesterday compensation"
       }
     }
   },
@@ -330,6 +348,40 @@
           "energy_unavailable": "The Energy dashboard settings could not be read.",
           "add_failed": "The Energy dashboard was not changed: {reason}",
           "use_migration": "Use Migrate from the YAML kit in the integration's options. This notice clears itself afterwards."
+        }
+      }
+    },
+    "convert_own_sensors": {
+      "title": "Convert own energy sensors to grid meters and appliances ({entry})",
+      "fix_flow": {
+        "step": {
+          "plan": {
+            "title": "Convert own energy sensors",
+            "description": "Version 2.2 replaces own energy sensors with two kinds of mapping:\n\n- a **grid meter**: a meter on your main supply (import, and optionally export), compared each day with Amber's billed totals;\n- an **appliance**: any other energy sensor, priced but not compared.\n\nYour own energy sensors:\n\n{mappings}\n\nChoose which of them make your grid meter. Every other one becomes an appliance. Cost statistics and their history are kept.",
+            "data": {
+              "grid_import": "Grid meter import",
+              "grid_export": "Grid meter export",
+              "grid_name": "Grid meter name"
+            },
+            "data_description": {
+              "grid_import": "The sensor measuring import on your main supply, or None if none of them is a grid meter.",
+              "grid_export": "The same meter's export sensor, if it has one.",
+              "grid_name": "For example \"Whole house meter\"."
+            }
+          },
+          "confirm": {
+            "title": "Convert own energy sensors",
+            "description": "These replace your own energy sensors:\n\n{plan}\n\nEach sensor's cost statistic and its history are kept. The old own-sensor devices and their reconciliation sensors are removed; a grid meter's reconciliation sensors take over their entity IDs. Appliances have yesterday's energy and cost instead of reconciliation. The integration reloads afterwards."
+          }
+        },
+        "error": {
+          "export_needs_import": "A grid meter needs an import sensor. Choose one, or set export to None (it then becomes an appliance).",
+          "name_required": "Enter a name for the grid meter."
+        },
+        "abort": {
+          "not_loaded": "The integration is not loaded.",
+          "nothing_to_convert": "There are no own energy sensors left to convert.",
+          "convert_failed": "The conversion did not complete: {reason}"
         }
       }
     }
@@ -469,28 +521,74 @@
     }
   },
   "config_subentries": {
-    "own_sensor": {
-      "entry_type": "Own energy sensor",
+    "grid_meter": {
+      "entry_type": "Grid meter",
       "initiate_flow": {
-        "user": "Add own energy sensor"
+        "user": "Add grid meter"
       },
       "step": {
         "user": {
-          "title": "Price your own energy sensor",
-          "description": "Choose a cumulative energy sensor (for example CT clamps or a smart plug) and the Amber channel whose billed price applies. Its cost is recorded as a statistic, from the later of the sensor's history start and Amber's retention boundary.",
+          "title": "Add a grid meter",
+          "description": "A grid meter measures the energy flowing through your main supply. Examples: a CT clamp or energy monitor on the mains feed, or the grid meter of an inverter or battery system (such as a Sigenergy system or a Fronius smart meter).\n\nIts import is priced at Amber's billed rate for each 5-minute interval (general, or controlled load), and its export at the feed-in rate, so you see what your meter's readings cost.\n\nBecause it measures the same energy Amber bills, the integration compares it each day with Amber's billed totals (reconciliation). That shows calibration drift and dropped readings, and with import and export it also estimates the meter's calibration offset in watts.\n\nChoose the raw sensors as the meter reports them, not ones you have already corrected: the offset is measured from these sensors, so a corrected sensor would feed its own correction back.",
           "data": {
-            "entity_id": "Energy sensor",
-            "channel": "Amber channel"
+            "name": "Name",
+            "import_entity_id": "Import energy sensor",
+            "import_channel": "Price import on",
+            "export_entity_id": "Export energy sensor (optional)"
+          },
+          "data_description": {
+            "name": "For example \"Whole house meter\". It names the meter's device and sensors.",
+            "import_entity_id": "Cumulative energy drawn from the grid (kWh, always rising).",
+            "import_channel": "The Amber channel this meter's import is billed on: general, or controlled load for a meter on that circuit.",
+            "export_entity_id": "Cumulative energy sent to the grid, priced at the feed-in rate. Leave empty if you have no export, or the meter doesn't report it."
           }
         }
       },
       "error": {
         "sensor_not_found": "The sensor was not found.",
-        "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing."
+        "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing.",
+        "sensor_in_use": "This sensor is already used by another grid meter, appliance or own sensor. A sensor can be priced only once.",
+        "same_sensor": "Choose different sensors for import and export.",
+        "name_required": "Enter a name."
       },
       "abort": {
-        "already_configured": "This sensor is already mapped."
+        "no_import_channel": "This site has no general or controlled load channel to price an import on."
       }
+    },
+    "appliance": {
+      "entry_type": "Appliance",
+      "initiate_flow": {
+        "user": "Add appliance"
+      },
+      "step": {
+        "user": {
+          "title": "Add an appliance",
+          "description": "An appliance is any single energy sensor. Examples: a smart plug, a CT clamp on one circuit, an appliance's own energy sensor (such as a heat pump or hot water system), or an EV charger.\n\nIts energy is priced at Amber's billed rate for each 5-minute interval and recorded as a cost statistic, with sensors for yesterday's energy and cost.\n\nAn appliance is not compared with Amber's billed totals: one circuit is only part of what the house draws, so the difference would mean nothing. To compare a meter on the main supply with Amber, add a grid meter instead.",
+          "data": {
+            "name": "Name",
+            "entity_id": "Energy sensor",
+            "channel": "Price on"
+          },
+          "data_description": {
+            "name": "For example \"Pool heat pump\". It names the appliance's device and sensors.",
+            "entity_id": "Cumulative energy used by the appliance (kWh, always rising).",
+            "channel": "The Amber channel the appliance is billed on: general, or controlled load if it is on that circuit (for example a hot water system)."
+          }
+        }
+      },
+      "error": {
+        "sensor_not_found": "The sensor was not found.",
+        "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing.",
+        "sensor_in_use": "This sensor is already used by another grid meter, appliance or own sensor. A sensor can be priced only once.",
+        "same_sensor": "Choose different sensors for import and export.",
+        "name_required": "Enter a name."
+      },
+      "abort": {
+        "no_import_channel": "This site has no general or controlled load channel to price an appliance on."
+      }
+    },
+    "own_sensor": {
+      "entry_type": "Own energy sensor (2.1)"
     }
   }
 }

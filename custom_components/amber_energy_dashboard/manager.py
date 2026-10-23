@@ -38,7 +38,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from . import chains, importer
+from . import calibration, chains, importer
 from .api import (
     AmberAuthError,
     AmberBudgetExhaustedError,
@@ -65,6 +65,11 @@ from .const import (
     RETENTION_DISCOVERY_MAX_CALLS,
     RETENTION_FALLBACK_DAYS,
     RETENTION_REVERIFY_BRACKET_DAYS,
+    ROLE_EXPORT,
+    ROLE_IMPORT,
+    SUBENTRY_APPLIANCE,
+    SUBENTRY_GRID_METER,
+    SUBENTRY_OWN_SENSOR,
 )
 from .derived import Derived, async_sync as async_sync_derived, fixed_extra, refund_extra
 from .export import (
@@ -150,19 +155,32 @@ class MarkerMismatchError(ImportRefusedError):
 
 @dataclass(frozen=True, slots=True)
 class OwnSensor:
-    """A user's energy sensor mapped to an Amber channel (a config sub-entry)."""
+    """A user's energy sensor priced on an Amber channel: a 2.1 own-sensor mapping, one
+    side of a grid meter, or an appliance (each a config sub-entry, section 11)."""
 
     subentry_id: str
     entity_id: str
     channel: ChannelConfig
     spec: StatisticSpec
     name: str
-    """The source sensor's friendly name when the mapping was created."""
+    """The mapping's name: the one the user gave (2.2), or the source sensor's friendly
+    name when a 2.1 mapping was created."""
+    kind: str = SUBENTRY_OWN_SENSOR
+    role: str | None = None
+    """A grid meter's side (import or export); None for the other kinds."""
 
     @property
     def key(self) -> str:
         """The chain key in the Store."""
-        return f"own:{self.subentry_id}"
+        if self.role is None:
+            return f"own:{self.subentry_id}"
+        return f"own:{self.subentry_id}:{self.role}"
+
+    @property
+    def reconciled(self) -> bool:
+        """Compared with Amber's billed kWh: grid meters and 2.1 mappings, not appliances
+        (a circuit against the whole house's total means nothing)."""
+        return self.kind != SUBENTRY_APPLIANCE
 
 
 @dataclass(slots=True)
@@ -262,6 +280,8 @@ class AmberManager:
         """Imported days found without feed-in records (nothing to measure; not refetched)."""
         self.last_export_measurement: dict[str, Any] | None = None
         """The last measurement of export aggregates outside a run (diagnostics)."""
+        self.calibration: dict[str, dict[str, Any]] = {}
+        """Each grid meter's calibration offset (by sub-entry), from the last refresh."""
 
     @property
     def _ids(self) -> list[str]:
@@ -446,6 +466,7 @@ class AmberManager:
             self.status = summary["status"]
             await self.store.async_set_last_run(summary)
             self._update_behind_issue(summary, final)
+            await self.async_refresh_calibration(publish=False)
             self._publish()
             _LOGGER.info(
                 "Run (%s) finished: %s, %d day(s) imported, marker %s",
@@ -2017,12 +2038,71 @@ class AmberManager:
                 },
             )
 
-    def _reconciliation(self) -> dict[str, dict[str, Any] | None]:
-        """Own kWh minus Amber's kWh on the mapped channel (general, controlled load or
-        feed-in) for the last day both have (Full mode only)."""
+    async def async_refresh_calibration(self, *, publish: bool = True) -> None:
+        """Recompute each grid meter's calibration offset (one with import and export)
+        from the complete billed days up to the last imported day (section 21). It never
+        stops a run: a failure is logged, and the meter's offset becomes unknown."""
+        meters: dict[str, dict[str, OwnSensor]] = defaultdict(dict)
+        for sensor in self.own_sensors:
+            if sensor.kind == SUBENTRY_GRID_METER:
+                meters[sensor.subentry_id][str(sensor.role)] = sensor
+        last = self.store.last_written
+        days = calibration.billed_days(self.store.day, last) if last is not None else []
+        result: dict[str, dict[str, Any]] = {}
+        for subentry_id, sides in meters.items():
+            if ROLE_IMPORT not in sides or ROLE_EXPORT not in sides:
+                continue
+            imp, exp = sides[ROLE_IMPORT], sides[ROLE_EXPORT]
+            try:
+                result[subentry_id] = await calibration.async_offset(
+                    self.hass,
+                    days,
+                    (imp.entity_id, exp.entity_id),
+                    (self._energy_sid(imp.channel), self._energy_sid(exp.channel)),
+                    _utcnow(),
+                )
+            except Exception:
+                _LOGGER.exception("Calibration offset for %s failed", imp.name)
+        self.calibration = result
+        if publish:
+            self._publish()
+
+    def _energy_sid(self, channel: ChannelConfig) -> str:
+        return next(
+            s.statistic_id
+            for s in self.ctx.specs
+            if s.channel == channel.identifier and s.metric is Metric.ENERGY
+        )
+
+    def _appliances(self) -> dict[str, dict[str, Any] | None]:
+        """Each appliance's energy and cost for yesterday (NEM day), once it is priced."""
+        yesterday = nem_today() - timedelta(days=1)
         result: dict[str, dict[str, Any] | None] = {}
         for sensor in self.own_sensors:
-            result[sensor.subentry_id] = None
+            if sensor.kind != SUBENTRY_APPLIANCE:
+                continue
+            record = chain_state(self.store, sensor.key).day(yesterday) or {}
+            result[sensor.key] = (
+                {
+                    "date": yesterday.isoformat(),
+                    "energy_kwh": record.get("energy_kwh"),
+                    "cost": record.get("amount"),
+                    "lower_precision": record.get("lower_precision", False),
+                }
+                if record.get("status") == STATUS_IMPORTED
+                else None
+            )
+        return result
+
+    def _reconciliation(self) -> dict[str, dict[str, Any] | None]:
+        """Own kWh minus Amber's kWh on the mapped channel (general, controlled load or
+        feed-in) for the last day both have (Full mode only), by chain key. Appliances
+        are not reconciled."""
+        result: dict[str, dict[str, Any] | None] = {}
+        for sensor in self.own_sensors:
+            if not sensor.reconciled:
+                continue
+            result[sensor.key] = None
             if self.usage_mode != MODE_FULL:
                 continue
             energy_sid = next(
@@ -2040,7 +2120,7 @@ class AmberManager:
                     own_kwh = own.get("energy_kwh")
                     if amber_kwh is not None and own_kwh is not None:
                         diff = own_kwh - amber_kwh
-                        result[sensor.subentry_id] = {
+                        result[sensor.key] = {
                             "date": day.isoformat(),
                             "difference_kwh": round(diff, 3),
                             "difference_percent": round(100 * diff / amber_kwh, 2)
@@ -2067,6 +2147,8 @@ class AmberManager:
         totals = record.get("totals") if record.get("status") == "imported" else None
         return {
             "reconciliation": self._reconciliation(),
+            "appliances": self._appliances(),
+            "calibration": self.calibration,
             "chains": {
                 c.key: {"marker": c.state.marker, "last_written": c.state.last_written}
                 for c in self._secondary_chains()

@@ -4,6 +4,7 @@ None of these has a state_class, so Home Assistant never compiles them into stat
 The Energy dashboard uses the external statistics, not these sensors.
 """
 
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -14,7 +15,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -22,9 +23,18 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import AmberConfigEntry
-from .const import CHANNEL_FEED_IN, DOMAIN
-from .devices import async_site_entity_ids, device_info, own_sensor_device_info
-from .manager import STATUSES
+from .const import (
+    CHANNEL_FEED_IN,
+    CONF_ENTITY_IDS,
+    DOMAIN,
+    ROLE_EXPORT,
+    ROLE_IMPORT,
+    SUBENTRY_APPLIANCE,
+    SUBENTRY_GRID_METER,
+)
+from .devices import async_site_entity_ids, device_info
+from .manager import STATUSES, OwnSensor
+from .meters import mapping_device_info
 from .statistics import CURRENCY, Metric
 
 PARALLEL_UPDATES = 0
@@ -198,22 +208,99 @@ def _yesterday_attrs(data: dict[str, Any]) -> dict[str, Any]:
     return {"date": day.isoformat()}
 
 
-def _reconciliation_value(subentry_id: str) -> Callable[[dict[str, Any]], float | None]:
+def _reconciliation_value(key: str) -> Callable[[dict[str, Any]], float | None]:
     def value(data: dict[str, Any]) -> float | None:
-        result = (data.get("reconciliation") or {}).get(subentry_id)
+        result = (data.get("reconciliation") or {}).get(key)
         return None if result is None else result["difference_kwh"]
 
     return value
 
 
-def _reconciliation_attrs(subentry_id: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+def _reconciliation_attrs(key: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
     def attrs(data: dict[str, Any]) -> dict[str, Any] | None:
-        result = (data.get("reconciliation") or {}).get(subentry_id)
+        result = (data.get("reconciliation") or {}).get(key)
         if result is None:
             return None
         return {k: v for k, v in result.items() if k != "difference_kwh"}
 
     return attrs
+
+
+def _mapping_value(group: str, key: str, field: str) -> Callable[[dict[str, Any]], float | None]:
+    def value(data: dict[str, Any]) -> float | None:
+        result = (data.get(group) or {}).get(key)
+        return None if result is None else result[field]
+
+    return value
+
+
+def _mapping_attrs(
+    group: str, key: str, field: str
+) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    def attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+        result = (data.get(group) or {}).get(key)
+        return None if result is None else {k: v for k, v in result.items() if k != field}
+
+    return attrs
+
+
+def _mapping_descriptions(sensor: OwnSensor) -> list[AmberSensorDescription]:
+    """A mapping's sensors: reconciliation (grid meters and 2.1 mappings, section 11), or
+    yesterday's energy and cost (appliances, section 21)."""
+    if sensor.kind == SUBENTRY_APPLIANCE:
+        feed_in = sensor.channel.type == CHANNEL_FEED_IN
+        return [
+            AmberSensorDescription(
+                key=f"yesterday_energy_{sensor.subentry_id}",
+                translation_key="appliance_yesterday_energy",
+                device_class=SensorDeviceClass.ENERGY,
+                native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                suggested_display_precision=3,
+                value_fn=_mapping_value("appliances", sensor.key, "energy_kwh"),
+                attrs_fn=_mapping_attrs("appliances", sensor.key, "energy_kwh"),
+            ),
+            AmberSensorDescription(
+                key=f"yesterday_cost_{sensor.subentry_id}",
+                translation_key="appliance_yesterday_compensation"
+                if feed_in
+                else "appliance_yesterday_cost",
+                device_class=SensorDeviceClass.MONETARY,
+                native_unit_of_measurement=CURRENCY,
+                suggested_display_precision=2,
+                value_fn=_mapping_value("appliances", sensor.key, "cost"),
+                attrs_fn=_mapping_attrs("appliances", sensor.key, "cost"),
+            ),
+        ]
+    if sensor.kind == SUBENTRY_GRID_METER:
+        key, translation_key = (
+            f"{sensor.role}_reconciliation_{sensor.subentry_id}",
+            f"{sensor.role}_reconciliation",
+        )
+    else:
+        key, translation_key = f"reconciliation_{sensor.subentry_id}", "reconciliation"
+    return [
+        AmberSensorDescription(
+            key=key,
+            translation_key=translation_key,
+            native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            suggested_display_precision=3,
+            value_fn=_reconciliation_value(sensor.key),
+            attrs_fn=_reconciliation_attrs(sensor.key),
+        )
+    ]
+
+
+def _calibration_description(subentry_id: str) -> AmberSensorDescription:
+    """A grid meter's calibration offset (W), with import and export (section 21)."""
+    return AmberSensorDescription(
+        key=f"calibration_offset_{subentry_id}",
+        translation_key="calibration_offset",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=1,
+        value_fn=_mapping_value("calibration", subentry_id, "offset_w"),
+        attrs_fn=_mapping_attrs("calibration", subentry_id, "offset_w"),
+    )
 
 
 async def async_setup_entry(
@@ -275,27 +362,28 @@ async def async_setup_entry(
         )
         for description in descriptions
     )
+    by_subentry: dict[str, list[OwnSensor]] = defaultdict(list)
     for sensor in manager.own_sensors:
-        description = AmberSensorDescription(
-            key=f"reconciliation_{sensor.subentry_id}",
-            translation_key="reconciliation",
-            native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-            suggested_display_precision=3,
-            value_fn=_reconciliation_value(sensor.subentry_id),
-            attrs_fn=_reconciliation_attrs(sensor.subentry_id),
-        )
+        by_subentry[sensor.subentry_id].append(sensor)
+    for subentry_id, sensors in by_subentry.items():
+        descriptions = [d for sensor in sensors for d in _mapping_descriptions(sensor)]
+        if {s.role for s in sensors} == {ROLE_IMPORT, ROLE_EXPORT}:
+            descriptions.append(_calibration_description(subentry_id))
+        # A converted mapping's entities ask for the entity IDs of the ones they replace.
+        hints = entry.subentries[subentry_id].data.get(CONF_ENTITY_IDS) or {}
+        device = mapping_device_info(site, sensors[0], entry.runtime_data.device_id)
         async_add_entities(
             [
                 AmberSensor(
                     manager.coordinator,
                     entry,
                     description,
-                    own_sensor_device_info(
-                        manager.ctx.site_id, sensor, entry.runtime_data.device_id
-                    ),
+                    device,
+                    entity_id=hints.get(description.translation_key),
                 )
+                for description in descriptions
             ],
-            config_subentry_id=sensor.subentry_id,
+            config_subentry_id=subentry_id,
         )
 
 

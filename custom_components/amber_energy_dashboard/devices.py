@@ -1,8 +1,7 @@
-"""The integration's devices (one per site, and one per own-sensor mapping, section 18),
+"""The integration's site device (each mapping's device is in meters.py, section 21),
 the site entities' IDs, and the config entry's title."""
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
@@ -11,9 +10,6 @@ from homeassistant.helpers.translation import async_get_translations
 from homeassistant.util import slugify
 
 from .const import DOMAIN
-
-if TYPE_CHECKING:
-    from .manager import OwnSensor
 
 MANUFACTURER = "Amber Electric (unofficial integration)"
 DEFAULT_TITLE = "Amber Energy Dashboard"
@@ -33,27 +29,25 @@ def is_default_title(title: str, nmi: str) -> bool:
     return title in (f"Amber {nmi}", entry_title(nmi, False), entry_title(nmi, True))
 
 
-def device_info(site: str) -> DeviceInfo:
-    """The site's device, shared by the sensors and buttons."""
-    return DeviceInfo(
+def site_model(network: str | None, nmi: str | None) -> str | None:
+    """The site device's model line (2.2): "<network> · NMI …<last 4>", from /sites. It
+    never shows the full NMI."""
+    parts = [network, f"NMI …{nmi[-4:]}" if nmi else None]
+    return " · ".join(p for p in parts if p) or None
+
+
+def device_info(site: str, model: str | None = None) -> DeviceInfo:
+    """The site's device, shared by the sensors and buttons. The model is set once, at
+    setup; entities leave it out, so the registry keeps it."""
+    info = DeviceInfo(
         identifiers={(DOMAIN, site)},
         name=SITE_DEVICE_NAME,
         manufacturer=MANUFACTURER,
         entry_type=DeviceEntryType.SERVICE,
     )
-
-
-def own_sensor_device_info(site: str, sensor: OwnSensor, site_device_id: str) -> DeviceInfo:
-    """An own-sensor mapping's device, linked to the site's. A device belongs to one
-    config sub-entry, so the mapping's entities can't share the site's device."""
-    return DeviceInfo(
-        identifiers={(DOMAIN, f"{site}_own_{sensor.subentry_id}")},
-        name=f"{sensor.name} (own sensor)",
-        manufacturer=MANUFACTURER,
-        model="Own energy sensor",
-        entry_type=DeviceEntryType.SERVICE,
-        via_device_id=site_device_id,
-    )
+    if model is not None:
+        info["model"] = model
+    return info
 
 
 async def async_site_entity_ids(

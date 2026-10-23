@@ -571,6 +571,15 @@ def chain_state(store: AmberStore, key: str) -> ChainState:
     return ChainState(store, key)
 
 
+async def async_rename_chains(store: AmberStore, renames: dict[str, str]) -> None:
+    """Move chains' state to new keys (a converted own-sensor mapping, section 21)."""
+    chains = store._data["chains"]
+    for old, new in renames.items():
+        if old in chains:
+            chains[new] = chains.pop(old)
+    await store._async_save()
+
+
 async def async_forget_chain(store: AmberStore, key: str) -> None:
     """Drop a chain's state (the sensor mapping was removed; statistics are kept)."""
     if store._data["chains"].pop(key, None) is not None:

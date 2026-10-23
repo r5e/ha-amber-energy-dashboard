@@ -1,12 +1,20 @@
-"""Repairs fix flow for "The Energy dashboard isn't using Amber Energy Dashboard"
-(DESIGN section 18). The integration's other issues are not fixable."""
+"""Repairs fix flows: "The Energy dashboard isn't using Amber Energy Dashboard" (DESIGN
+section 18), and converting 2.1 own-sensor mappings to a grid meter and appliances
+(section 21). The integration's other issues are not fixable."""
 
 from typing import Any
 
 from homeassistant.components.repairs import RepairsFlow
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+)
 import voluptuous as vol
 
 from .const import DOMAIN
@@ -18,7 +26,25 @@ from .energy import (
     has_grid,
 )
 from .manager import AmberManager
+from .meters import (
+    DEFAULT_GRID_NAME,
+    ISSUE_CONVERT,
+    ConversionFailed,
+    ConversionPlan,
+    async_convert,
+    default_plan,
+    describe_mappings,
+    describe_plan,
+    legacy_mappings,
+    plan_with,
+    split_legacy,
+)
 from .migration import async_detect
+
+NONE = "none"
+GRID_IMPORT = "grid_import"
+GRID_EXPORT = "grid_export"
+GRID_NAME = "grid_name"
 
 
 class EnergyNotUsedFlow(RepairsFlow):
@@ -79,8 +105,108 @@ class EnergyNotUsedFlow(RepairsFlow):
         )
 
 
+class ConvertMappingsFlow(RepairsFlow):
+    """Convert 2.1 own-sensor mappings: an import and an export mapping become one grid
+    meter, every other mapping an appliance. Statistics are kept (section 21)."""
+
+    def __init__(self, entry_id: str) -> None:
+        """Remember which entry the issue is for."""
+        self._entry_id = entry_id
+        self._entry: ConfigEntry | None = None
+        self._plan: ConversionPlan | None = None
+
+    def _legacy(self) -> tuple[list[Any], tuple[Any, ...]]:
+        """The 2.1 mappings to convert, and the site's channels."""
+        assert self._entry is not None
+        channels = self._entry.runtime_data.manager.ctx.channels
+        return legacy_mappings(self._entry, channels), channels
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Choose the grid meter's sides when there is a choice; else confirm."""
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="not_loaded")
+        self._entry = entry
+        legacy, channels = self._legacy()
+        if not legacy:
+            return self.async_abort(reason="nothing_to_convert")
+        imports, _ = split_legacy(legacy, channels)
+        if not imports:
+            self._plan = plan_with(legacy, None, None, DEFAULT_GRID_NAME)
+            return await self.async_step_confirm()
+        return await self.async_step_plan()
+
+    async def async_step_plan(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Which mappings make the grid meter (import, and optionally export), and its name."""
+        legacy, channels = self._legacy()
+        imports, exports = split_legacy(legacy, channels)
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            grid_import = user_input[GRID_IMPORT]
+            grid_export = user_input.get(GRID_EXPORT, NONE)
+            name = str(user_input.get(GRID_NAME) or "").strip()
+            if grid_import == NONE and grid_export != NONE:
+                errors[GRID_EXPORT] = "export_needs_import"
+            elif grid_import != NONE and not name:
+                errors[GRID_NAME] = "name_required"
+            else:
+                self._plan = plan_with(
+                    legacy,
+                    None if grid_import == NONE else grid_import,
+                    None if grid_export == NONE else grid_export,
+                    name or DEFAULT_GRID_NAME,
+                )
+                return await self.async_step_confirm()
+        default = default_plan(legacy, channels)
+
+        def select(subs: list[Any]) -> SelectSelector:
+            return SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        *(SelectOptionDict(value=s.subentry_id, label=s.title) for s in subs),
+                        SelectOptionDict(value=NONE, label="None"),
+                    ],
+                    mode=SelectSelectorMode.LIST,
+                )
+            )
+
+        fields: dict[Any, Any] = {
+            vol.Required(GRID_IMPORT, default=default.grid_import or NONE): select(imports)
+        }
+        if exports:
+            fields[vol.Required(GRID_EXPORT, default=default.grid_export or NONE)] = select(exports)
+        fields[vol.Optional(GRID_NAME, default=DEFAULT_GRID_NAME)] = TextSelector()
+        return self.async_show_form(
+            step_id="plan",
+            data_schema=vol.Schema(fields),
+            errors=errors,
+            description_placeholders={"mappings": describe_mappings(legacy)},
+        )
+
+    async def async_step_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Show the outcome; convert on submit."""
+        assert self._entry is not None
+        assert self._plan is not None
+        if user_input is not None:
+            try:
+                await async_convert(self.hass, self._entry, self._plan)
+            except ConversionFailed as err:
+                return self.async_abort(
+                    reason="convert_failed", description_placeholders={"reason": str(err)}
+                )
+            return self.async_create_entry(data={})
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={"plan": describe_plan(self._entry, self._plan)},
+        )
+
+
 async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, Any] | None
 ) -> RepairsFlow:
-    """The fix flow for a fixable issue (only energy_not_used is fixable)."""
-    return EnergyNotUsedFlow((data or {})["entry_id"])
+    """The fix flow for a fixable issue: energy_not_used, or convert_own_sensors."""
+    entry_id = (data or {})["entry_id"]
+    if issue_id.startswith(ISSUE_CONVERT):
+        return ConvertMappingsFlow(entry_id)
+    return EnergyNotUsedFlow(entry_id)

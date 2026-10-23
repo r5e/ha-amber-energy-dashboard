@@ -26,7 +26,7 @@ M16 report). Pushed; nothing is merged or tagged. **Stopped for review.**
 - **Account/site sub-entry restructure:** assessed in section 5. **Recommendation: its
   own milestone, before M18's site-wide settings.** M17 records each mapping's site ID so
   that it doesn't get harder.
-- **Tests:** 527 pass, 100 % coverage, ruff clean (section 2).
+- **Tests:** 526 pass, 100 % coverage, ruff clean (section 2).
 
 ## 1. What was built
 
@@ -86,11 +86,13 @@ M16 report). Pushed; nothing is merged or tagged. **Stopped for review.**
 ## 2. Test results
 
 - **Full suite, 9102 stopped:** `uv run pytest --cov=custom_components.amber_energy_dashboard`
-  (CI's command) gives **527 passed**, 0 skipped, 0 failed, **100 % coverage** (4,811
-  statements). It took 7 min 20 s.
-  - 1 warning: a pytest-HA `ResourceWarning` (an unclosed SQLite connection during
-    garbage collection) in the unchanged `test_recovery::test_retention_reverify_self_corrects[stable]`.
-    It comes from the harness, not from this code.
+  (CI's command) gives **526 passed**, 0 skipped, 0 failed, **100 % coverage** (4,810
+  statements), 0 warnings. It took 7 min 23 s.
+  - An earlier full run that day (before the last fixes, also 526 passed and 100 %) gave
+    1 warning: a pytest-HA `ResourceWarning` (an unclosed SQLite connection during
+    garbage collection) in the unchanged
+    `test_recovery::test_retention_reverify_self_corrects[stable]`. It comes from the
+    harness, not from this code, and did not recur.
 - `ruff check` and `ruff format --check` are clean, and `uv lock --check` is OK.
 - **New: `tests/test_meters.py`** (18 tests):
   - the site model line, the site name and device-page renames (titles, entity IDs);
@@ -247,7 +249,7 @@ verified in a browser. I checked the frontend code instead: the package pinned b
    - Repairs issue IDs, the energy fix flow, the YAML migration, diagnostics, buttons;
    - the options flow: usage mode, bill and allowance settings are per site, so they
      move to a site reconfigure flow;
-   - the entry title, and every test helper (most of the 527 tests build a per-site
+   - the entry title, and every test helper (most of the 526 tests build a per-site
      entry).
 
    **Recommendation:** not in M17. It is neither low-risk nor contained. Make it its own

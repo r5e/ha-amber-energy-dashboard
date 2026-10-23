@@ -24,6 +24,7 @@ from custom_components.amber_energy_dashboard.const import (
 )
 
 from .synthetic import SITE_ID, site_json
+from .test_manager import _site_options, _site_sub
 
 SITES_URL = "https://api.amber.com.au/v1/sites"
 OPTION_DEFAULTS = {
@@ -98,7 +99,7 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
     )
     assert result["step_id"] == "channels"
     assert result["description_placeholders"] == {
-        "nmi": "FAKENMI000",
+        "nmi": "…I000",  # never the full NMI
         "channels": "- E1: general (tariff EA116)\n- B1: feed-in",
     }
 
@@ -109,11 +110,16 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
         result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["options"] == {CONF_SCHEDULE_MODE: "automatic"}
     assert result["title"] == "Amber Energy Dashboard"  # no NMI in the title (2.1.1)
-    assert result["result"].unique_id == SITE_ID
-    assert result["data"] == {
-        CONF_API_KEY: KEY,
+    entry = result["result"]
+    assert entry.unique_id == SITE_ID
+    assert (entry.version, entry.minor_version) == (2, 1)
+    # The entry is the Amber account; the site is a sub-entry (2.2.0-dev2, section 23).
+    assert result["data"] == {CONF_API_KEY: KEY}
+    assert result["options"] == {}
+    [site] = entry.subentries.values()
+    assert (site.subentry_type, site.title, site.unique_id) == ("site", "Beach house", SITE_ID)
+    assert dict(site.data) == {
         CONF_SITE_ID: SITE_ID,
         CONF_NMI: "FAKENMI000",
         CONF_SITE_NAME: "Beach house",
@@ -122,6 +128,7 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
             {"identifier": "B1", "type": "feedIn", "tariff": None},
         ],
         CONF_ADD_TO_ENERGY: True,  # offered (no grid source yet), default on
+        "options": {CONF_SCHEDULE_MODE: "automatic"},
     }
     assert aioclient_mock.mock_calls[0][3]["Authorization"] == f"Bearer {KEY}"
 
@@ -254,16 +261,27 @@ async def test_second_site_title_shows_the_site_name(
 
 
 def _entry(hass: HomeAssistant) -> MockConfigEntry:
+    """An account entry (2.2.0-dev2) with one site sub-entry."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=SITE_ID,
-        title="Amber FAKENMI000",
-        data={
-            CONF_API_KEY: "old_key",
-            CONF_SITE_ID: SITE_ID,
-            CONF_NMI: "FAKENMI000",
-            CONF_CHANNELS: [{"identifier": "E1", "type": "general", "tariff": None}],
-        },
+        title="Amber Energy Dashboard",
+        version=2,
+        minor_version=1,
+        data={CONF_API_KEY: "old_key"},
+        subentries_data=[
+            {
+                "data": {
+                    CONF_SITE_ID: SITE_ID,
+                    CONF_NMI: "FAKENMI000",
+                    CONF_CHANNELS: [{"identifier": "E1", "type": "general", "tariff": None}],
+                    "options": {},
+                },
+                "subentry_type": "site",
+                "title": "Home",
+                "unique_id": SITE_ID,
+            }
+        ],
     )
     entry.add_to_hass(hass)
     return entry
@@ -281,8 +299,7 @@ async def test_reauth_success(hass: HomeAssistant, aioclient_mock: AiohttpClient
     )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
-    assert entry.data[CONF_API_KEY] == "new_key"
-    assert entry.data[CONF_SITE_ID] == SITE_ID
+    assert entry.data == {CONF_API_KEY: "new_key"}
 
 
 async def test_reauth_wrong_site_then_bad_key(
@@ -345,7 +362,7 @@ async def test_fixed_times_saved_sorted(
         {CONF_SCHEDULE_MODE: "fixed", CONF_FIXED_TIMES: "13:15, 7:15; 10:15, 07:15"},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["options"] == {
+    assert _site_options(result["result"]) == {
         CONF_SCHEDULE_MODE: "fixed",
         CONF_FIXED_TIMES: ["07:15", "10:15", "13:15"],
     }
@@ -386,7 +403,8 @@ async def test_options_flow_changes_schedule_without_reload(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options == {
+    assert entry.options == {}  # the site's settings are in its sub-entry (section 23)
+    assert _site_options(entry) == {
         CONF_SCHEDULE_MODE: "fixed",
         CONF_FIXED_TIMES: ["07:15", "10:15"],
         **OPTION_DEFAULTS,
@@ -408,7 +426,7 @@ async def test_options_flow_changes_schedule_without_reload(
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
     )
-    assert entry.options == {
+    assert _site_options(entry) == {
         CONF_SCHEDULE_MODE: "automatic",
         **OPTION_DEFAULTS,
     }
@@ -479,7 +497,7 @@ async def test_schedule_step_offers_energy_dashboard(
         if choice is not None:
             user_input[CONF_ADD_TO_ENERGY] = choice
         result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
-    assert result["data"][CONF_ADD_TO_ENERGY] is stored
+    assert _site_sub(result["result"]).data[CONF_ADD_TO_ENERGY] is stored
     await hass.async_block_till_done()
     assert energy.data["energy_sources"][: len(sources)] == sources
     assert len(energy.data["energy_sources"]) == len(sources) + (1 if stored else 0)

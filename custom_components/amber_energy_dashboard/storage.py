@@ -23,6 +23,7 @@ import hashlib
 from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -106,26 +107,66 @@ class _VersionedStore(Store[dict[str, Any]]):
         return data
 
 
+def _versioned_store(
+    hass: HomeAssistant, store_id: str, today: Callable[[], date] = _nem_today
+) -> _VersionedStore:
+    return _VersionedStore(
+        hass,
+        STORAGE_VERSION,
+        f"{DOMAIN}.{store_id}",
+        minor_version=STORAGE_MINOR_VERSION,
+        atomic_writes=True,
+        today=today,
+    )
+
+
+async def async_move_store(
+    hass: HomeAssistant, old_id: str, new_id: str, today: Callable[[], date] = _nem_today
+) -> str:
+    """Move a store to a new key (an entry's store to its site's, 2.2.0-dev2).
+
+    Idempotent: a store already at the new key wins (it was written and read back
+    before the old one was removed), and the old one is then removed. Returns what
+    happened: ``moved``, ``already_moved`` or ``nothing``. Raises if the copy doesn't
+    read back as written. ``today`` is the clock an older layout's migration uses (the
+    manager's).
+    """
+    old, new = _versioned_store(hass, old_id, today), _versioned_store(hass, new_id, today)
+    data = await old.async_load()
+    if await new.async_load() is not None:
+        if data is not None:
+            await old.async_remove()
+        return "already_moved"
+    if data is None:
+        return "nothing"
+    await new.async_save(data)
+    if await _versioned_store(hass, new_id, today).async_load() != data:
+        raise HomeAssistantError(f"store {new_id} did not read back as written")
+    await old.async_remove()
+    return "moved"
+
+
 class AmberStore:
     """Typed access to the per-entry store."""
 
     def __init__(
-        self, hass: HomeAssistant, entry_id: str, today: Callable[[], date] = _nem_today
+        self,
+        hass: HomeAssistant,
+        store_id: str,
+        today: Callable[[], date] = _nem_today,
+        *,
+        seed_source: str | None = None,
     ) -> None:
         """Create the store handle (call async_load before use).
 
-        ``today`` returns the current NEM date; the manager passes its own clock.
+        ``store_id`` is the site's key (2.2.0-dev2: ``<entry ID>_<site ID>``; until then
+        the entry ID). ``seed_source`` seeds a new store's schedule offset (default the
+        store ID). ``today`` returns the current NEM date; the manager passes its clock.
         """
-        self._entry_id = entry_id
+        self._store_id = store_id
+        self._seed_source = seed_source or store_id
         self._today = today
-        self._store = _VersionedStore(
-            hass,
-            STORAGE_VERSION,
-            f"{DOMAIN}.{entry_id}",
-            minor_version=STORAGE_MINOR_VERSION,
-            atomic_writes=True,
-            today=today,
-        )
+        self._store = _versioned_store(hass, store_id, today)
         self._data: dict[str, Any] = {}
 
     def _defaults(self) -> dict[str, Any]:
@@ -136,7 +177,7 @@ class AmberStore:
             "days": {},
             "retention_boundary": None,
             "retention": None,
-            "schedule_seed": schedule_seed_for(self._entry_id),
+            "schedule_seed": schedule_seed_for(self._seed_source),
             "last_run": None,
             "empty_seen": {},
             "revisions": {},
@@ -409,13 +450,7 @@ class AmberStore:
 
     async def async_read_back(self, key: str) -> Any:
         """One key as stored on disk, read through a fresh handle."""
-        fresh = _VersionedStore(
-            self._store.hass,
-            STORAGE_VERSION,
-            f"{DOMAIN}.{self._entry_id}",
-            minor_version=STORAGE_MINOR_VERSION,
-        )
-        data = await fresh.async_load()
+        data = await _versioned_store(self._store.hass, self._store_id, self._today).async_load()
         return (data or {}).get(key)
 
     async def async_set_first_import_at(self, when: datetime) -> None:

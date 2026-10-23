@@ -22,7 +22,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
-from . import AmberConfigEntry
+from . import AmberConfigEntry, SiteRuntime
 from .const import (
     CHANNEL_FEED_IN,
     CONF_ENTITY_IDS,
@@ -308,8 +308,24 @@ async def async_setup_entry(
     entry: AmberConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Create the display sensors for one site."""
-    manager = entry.runtime_data.manager
+    """Create the display sensors for each site (in its sub-entry, section 23)."""
+    first = True
+    for site in entry.runtime_data.sites.values():
+        await _async_add_site_sensors(hass, entry, site, async_add_entities, pinned_ids=first)
+        first = False
+
+
+async def _async_add_site_sensors(
+    hass: HomeAssistant,
+    entry: AmberConfigEntry,
+    site_runtime: SiteRuntime,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+    *,
+    pinned_ids: bool,
+) -> None:
+    """One site's sensors, and its mappings'. Only the entry's first site asks for the
+    2.1.0 entity IDs; a further site's follow its device's name."""
+    manager = site_runtime.manager
     channel_types = {c.identifier: c.type for c in manager.ctx.channels}
     descriptions: list[AmberSensorDescription] = list(STATUS_SENSORS)
     site = manager.ctx.site_id
@@ -355,12 +371,15 @@ async def async_setup_entry(
                 attrs_fn=_yesterday_attrs,
             )
         )
-    entity_ids = await async_site_entity_ids(hass, "sensor", descriptions)
+    entity_ids = await async_site_entity_ids(hass, "sensor", descriptions) if pinned_ids else {}
     async_add_entities(
-        AmberSensor(
-            manager.coordinator, entry, description, entity_id=entity_ids.get(description.key)
-        )
-        for description in descriptions
+        (
+            AmberSensor(
+                manager.coordinator, site, description, entity_id=entity_ids.get(description.key)
+            )
+            for description in descriptions
+        ),
+        config_subentry_id=site_runtime.subentry_id,
     )
     by_subentry: dict[str, list[OwnSensor]] = defaultdict(list)
     for sensor in manager.own_sensors:
@@ -371,12 +390,12 @@ async def async_setup_entry(
             descriptions.append(_calibration_description(subentry_id))
         # A converted mapping's entities ask for the entity IDs of the ones they replace.
         hints = entry.subentries[subentry_id].data.get(CONF_ENTITY_IDS) or {}
-        device = mapping_device_info(site, sensors[0], entry.runtime_data.device_id)
+        device = mapping_device_info(site, sensors[0], site_runtime.device_id)
         async_add_entities(
             [
                 AmberSensor(
                     manager.coordinator,
-                    entry,
+                    site,
                     description,
                     device,
                     entity_id=hints.get(description.translation_key),
@@ -396,7 +415,7 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
     def __init__(
         self,
         coordinator: DataUpdateCoordinator[dict[str, Any]],
-        entry: AmberConfigEntry,
+        site: str,
         description: AmberSensorDescription,
         device: DeviceInfo | None = None,
         entity_id: str | None = None,
@@ -407,7 +426,6 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
         self.entity_description = description
         if entity_id is not None:
             self.entity_id = entity_id
-        site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
         self._attr_device_info = device or site_link(site)
 

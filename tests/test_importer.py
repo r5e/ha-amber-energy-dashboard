@@ -539,7 +539,9 @@ async def test_refuses_partial_history(
         # Guard 1: no marker, yet statistics exist -> Repairs issue, never a guess.
         assert exc_info.value.reason == "marker_mismatch"
     assert _usage_calls(aioclient_mock) == 0
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{entry.entry_id}")
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"marker_mismatch_{entry.entry_id}_{SITE_ID.lower()}"
+    )
 
 
 async def test_refuses_inconsistent_history(
@@ -668,13 +670,14 @@ async def test_service_needs_entry(hass: HomeAssistant) -> None:
 async def test_service_with_two_entries(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
-    """With several sites, config_entry_id is required and selects the site."""
+    """With several sites (here two entries of one site each), config_entry_id or site is
+    required and selects the site."""
     await _add_entry(hass)
     other = OTHER_SITE
     second = await _add_entry(hass, other)
     _mock_day(aioclient_mock, D3, make_usage_day(D3), site=other)
 
-    with pytest.raises(ServiceValidationError, match="pass config_entry_id"):
+    with pytest.raises(ServiceValidationError, match="pass site"):
         await _import(hass, D3)
     with pytest.raises(ServiceValidationError, match="No loaded"):
         await _import(hass, D3, config_entry_id="nope")
@@ -779,7 +782,10 @@ async def test_diagnostics_redacts_key_and_nmi(
     """Diagnostics carry the model and last import, never the key or NMI."""
     _mock_day(aioclient_mock, D3, make_usage_day(D3))
     await _import(hass, D3)
-    hass.config_entries.async_update_entry(entry, data={**entry.data, "site_name": "1 Test St"})
+    site = next(iter(entry.subentries.values()))
+    hass.config_entries.async_update_subentry(
+        entry, site, data={**site.data, "site_name": "1 Test St"}
+    )
 
     diag = await async_get_config_entry_diagnostics(hass, entry)
 
@@ -788,10 +794,14 @@ async def test_diagnostics_redacts_key_and_nmi(
     assert "psk_secret_test_key" not in text
     assert "FAKENMI000" not in text
     assert diag["entry"]["data"]["api_key"] == "**REDACTED**"
-    assert diag["entry"]["data"]["nmi"] == "**REDACTED**"
+    [site_data] = diag["entry"]["subentries"]
+    assert site_data["data"]["nmi"] == "**REDACTED**"
+    assert site_data["data"]["site_name"] == "**REDACTED**"
+    assert site_data["title"] == "**REDACTED**"
     assert diag["entry"]["title"] == "**REDACTED**"
-    assert [s["statistic_id"] for s in diag["statistics"]] == ALL_IDS
-    assert diag["last_import"]["date"] == "2026-09-24"
+    [site_diag] = diag["sites"].values()
+    assert [s["statistic_id"] for s in site_diag["statistics"]] == ALL_IDS
+    assert site_diag["last_import"]["date"] == "2026-09-24"
     assert diag["api"]["requests_since_start"] == 2  # setup validation + one import
 
 

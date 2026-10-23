@@ -49,6 +49,8 @@ TODAY = date(2026, 9, 26)
 YESTERDAY = TODAY - timedelta(days=1)
 ENTRY_ID = "01TESTENTRY000000000000000"
 PREFIX = f"{DOMAIN}:{SITE_ID.lower()}"
+SITE_KEY = f"{ENTRY_ID}_{SITE_ID.lower()}"
+"""The site's key: its Store and its Repairs issue IDs."""
 ALL_IDS = [
     f"{PREFIX}_e1_energy",
     f"{PREFIX}_e1_cost",
@@ -106,7 +108,8 @@ async def sydney(hass: HomeAssistant) -> None:
 
 
 def _store_key() -> str:
-    return f"{DOMAIN}.{ENTRY_ID}"
+    """The site's Store (2.2.0-dev2: keyed by entry and site, section 23)."""
+    return f"{DOMAIN}.{SITE_KEY}"
 
 
 def _preload_store(hass_storage: dict, **data: Any) -> None:
@@ -176,6 +179,21 @@ async def _setup_entry(
             assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+def _site_sub(entry: MockConfigEntry):
+    """The entry's (first) site sub-entry (section 23)."""
+    return next(s for s in entry.subentries.values() if s.subentry_type == "site")
+
+
+def _mappings(entry: MockConfigEntry) -> dict[str, Any]:
+    """The entry's sub-entries other than sites (grid meters, appliances, 2.1 mappings)."""
+    return {k: s for k, s in entry.subentries.items() if s.subentry_type != "site"}
+
+
+def _site_options(entry: MockConfigEntry) -> dict[str, Any]:
+    """The first site's settings (until 2.2.0-dev2 the entry's options)."""
+    return dict(_site_sub(entry).data.get("options") or {})
 
 
 async def _run(hass: HomeAssistant) -> dict[str, Any]:
@@ -424,7 +442,7 @@ async def test_guard1_mismatch_raises_repairs_and_writes_nothing(
     assert result["reason"] == "marker_mismatch"
     assert len(fake.calls) == calls
     assert await _rows(hass) == before
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{ENTRY_ID}")
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{SITE_KEY}")
     assert issue is not None and issue.translation_key == "marker_mismatch"
     details = issue.translation_placeholders["details"]
     assert (
@@ -441,7 +459,7 @@ async def test_guard1_mismatch_raises_repairs_and_writes_nothing(
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert (await _run(hass))["status"] == "caught_up"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{ENTRY_ID}") is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{SITE_KEY}") is None
 
 
 async def test_guard1_statistics_without_marker(
@@ -699,18 +717,18 @@ async def test_guard3_raises_repairs_issue_and_clears(
     assert store.marker == bad - timedelta(days=1)
     assert store.pending is None
     assert store.day(bad)["status"] == "failed"
-    found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{ENTRY_ID}")
+    found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{SITE_KEY}")
     if issue == "incomplete_data":
         # Not the final attempt of the day: no issue yet (a later attempt may succeed).
         assert found is None
         await entry.runtime_data.manager.async_run("scheduled (final)", final=True)
-        found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{ENTRY_ID}")
+        found = ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{SITE_KEY}")
     assert found is not None and found.translation_placeholders["day"] == bad.isoformat()
     _assert_contiguous(await _rows(hass), start, bad - timedelta(days=1))
 
     fake.mutate = None
     assert (await _run(hass))["status"] == "caught_up"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{ENTRY_ID}") is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"{issue}_{SITE_KEY}") is None
 
 
 # --- import_day with the Store -----------------------------------------------------------------
@@ -854,12 +872,13 @@ async def test_run_now_returns_summary_and_diagnostics_show_store(
 
     assert result["trigger"] == "run_now"
     assert result["marker"] == YESTERDAY.isoformat()
-    assert diag["store"]["marker"] == YESTERDAY.isoformat()
-    assert diag["schedule"]["mode"] == "automatic"
-    assert diag["status"] == "caught_up"
-    assert diag["display_status"] == "caught_up"
+    [site] = diag["sites"].values()
+    assert site["store"]["marker"] == YESTERDAY.isoformat()
+    assert site["schedule"]["mode"] == "automatic"
+    assert site["status"] == "caught_up"
+    assert site["display_status"] == "caught_up"
     assert "FAKENMI000" not in repr(diag)
-    assert len(diag["store"]["days"]) == 2
+    assert len(site["store"]["days"]) == 2
 
 
 STATUS = "sensor.amber_energy_dashboard_import_status"
@@ -1001,7 +1020,7 @@ async def test_verification_failure_in_walk(
 
     assert result["reason"] == "verification_failed"
     assert entry.runtime_data.manager.store.marker is None
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"import_failed_{ENTRY_ID}") is not None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"import_failed_{SITE_KEY}") is not None
 
 
 @pytest.mark.parametrize("mock", [{"status": 403}, "budget"], ids=["auth", "budget"])
@@ -1099,7 +1118,7 @@ async def test_import_day_guard3_and_verification_in_service(
         )
     assert store.day(start)["status"] == "failed" and store.pending is None
     # import_day is never a final scheduled attempt: no incomplete_data issue.
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"incomplete_data_{ENTRY_ID}") is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"incomplete_data_{SITE_KEY}") is None
 
     fake.mutate = None
     with (
@@ -1110,7 +1129,7 @@ async def test_import_day_guard3_and_verification_in_service(
         await hass.services.async_call(
             DOMAIN, "import_day", {"date": start.isoformat()}, blocking=True
         )
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"import_failed_{ENTRY_ID}") is not None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"import_failed_{SITE_KEY}") is not None
 
 
 async def test_plan_day_defensive_checks(

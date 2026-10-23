@@ -47,20 +47,34 @@ GRID_EXPORT = "grid_export"
 GRID_NAME = "grid_name"
 
 
+def _site_manager(hass: HomeAssistant, data: dict[str, Any]) -> tuple[Any, AmberManager] | None:
+    """The loaded entry and the manager of the site an issue is for (``site_id`` in its
+    data; the entry's first site without one), or None."""
+    entry = hass.config_entries.async_get_entry(data.get("entry_id", ""))
+    if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+        return None
+    sites = list(entry.runtime_data.sites.values())
+    site_id = data.get("site_id")
+    site = next((s for s in sites if s.context.site_id == site_id), None)
+    if site is None and site_id is None and sites:
+        site = sites[0]
+    return None if site is None else (entry, site.manager)
+
+
 class EnergyNotUsedFlow(RepairsFlow):
     """Add the grid sources, point to the migration, or explain and dismiss."""
 
-    def __init__(self, entry_id: str) -> None:
-        """Remember which entry the issue is for."""
-        self._entry_id = entry_id
+    def __init__(self, data: dict[str, Any]) -> None:
+        """Remember which site the issue is for."""
+        self._data = data
         self._manager: AmberManager | None = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Choose the path: no grid source, a YAML kit, or another grid source."""
-        entry = self.hass.config_entries.async_get_entry(self._entry_id)
-        if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+        found = _site_manager(self.hass, self._data)
+        if found is None:
             return self.async_abort(reason="not_loaded")
-        self._manager = entry.runtime_data.manager
+        self._manager = found[1]
         energy = await async_preferences(self.hass)
         if energy is None:
             return self.async_abort(reason="energy_unavailable")
@@ -109,24 +123,25 @@ class ConvertMappingsFlow(RepairsFlow):
     """Convert 2.1 own-sensor mappings: an import and an export mapping become one grid
     meter, every other mapping an appliance. Statistics are kept (section 21)."""
 
-    def __init__(self, entry_id: str) -> None:
-        """Remember which entry the issue is for."""
-        self._entry_id = entry_id
+    def __init__(self, data: dict[str, Any]) -> None:
+        """Remember which site the issue is for."""
+        self._data = data
         self._entry: ConfigEntry | None = None
+        self._manager: AmberManager | None = None
         self._plan: ConversionPlan | None = None
 
     def _legacy(self) -> tuple[list[Any], tuple[Any, ...]]:
-        """The 2.1 mappings to convert, and the site's channels."""
-        assert self._entry is not None
-        channels = self._entry.runtime_data.manager.ctx.channels
-        return legacy_mappings(self._entry, channels), channels
+        """The site's 2.1 mappings to convert, and its channels."""
+        assert self._entry is not None and self._manager is not None
+        channels = self._manager.ctx.channels
+        return legacy_mappings(self._entry, channels, self._manager.ctx.site_id), channels
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Choose the grid meter's sides when there is a choice; else confirm."""
-        entry = self.hass.config_entries.async_get_entry(self._entry_id)
-        if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+        found = _site_manager(self.hass, self._data)
+        if found is None:
             return self.async_abort(reason="not_loaded")
-        self._entry = entry
+        self._entry, self._manager = found
         legacy, channels = self._legacy()
         if not legacy:
             return self.async_abort(reason="nothing_to_convert")
@@ -189,7 +204,8 @@ class ConvertMappingsFlow(RepairsFlow):
         assert self._plan is not None
         if user_input is not None:
             try:
-                await async_convert(self.hass, self._entry, self._plan)
+                assert self._manager is not None
+                await async_convert(self.hass, self._entry, self._manager, self._plan)
             except ConversionFailed as err:
                 return self.async_abort(
                     reason="convert_failed", description_placeholders={"reason": str(err)}
@@ -206,7 +222,6 @@ async def async_create_fix_flow(
     hass: HomeAssistant, issue_id: str, data: dict[str, Any] | None
 ) -> RepairsFlow:
     """The fix flow for a fixable issue: energy_not_used, or convert_own_sensors."""
-    entry_id = (data or {})["entry_id"]
     if issue_id.startswith(ISSUE_CONVERT):
-        return ConvertMappingsFlow(entry_id)
-    return EnergyNotUsedFlow(entry_id)
+        return ConvertMappingsFlow(dict(data or {}))
+    return EnergyNotUsedFlow(dict(data or {}))

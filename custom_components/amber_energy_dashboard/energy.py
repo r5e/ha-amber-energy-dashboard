@@ -201,7 +201,7 @@ async def async_add_to_energy(
 
 
 def _issue_id(manager: AmberManager) -> str:
-    return f"{ISSUE_ENERGY_NOT_USED}_{manager.entry.entry_id}"
+    return f"{ISSUE_ENERGY_NOT_USED}_{manager.site_key}"
 
 
 async def async_check_energy_issue(hass: HomeAssistant, manager: AmberManager) -> None:
@@ -234,8 +234,8 @@ async def async_check_energy_issue(hass: HomeAssistant, manager: AmberManager) -
         is_fixable=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_ENERGY_NOT_USED,
-        translation_placeholders={"entry": manager.entry.title},
-        data={"entry_id": manager.entry.entry_id},
+        translation_placeholders={"entry": manager.site_label},
+        data=manager.issue_data,
     )
 
 
@@ -252,6 +252,7 @@ async def async_listen_for_changes(hass: HomeAssistant) -> None:
     async def _changed() -> None:
         for entry in hass.config_entries.async_entries(DOMAIN):
             if entry.state is ConfigEntryState.LOADED:
-                await async_check_energy_issue(hass, entry.runtime_data.manager)
+                for site in list(entry.runtime_data.sites.values()):
+                    await async_check_energy_issue(hass, site.manager)
 
     energy.async_listen_updates(_changed)

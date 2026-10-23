@@ -1,6 +1,7 @@
 """Milestone 17 (2.2): site identity, grid meters, appliances, the calibration offset, and
 converting 2.1 own-sensor mappings (DESIGN section 21). All data is synthetic."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 import math
 from typing import Any
@@ -34,10 +35,12 @@ from .synthetic import SITE_ID, make_usage_day, site_json
 from .test_manager import (  # noqa: F401 - fixtures are used by name
     ENTRY_ID,
     PREFIX,
+    SITE_KEY,
     TODAY,
     YESTERDAY,
     Clock,
     _fast_verify,
+    _mappings,
     _no_real_timers,
     _preload_store,
     _run,
@@ -49,7 +52,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
 from .test_own import EXPORT, OWN, OWN_EXPORT, SENSOR, _energy_like, _import_sensor, _own_rows, _sub
 
 DAY_BEFORE = TODAY - timedelta(days=2)
-ISSUE = f"convert_own_sensors_{ENTRY_ID}"
+ISSUE = f"convert_own_sensors_{SITE_KEY}"
 HEAT_PUMP = "sensor.heat_pump_energy"
 OWN_HEAT_PUMP = f"{PREFIX}_own_heat_pump_energy_cost"
 CL_CHANNELS = [
@@ -303,7 +306,7 @@ async def test_grid_meter_without_export_or_feed_in(
         "import_channel": "E1",
     }
     await hass.async_block_till_done()
-    [subentry_id] = list(entry.subentries)
+    [subentry_id] = list(_mappings(entry))
     assert list(_mapping_states(hass, entry, subentry_id)) == ["import_reconciliation"]
 
 
@@ -326,7 +329,7 @@ async def test_flows_need_an_import_channel(
         )
         assert flow["type"] is FlowResultType.ABORT
         assert flow["reason"] == "no_import_channel"
-    assert set(entry.supported_subentry_types) == {SUBENTRY_GRID_METER, SUBENTRY_APPLIANCE}
+    assert set(entry.supported_subentry_types) == {"site", SUBENTRY_GRID_METER, SUBENTRY_APPLIANCE}
 
 
 # --- grid meter sensors and the calibration offset -----------------------------------------
@@ -605,7 +608,7 @@ async def test_convert_import_and_export_to_a_grid_meter(
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
 
-    [grid] = entry.subentries.values()
+    [grid] = _mappings(entry).values()
     assert grid.subentry_type == SUBENTRY_GRID_METER
     assert grid.title == "Whole house meter · grid meter"
     assert dict(grid.data) == {
@@ -682,7 +685,7 @@ async def test_convert_choices_and_appliances(
     await hass.async_block_till_done()
 
     by_type: dict[str, list] = {}
-    for sub in entry.subentries.values():
+    for sub in _mappings(entry).values():
         by_type.setdefault(sub.subentry_type, []).append(sub)
     [grid] = by_type[SUBENTRY_GRID_METER]
     assert "export_entity_id" not in grid.data
@@ -711,7 +714,7 @@ async def test_convert_feed_in_only_skips_the_plan(
     )
     await _configure(hass, flow, {})
     await hass.async_block_till_done()
-    [appliance] = entry.subentries.values()
+    [appliance] = _mappings(entry).values()
     assert appliance.data["name"] == EXPORT
 
 
@@ -730,7 +733,7 @@ async def test_convert_aborts(
     assert flow["reason"] == "convert_failed"
     assert "did not move" in flow["description_placeholders"]["reason"]
     await hass.async_block_till_done()
-    assert list(entry.subentries) == ["sub_house"]
+    assert list(_mappings(entry)) == ["sub_house"]
     assert entry.runtime_data.manager.own_sensors == sensors
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE) is not None
 
@@ -739,11 +742,15 @@ async def test_convert_aborts(
     flow = await _configure(hass, flow, {})
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
-    [grid] = entry.subentries.values()
+    [grid] = _mappings(entry).values()
     # A mapping that is not a 2.1 one is never converted.
     with pytest.raises(ConversionFailed, match=r"only 2\.1"):
-        await meters.async_convert(hass, entry, ConversionPlan(appliances=[grid.subentry_id]))
-    meters.async_update_convert_issue(hass, entry, ())  # no channel: nothing to offer
+        await meters.async_convert(
+            hass, entry, entry.runtime_data.manager, ConversionPlan(appliances=[grid.subentry_id])
+        )
+    manager = entry.runtime_data.manager
+    manager.ctx = replace(manager.ctx, channels=())  # no channel: nothing to offer
+    meters.async_update_convert_issue(hass, entry, manager)
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE) is None
     ir.async_create_issue(
         hass,
@@ -752,7 +759,7 @@ async def test_convert_aborts(
         is_fixable=True,
         severity=ir.IssueSeverity.WARNING,
         translation_key="convert_own_sensors",
-        data={"entry_id": ENTRY_ID},
+        data={"entry_id": ENTRY_ID, "site_id": SITE_ID},
     )  # a stale issue
     flow = await _fix_flow(hass)
     assert (flow["type"], flow["reason"]) == (FlowResultType.ABORT, "nothing_to_convert")
@@ -771,7 +778,9 @@ async def test_convert_sub_entries_read_back(
         patch.object(hass.config_entries, "async_add_subentry"),
         pytest.raises(ConversionFailed) as err,
     ):
-        await meters.async_convert(hass, entry, ConversionPlan(appliances=["sub_house"]))
+        await meters.async_convert(
+            hass, entry, entry.runtime_data.manager, ConversionPlan(appliances=["sub_house"])
+        )
     assert "sub_house is still configured" in str(err.value)
     assert "House" not in str(err.value) and "was not added" in str(err.value)
 

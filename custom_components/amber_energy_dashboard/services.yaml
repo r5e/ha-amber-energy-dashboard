@@ -10,6 +10,11 @@ import_day:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
+          integration: amber_energy_dashboard
 run_now:
   fields:
     config_entry_id:
@@ -17,12 +22,22 @@ run_now:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
+          integration: amber_energy_dashboard
 probe_retention:
   fields:
     config_entry_id:
       required: false
       selector:
         config_entry:
+          integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
           integration: amber_energy_dashboard
 bill_estimate:
   fields:
@@ -34,6 +49,11 @@ bill_estimate:
       required: false
       selector:
         config_entry:
+          integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
           integration: amber_energy_dashboard
 backfill:
   fields:
@@ -51,6 +71,11 @@ backfill:
       required: false
       selector:
         config_entry:
+          integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
           integration: amber_energy_dashboard
 migrate_v1:
   fields:
@@ -95,12 +120,22 @@ migrate_v1:
       selector:
         config_entry:
           integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
+          integration: amber_energy_dashboard
 undo_migration:
   fields:
     config_entry_id:
       required: false
       selector:
         config_entry:
+          integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
           integration: amber_energy_dashboard
 delete_legacy_statistics:
   fields:
@@ -113,4 +148,9 @@ delete_legacy_statistics:
       required: false
       selector:
         config_entry:
+          integration: amber_energy_dashboard
+    site:
+      required: false
+      selector:
+        device:
           integration: amber_energy_dashboard

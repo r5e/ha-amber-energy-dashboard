@@ -84,6 +84,13 @@ CONF_ALLOWANCE_KWH: Final = "allowance_kwh_per_day"
 CONF_ALLOWANCE_TOTALLING: Final = "allowance_totalling"
 CONF_PENALTY_PERIOD: Final = "penalty_period"
 
+# Sites (2.2.0-dev2): the entry is the Amber account, each site a config sub-entry
+SUBENTRY_SITE: Final = "site"
+CONF_OPTIONS: Final = "options"
+"""A site sub-entry's settings (until 2.2.0-dev1 the entry's options)."""
+CONF_SITE: Final = "site"
+"""Service field: the site's device (or Amber site ID), when an entry has several sites."""
+
 # Own-sensor cost (config sub-entries)
 SUBENTRY_OWN_SENSOR: Final = "own_sensor"
 """Until 2.1: one energy sensor on one channel. Still loaded; no longer offered (2.2)."""

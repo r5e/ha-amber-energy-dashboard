@@ -43,6 +43,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     _run,
     _setup,
     _setup_entry,
+    _site_options,
     clock,
     sydney,
 )
@@ -326,10 +327,10 @@ async def test_options_turn_on_change_and_turn_off(
 
     result = await bill_step({CONF_BILLING_DAY: 20, **CHARGES})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_BILLING_DAY] == 20
-    assert entry.options[CONF_GST_PERCENT] == 10.0
-    assert entry.options["other_daily"] == 0.0
-    assert entry.options[CONF_FIXED_STATISTIC] is False
+    assert _site_options(entry)[CONF_BILLING_DAY] == 20
+    assert _site_options(entry)[CONF_GST_PERCENT] == 10.0
+    assert _site_options(entry)["other_daily"] == 0.0
+    assert _site_options(entry)[CONF_FIXED_STATISTIC] is False
     assert hass.states.get(f"{SENSOR}bill_to_date").attributes["cycle_start"] == "2026-09-20"
 
     manager = entry.runtime_data.manager
@@ -346,7 +347,7 @@ async def test_options_turn_on_change_and_turn_off(
         flow["flow_id"], {CONF_SCHEDULE_MODE: "automatic", CONF_USAGE_MODE: "full"}
     )
     await hass.async_block_till_done()
-    assert entry.options[CONF_BILLING_DAY] == 24  # kept by the import settings step
+    assert _site_options(entry)[CONF_BILLING_DAY] == 24  # kept by the import settings step
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
     flow = await hass.config_entries.options.async_configure(
@@ -361,8 +362,8 @@ async def test_options_turn_on_change_and_turn_off(
     assert suggested["daily_supply"] == 1.0871
     await hass.config_entries.options.async_configure(flow["flow_id"], {})
     await hass.async_block_till_done()
-    assert CONF_BILLING_DAY not in entry.options
-    assert "daily_supply" not in entry.options
+    assert CONF_BILLING_DAY not in _site_options(entry)
+    assert "daily_supply" not in _site_options(entry)
     assert hass.states.get(f"{SENSOR}bill_to_date") is None
     assert (
         er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{SITE_ID}_bill_to_date") is None
@@ -557,8 +558,8 @@ async def test_rc1_charges_migrate_to_the_bill_summary_fields(
     entry = await _setup_entry(
         hass, aioclient_mock, FakeAmber(TODAY - timedelta(days=60), YESTERDAY), options=old
     )
-    assert entry.minor_version == 2
-    assert entry.options == {
+    assert (entry.version, entry.minor_version) == (2, 1)
+    assert _site_options(entry) == {
         CONF_SCHEDULE_MODE: "automatic",
         CONF_BILLING_DAY: 20,
         "daily_supply": 1.0871,
@@ -587,7 +588,7 @@ async def test_newer_entry_version_is_refused(
 
     from custom_components.amber_energy_dashboard import async_migrate_entry  # noqa: PLC0415
 
-    entry = MockConfigEntry(domain=DOMAIN, version=2, data={})
+    entry = MockConfigEntry(domain=DOMAIN, version=3, data={})
     assert await async_migrate_entry(hass, entry) is False
 
 
@@ -620,7 +621,7 @@ async def test_subscription_is_required_and_may_be_zero(
     )
     await hass.async_block_till_done(wait_background_tasks=True)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options["amber_subscription"] == 0.0
+    assert _site_options(entry)["amber_subscription"] == 0.0
     attrs = hass.states.get(f"{SENSOR}bill_to_date").attributes
     assert "amber_subscription" not in attrs["lines"]
     days = [date(2026, 9, d) for d in range(20, 26)]

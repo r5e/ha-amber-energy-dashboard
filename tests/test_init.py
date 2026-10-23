@@ -218,6 +218,9 @@ async def test_title_update_leaves_the_manager_alone(
         hass.config_entries.async_update_entry(entry, title="Renamed")
         await hass.async_block_till_done()
         update.assert_not_called()
-        hass.config_entries.async_update_entry(entry, options={"patience_days": 9})
+        site = next(iter(entry.subentries.values()))
+        hass.config_entries.async_update_subentry(
+            entry, site, data={**site.data, "options": {"patience_days": 9}}
+        )
         await hass.async_block_till_done()
         update.assert_called_once()

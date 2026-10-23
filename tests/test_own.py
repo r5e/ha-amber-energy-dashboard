@@ -44,11 +44,13 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     E1,
     ENTRY_ID,
     PREFIX,
+    SITE_KEY,
     TODAY,
     YESTERDAY,
     Clock,
     _assert_contiguous,
     _fast_verify,
+    _mappings,
     _no_real_timers,
     _preload_store,
     _rows,
@@ -702,7 +704,7 @@ async def test_subentry_flow_validation_and_removal(
 
     await _run(hass)
     assert len(await _own_rows(hass)) == 24
-    sub_id = next(iter(entry.subentries))
+    sub_id = next(iter(_mappings(entry)))
     hass.config_entries.async_remove_subentry(entry, sub_id)
     await hass.async_block_till_done()
     assert entry.runtime_data.manager.own_sensors == []
@@ -754,7 +756,7 @@ async def test_chain_marker_mismatch_raises_repairs(
 
     assert result["status"] == "caught_up"
     assert result["chains"]["own:sub_house"]["reason"] == "marker_mismatch"
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{ENTRY_ID}_own_sub_house")
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"marker_mismatch_{SITE_KEY}_own_sub_house")
     assert issue is not None
 
 
@@ -1302,7 +1304,7 @@ async def test_fresh_mapping_is_on_its_device_at_creation(
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()  # the reload the new mapping schedules
 
-    [subentry_id] = list(entry.subentries)
+    [subentry_id] = list(_mappings(entry))
     entities = er.async_get(hass)
     mapped = [
         e
@@ -1444,14 +1446,17 @@ async def test_own_sensor_entities_have_their_own_device(
 
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
-    [subentry_id] = list(entry.subentries)
+    [subentry_id] = list(_mappings(entry))
     recon = next(e for e in entities.entities.values() if "reconciliation" in e.entity_id)
     button = entities.async_get("button.amber_energy_dashboard_run_now")
     own_device = devices.async_get(recon.device_id)
     site_device = devices.async_get(button.device_id)
     assert own_device.id != site_device.id
     assert own_device.config_entries_subentries == {entry.entry_id: {subentry_id}}
-    assert site_device.config_entries_subentries == {entry.entry_id: {None}}
+    # 2.2.0-dev2: the site's device belongs to the site's sub-entry (section 23).
+    assert site_device.config_entries_subentries == {
+        entry.entry_id: {entry.runtime_data.site.subentry_id}
+    }
     assert own_device.via_device_id == site_device.id
     assert own_device.name == f"{SENSOR} (own sensor)"
     assert recon.config_subentry_id == subentry_id

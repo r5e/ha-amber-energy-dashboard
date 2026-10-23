@@ -89,7 +89,7 @@ from .importer import (
     VerificationFailedError,
     nem_day_start,
 )
-from .schedule import ScheduleConfig, is_final_attempt, next_attempt
+from .schedule import ScheduleConfig, evening_retry_after, is_final_attempt, next_attempt
 from .statistics import (
     ChannelConfig,
     MeanSpec,
@@ -235,6 +235,8 @@ class AmberManager:
         store: AmberStore,
         schedule: ScheduleConfig,
         *,
+        site_key: str | None = None,
+        site_title: str | None = None,
         active_from: date | None = None,
         patience_days: int = DEFAULT_PATIENCE_DAYS,
         revision_days: int = DEFAULT_REVISION_DAYS,
@@ -249,6 +251,10 @@ class AmberManager:
         """Create the manager (call async_start after the store is loaded)."""
         self.hass = hass
         self.entry = entry
+        self.site_key = site_key or entry.entry_id
+        """The site's key (section 23): its Store and its Repairs issues."""
+        self._site_title = site_title
+        """The site sub-entry's title when the entry has several sites."""
         self.ctx = ctx
         self.store = store
         self.schedule = schedule
@@ -358,12 +364,34 @@ class AmberManager:
         if self.usage_mode == MODE_RECOVERY:
             self.next_run = None  # recovery-only: nothing is scheduled
             return
-        self.next_run = next_attempt(_utcnow(), self.schedule, self.store.schedule_seed, self._tz)
+        self.next_run = next_attempt(
+            _utcnow(), self.schedule, self.store.schedule_seed, self._tz, evening=self._evening
+        )
         self._unsub_timer = async_track_point_in_utc_time(self.hass, self._on_timer, self.next_run)
+
+    @property
+    def _evening(self) -> bool:
+        """Evening retries apply while the last run is waiting for Amber's data (section
+        10); a day that imports normally has none."""
+        return self.status == STATUS_WAITING
+
+    def _evening_retry_after(self, when: datetime) -> bool:
+        if self.usage_mode == MODE_RECOVERY:
+            return False
+        return evening_retry_after(when, self.schedule, self.store.schedule_seed, self._tz)
+
+    @callback
+    def _reschedule(self) -> None:
+        """After a run: the next attempt may now include (or drop) the evening retries."""
+        if self._unsub_timer is not None:
+            self.async_stop()
+            self._schedule_next()
 
     @callback
     def _on_timer(self, when: datetime) -> None:
         self._unsub_timer = None
+        # The last daytime attempt, or the last evening retry. At the last daytime one the
+        # run decides: still waiting with an evening retry to come, it isn't final.
         final = is_final_attempt(when, self.schedule, self.store.schedule_seed, self._tz)
         self._schedule_next()
         self.entry.async_create_background_task(
@@ -465,7 +493,10 @@ class AmberManager:
             }
             self.status = summary["status"]
             await self.store.async_set_last_run(summary)
+            if final and summary["status"] == STATUS_WAITING and self._evening_retry_after(started):
+                final = False  # the day's last attempt is now an evening retry
             self._update_behind_issue(summary, final)
+            self._reschedule()
             await self.async_refresh_calibration(publish=False)
             self._publish()
             _LOGGER.info(
@@ -1984,8 +2015,20 @@ class AmberManager:
 
     # --- Repairs ------------------------------------------------------------------
 
+    @property
+    def site_label(self) -> str:
+        """How the site is named in Repairs issues: the entry's title, with the site's
+        when the entry has several sites."""
+        title = self.entry.title
+        return f"{title} ({self._site_title})" if self._site_title else title
+
+    @property
+    def issue_data(self) -> dict[str, str]:
+        """What a Repairs issue (and its fix flow) needs to find this site again."""
+        return {"entry_id": self.entry.entry_id, "site_id": self.ctx.site_id}
+
     def _issue_id(self, kind: str, suffix: str | None = None) -> str:
-        base = f"{kind}_{self.entry.entry_id}"
+        base = f"{kind}_{self.site_key}"
         return f"{base}_{suffix}" if suffix else base
 
     def _create_issue(
@@ -1998,8 +2041,8 @@ class AmberManager:
             is_fixable=False,
             severity=ir.IssueSeverity.WARNING if kind == ISSUE_BEHIND else ir.IssueSeverity.ERROR,
             translation_key=kind,
-            translation_placeholders={"entry": self.entry.title, **placeholders},
-            data={"entry_id": self.entry.entry_id},
+            translation_placeholders={"entry": self.site_label, **placeholders},
+            data=self.issue_data,
         )
 
     def _delete_issue(self, kind: str, suffix: str | None = None) -> None:

@@ -44,9 +44,11 @@ from .const import (
 )
 from .devices import MANUFACTURER
 from .manager import AmberManager, OwnSensor
+from .sites import mapping_site_id
 from .statistics import CHANNEL_LABELS, ChannelConfig, own_cost_spec
 from .storage import async_rename_chains
 
+MAPPING_TYPES = (SUBENTRY_OWN_SENSOR, SUBENTRY_GRID_METER, SUBENTRY_APPLIANCE)
 ISSUE_CONVERT = "convert_own_sensors"
 DEFAULT_GRID_NAME = "Grid meter"
 
@@ -80,13 +82,12 @@ def _sides(subentry: ConfigSubentry) -> list[tuple[str, str, str | None, str | N
 
 
 def own_sensors_from_entry(
-    entry: ConfigEntry, channels: tuple[ChannelConfig, ...]
+    entry: ConfigEntry, channels: tuple[ChannelConfig, ...], site: str
 ) -> list[OwnSensor]:
-    """Every priced sensor of the entry's sub-entries whose channel still exists."""
+    """Every priced sensor of the site's mappings whose channel still exists."""
     by_ident = {c.identifier: c for c in channels}
-    site = entry.data[CONF_SITE_ID]
     sensors = []
-    for subentry in entry.subentries.values():
+    for subentry in _site_mappings(entry, site):
         for entity_id, ident, role, label in _sides(subentry):
             channel = by_ident.get(ident)
             if channel is None:
@@ -103,6 +104,15 @@ def own_sensors_from_entry(
                 )
             )
     return sensors
+
+
+def _site_mappings(entry: ConfigEntry, site: str) -> list[ConfigSubentry]:
+    """The site's grid meters, appliances and 2.1 mappings (section 23)."""
+    return [
+        sub
+        for sub in entry.subentries.values()
+        if sub.subentry_type in MAPPING_TYPES and mapping_site_id(entry, sub.data) == site
+    ]
 
 
 def mapped_entities(entry: ConfigEntry) -> set[str]:
@@ -146,13 +156,15 @@ class ConversionPlan:
     appliances: list[str] = field(default_factory=list)
 
 
-def legacy_mappings(entry: ConfigEntry, channels: Iterable[ChannelConfig]) -> list[ConfigSubentry]:
-    """The 2.1 own-sensor mappings whose channel still exists (others are ignored at run
-    time, and left alone)."""
+def legacy_mappings(
+    entry: ConfigEntry, channels: Iterable[ChannelConfig], site: str
+) -> list[ConfigSubentry]:
+    """The site's 2.1 own-sensor mappings whose channel still exists (others are ignored
+    at run time, and left alone)."""
     idents = {c.identifier for c in channels}
     return [
         sub
-        for sub in entry.subentries.values()
+        for sub in _site_mappings(entry, site)
         if sub.subentry_type == SUBENTRY_OWN_SENSOR and sub.data[CONF_CHANNEL] in idents
     ]
 
@@ -238,11 +250,11 @@ class ConversionFailed(Exception):
 
 @callback
 def async_update_convert_issue(
-    hass: HomeAssistant, entry: ConfigEntry, channels: Iterable[ChannelConfig]
+    hass: HomeAssistant, entry: ConfigEntry, manager: AmberManager
 ) -> None:
-    """Offer the conversion (a fixable Repairs issue) while 2.1 mappings remain."""
-    issue_id = f"{ISSUE_CONVERT}_{entry.entry_id}"
-    legacy = legacy_mappings(entry, channels)
+    """Offer the conversion (a fixable Repairs issue) while the site has 2.1 mappings."""
+    issue_id = f"{ISSUE_CONVERT}_{manager.site_key}"
+    legacy = legacy_mappings(entry, manager.ctx.channels, manager.ctx.site_id)
     if not legacy:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
         return
@@ -254,13 +266,16 @@ def async_update_convert_issue(
         is_persistent=False,
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_CONVERT,
-        translation_placeholders={"entry": entry.title, "mappings": describe_mappings(legacy)},
-        data={"entry_id": entry.entry_id},
+        translation_placeholders={
+            "entry": manager.site_label,
+            "mappings": describe_mappings(legacy),
+        },
+        data=manager.issue_data,
     )
 
 
 async def async_convert(
-    hass: HomeAssistant, entry: ConfigEntry, plan: ConversionPlan
+    hass: HomeAssistant, entry: ConfigEntry, manager: AmberManager, plan: ConversionPlan
 ) -> dict[str, Any]:
     """Replace 2.1 mappings with a grid meter and appliances, keeping every statistic.
 
@@ -269,7 +284,6 @@ async def async_convert(
     entry then reloads. A grid meter's reconciliation sensors ask for the entity IDs of
     the mappings they replace. Everything is read back.
     """
-    manager: AmberManager = entry.runtime_data.manager
     channels = {c.identifier: c for c in manager.ctx.channels}
     site = manager.ctx.site_id
     registry = er.async_get(hass)
@@ -287,7 +301,7 @@ async def async_convert(
         if plan.grid_import:
             imp = old[plan.grid_import].data
             data: dict[str, Any] = {
-                CONF_SITE_ID: entry.data[CONF_SITE_ID],
+                CONF_SITE_ID: site,
                 CONF_NAME: plan.grid_name,
                 CONF_IMPORT_SENSOR: imp[CONF_SENSOR],
                 CONF_IMPORT_CHANNEL: imp[CONF_CHANNEL],
@@ -316,7 +330,7 @@ async def async_convert(
             appliance = ConfigSubentry(
                 data=MappingProxyType(
                     {
-                        CONF_SITE_ID: entry.data[CONF_SITE_ID],
+                        CONF_SITE_ID: site,
                         CONF_NAME: name,
                         CONF_SENSOR: data[CONF_SENSOR],
                         CONF_CHANNEL: data[CONF_CHANNEL],
@@ -353,7 +367,7 @@ async def async_convert(
         *(f"{sub.title} was not added" for sub in new if sub.subentry_id not in entry.subentries),
     ]:
         raise ConversionFailed("; ".join(problems))
-    async_update_convert_issue(hass, entry, manager.ctx.channels)
+    async_update_convert_issue(hass, entry, manager)
     return {
         "removed": [old[sid].title for sid in old_ids],
         "added": [sub.title for sub in new],

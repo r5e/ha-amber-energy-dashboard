@@ -11,7 +11,7 @@ from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.translation import async_get_translations
 from homeassistant.util import slugify
 
-from .const import CONF_SITE_ID, CONF_SITE_NAME, DOMAIN
+from .const import CONF_SITE_ID, CONF_SITE_NAME, DOMAIN, SUBENTRY_SITE
 
 MANUFACTURER = "Amber Electric (unofficial integration)"
 DEFAULT_TITLE = "Amber Energy Dashboard"
@@ -39,12 +39,16 @@ def is_default_title(title: str, nmi: str, site_name: str | None = None) -> bool
 
 
 def displayed_site_name(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
-    """The site's name wherever the integration shows it: the name the user gave the
-    site's device on Home Assistant's device page, else the one from setup (2.2)."""
+    """The entry's (first) site's name wherever the integration shows it: the name the
+    user gave the site's device on Home Assistant's device page, else the one from setup
+    (2.2)."""
+    sites = [s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_SITE]
+    site = next((s.data for s in sites if s.data[CONF_SITE_ID] == entry.unique_id), None)
+    data = site or (sites[0].data if sites else entry.data)
     device = dr.async_get(hass).async_get_device_by_identifier(
-        (DOMAIN, entry.data.get(CONF_SITE_ID, "")), entry.entry_id
+        (DOMAIN, data.get(CONF_SITE_ID, "")), entry.entry_id
     )
-    return (device.name_by_user if device else None) or entry.data.get(CONF_SITE_NAME)
+    return (device.name_by_user if device else None) or data.get(CONF_SITE_NAME)
 
 
 def site_device_name(site_name: str | None) -> str:

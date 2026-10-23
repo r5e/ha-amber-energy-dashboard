@@ -75,3 +75,7 @@ class FakeAmber:
         """Register /sites and /usage on the mocker."""
         aioclient_mock.get(SITES_URL, json=list(sites) if sites is not None else [site_json()])
         aioclient_mock.get(USAGE_URL, side_effect=self._handler)
+
+    def install_usage(self, aioclient_mock: AiohttpClientMocker, site_id: str) -> None:
+        """Serve this fake's usage for another site (a second site of the account)."""
+        aioclient_mock.get(f"{BASE}/sites/{site_id}/usage", side_effect=self._handler)

@@ -290,14 +290,26 @@ class AmberClient:
         self.last_rate_limit: RateLimit | None = None
         self.budget: RunBudget | None = None
         """Budget of the current run, if one was started."""
+        self._last_budget: RunBudget | None = None
 
     def start_run(self, budget: RunBudget | None = None) -> RunBudget:
-        """Start a run with a fresh budget (default limits unless one is given)."""
+        """Start a run with a fresh call count (default limits unless a budget is given).
+
+        The rate limit is the account's, shared by its sites (section 23): the run
+        starts from the last ``RateLimit-Remaining`` (and window end) the previous run
+        saw, so the reserve applies before its first call.
+        """
         self.budget = budget if budget is not None else RunBudget()
+        if self._last_budget is not None:
+            for counter, remaining in self._last_budget.remaining.items():
+                self.budget.remaining.setdefault(counter, remaining)
+            for counter, end in self._last_budget._window_ends.items():
+                self.budget._window_ends.setdefault(counter, end)
         return self.budget
 
     def end_run(self) -> None:
-        """Stop applying a run budget."""
+        """Stop applying a run budget (it is remembered for the next run)."""
+        self._last_budget = self.budget
         self.budget = None
 
     async def async_get_sites(self) -> list[Site]:

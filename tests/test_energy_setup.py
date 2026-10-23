@@ -30,6 +30,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     ALL_IDS,
     ENTRY_ID,
     NOW,
+    SITE_KEY,
     TODAY,
     YESTERDAY,
     Clock,
@@ -39,11 +40,12 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     _run,
     _setup,
     _setup_entry,
+    _site_options,
     clock,
 )
 
 E1, E1_COST, B1, B1_COMP, NET = ALL_IDS
-ISSUE = f"energy_not_used_{ENTRY_ID}"
+ISSUE = f"energy_not_used_{SITE_KEY}"
 OURS = {
     "type": "grid",
     "stat_energy_from": E1,
@@ -324,7 +326,7 @@ async def test_issue_not_raised(
     await energy_mod.async_check_energy_issue(hass, manager)
     assert _issue(hass) is None
     if why == "pricing":
-        assert entry.options.get(CONF_USAGE_MODE) is None
+        assert _site_options(entry).get(CONF_USAGE_MODE) is None
 
 
 async def test_listener_registered_once(

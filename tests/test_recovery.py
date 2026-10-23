@@ -3,6 +3,7 @@ reconfigure and Store migration. All data is synthetic."""
 
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from typing import Any
 from unittest.mock import patch
 
 from homeassistant.core import HomeAssistant
@@ -30,6 +31,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     ENTRY_ID,
     NOW,
     PREFIX,
+    SITE_KEY,
     TODAY,
     YESTERDAY,
     Clock,
@@ -41,6 +43,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     _run,
     _setup,
     _setup_entry,
+    _site_sub,
     _store_key,
     clock,
 )
@@ -50,7 +53,7 @@ E2_CHANNELS = (*DEFAULT_CHANNELS, ("E2", "controlledLoad", None))
 
 
 def _issue(hass: HomeAssistant, kind: str):
-    return ir.async_get(hass).async_get_issue(DOMAIN, f"{kind}_{ENTRY_ID}")
+    return ir.async_get(hass).async_get_issue(DOMAIN, f"{kind}_{SITE_KEY}")
 
 
 def _hours(rows: dict, sid: str) -> list[datetime]:
@@ -736,7 +739,10 @@ async def test_interrupted_tail_rewrite_resumes(
 async def test_behind_issue_only_after_final_attempt(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """'Still behind' is raised by the day's final attempt and clears once caught up."""
+    """'Still behind' is raised by the day's final attempt and clears once caught up. A day
+    still waiting for Amber's data at the last daytime attempt (13:15) is retried every 3
+    hours until 22:00 (16:15, 19:15), and the last of those is the final attempt (item 8,
+    2.2.0-dev2)."""
     await hass.config.async_set_time_zone("Australia/Sydney")
     _preload_store(hass_storage, retention_days=4)
     fake = FakeAmber(TODAY - timedelta(days=4), YESTERDAY - timedelta(days=1))  # yesterday late
@@ -758,6 +764,21 @@ async def test_behind_issue_only_after_final_attempt(
     clock.now = final
     mgr._on_timer(final)
     await hass.async_block_till_done(wait_background_tasks=True)
+    assert mgr.store.last_run["trigger"] == "scheduled (final)"
+    assert mgr.store.last_run["status"] == "waiting_for_data"
+    assert _issue(hass, "behind") is None  # an evening retry follows
+    evening = final + timedelta(hours=3)
+    assert mgr.next_run == evening  # 16:15
+    clock.now = evening
+    mgr._on_timer(evening)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert _issue(hass, "behind") is None
+    last = evening + timedelta(hours=3)
+    assert mgr.next_run == last  # 19:15, the last before 22:00
+    clock.now = last
+    mgr._on_timer(last)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert mgr.next_run == datetime(2026, 9, 26, 21, 15, tzinfo=UTC)  # tomorrow 07:15 AEST
     issue = _issue(hass, "behind")
     assert issue is not None
     assert issue.translation_placeholders["days_behind"] == "1"
@@ -815,14 +836,14 @@ async def test_reconfigure_adds_new_channel(
     # The site now reports E2 as well.
     aioclient_mock.clear_requests()
     fake.install(aioclient_mock, [site_json(E2_CHANNELS)])
-    flow = await entry.start_reconfigure_flow(hass)
-    assert flow["step_id"] == "reconfigure"
+    flow = await _channels_flow(hass, entry)
+    assert flow["step_id"] == "channels"
     assert flow["description_placeholders"] == {"added": "E2 (controlled load)", "removed": "none"}
-    flow = await hass.config_entries.flow.async_configure(flow["flow_id"], {})
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], {})
     await hass.async_block_till_done()
-    assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "reconfigure_successful"
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
     assert _issue(hass, "unexpected_channel") is None
-    assert [c["identifier"] for c in entry.data["channels"]] == ["E1", "B1", "E2"]
+    assert [c["identifier"] for c in _site_sub(entry).data["channels"]] == ["E1", "B1", "E2"]
     store = entry.runtime_data.manager.store
     assert store.channel_since("E2") == new_from
 
@@ -850,7 +871,7 @@ async def test_reconfigure_without_changes_aborts(
     _preload_store(hass_storage, retention_days=2)
     fake = FakeAmber(TODAY - timedelta(days=5), YESTERDAY)
     entry = await _setup_entry(hass, aioclient_mock, fake)
-    flow = await entry.start_reconfigure_flow(hass)
+    flow = await _channels_flow(hass, entry)
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "channels_unchanged"
 
 
@@ -875,7 +896,7 @@ async def test_reconfigure_refusals(
     entry = await _setup_entry(hass, aioclient_mock, fake)
     aioclient_mock.clear_requests()
     fake.install(aioclient_mock, sites)
-    flow = await entry.start_reconfigure_flow(hass)
+    flow = await _channels_flow(hass, entry)
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == reason
 
 
@@ -964,8 +985,8 @@ async def test_revision_before_new_channel_rewrites_without_it(
     await _run(hass)  # stops at the new channel
     aioclient_mock.clear_requests()
     fake.install(aioclient_mock, [site_json(E2_CHANNELS)])
-    flow = await entry.start_reconfigure_flow(hass)
-    await hass.config_entries.flow.async_configure(flow["flow_id"], {})
+    flow = await _channels_flow(hass, entry)
+    await hass.config_entries.options.async_configure(flow["flow_id"], {})
     await hass.async_block_till_done()
     await _run(hass)
 
@@ -1108,25 +1129,35 @@ async def test_internal_guards(
 async def test_reconfigure_cannot_connect_and_unloaded_entry(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """Reconfigure reports API errors, and works on an entry that is not loaded."""
+    """Refreshing the channels reports API errors, and works on an entry that is not
+    loaded (it was migrated to the account layout before its setup failed)."""
     _preload_store(hass_storage, retention_days=2, marker=(TODAY - timedelta(days=2)).isoformat())
     fake = FakeAmber(TODAY - timedelta(days=5), YESTERDAY)
     aioclient_mock.get("https://api.amber.com.au/v1/sites", status=503)
     entry = await _setup_entry_raw(hass)
     assert entry.state.name == "SETUP_RETRY"
 
-    flow = await entry.start_reconfigure_flow(hass)
+    flow = await _channels_flow(hass, entry)
     assert flow["type"] is FlowResultType.ABORT and flow["reason"] == "cannot_connect"
 
     aioclient_mock.clear_requests()
     fake.install(aioclient_mock, [site_json(E2_CHANNELS)])
-    flow = await entry.start_reconfigure_flow(hass)
-    flow = await hass.config_entries.flow.async_configure(flow["flow_id"], {})
+    flow = await _channels_flow(hass, entry)
+    flow = await hass.config_entries.options.async_configure(flow["flow_id"], {})
     await hass.async_block_till_done()
-    assert flow["reason"] == "reconfigure_successful"
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
     assert hass_storage[_store_key()]["data"]["channel_since"] == {
         "E2": (TODAY - timedelta(days=1)).isoformat()
     }
+
+
+async def _channels_flow(hass: HomeAssistant, entry: Any) -> dict[str, Any]:
+    """The site's "Refresh channels" step, from the entry's options (2.2.0-dev2; until
+    then the entry's reconfigure flow)."""
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    return await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "channels"}
+    )
 
 
 async def _setup_entry_raw(hass: HomeAssistant):

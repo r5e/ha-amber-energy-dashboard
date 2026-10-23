@@ -10,7 +10,7 @@
       },
       "site": {
         "title": "Choose a site",
-        "description": "Each site is set up as its own entry.",
+        "description": "Choose a site to set up first. The entry is your Amber account; add further sites afterwards with **Add site** on the integration page.",
         "data": {
           "site_id": "Site"
         }
@@ -44,20 +44,16 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate with Amber",
-        "description": "Amber rejected the API key for NMI {nmi}. Enter a new key for the same account.",
+        "description": "Amber rejected the API key for {entry}. Enter a new key for the same account; it must still see every site set up here.",
         "data": {
           "api_key": "API key"
         }
-      },
-      "reconfigure": {
-        "title": "Update channels",
-        "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
       }
     },
     "error": {
       "invalid_auth": "The API key was rejected.",
       "cannot_connect": "Could not reach the Amber API. Try again later.",
-      "site_not_found": "This key does not have access to the configured site.",
+      "site_not_found": "This key does not have access to every site set up here.",
       "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
       "unknown": "Unexpected response from the Amber API.",
       "name_required": "Enter a name."
@@ -68,7 +64,7 @@
       "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
       "reauth_successful": "Re-authentication was successful.",
       "channels_unchanged": "The site's channels have not changed.",
-      "site_not_found": "The API key no longer has access to this site.",
+      "site_not_found": "The API key no longer has access to one of the sites.",
       "reconfigure_successful": "The channels were updated.",
       "invalid_auth": "The API key was rejected. Re-authenticate first.",
       "cannot_connect": "Could not reach the Amber API. Try again later.",
@@ -78,11 +74,12 @@
   "options": {
     "step": {
       "init": {
-        "title": "Amber Energy Dashboard options",
+        "title": "Site settings",
         "menu_options": {
           "settings": "Import settings",
           "bill": "Bill estimate",
           "allowance": "Export allowance",
+          "channels": "Refresh channels",
           "migrate": "Migrate from the YAML kit",
           "undo_migration": "Undo migration"
         }
@@ -188,6 +185,28 @@
         "data": {
           "confirm": "Undo the migration"
         }
+      },
+      "menu": {
+        "title": "Site settings",
+        "menu_options": {
+          "settings": "Import settings",
+          "bill": "Bill estimate",
+          "allowance": "Export allowance",
+          "channels": "Refresh channels",
+          "migrate": "Migrate from the YAML kit",
+          "undo_migration": "Undo migration"
+        }
+      },
+      "site": {
+        "title": "Choose a site",
+        "description": "This account has several sites. Choose the one whose settings to change.",
+        "data": {
+          "site": "Site"
+        }
+      },
+      "channels": {
+        "title": "Refresh channels",
+        "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
       }
     },
     "error": {
@@ -201,7 +220,14 @@
       "charge_required": "Enter this charge (0 is fine if it is currently free)."
     },
     "abort": {
-      "not_loaded": "The integration is not loaded; migration and undo need it running."
+      "not_loaded": "The integration is not loaded; migration and undo need it running.",
+      "invalid_auth": "The API key was rejected. Re-authenticate first.",
+      "cannot_connect": "Could not reach the Amber API. Try again later.",
+      "unknown": "Unexpected response from the Amber API.",
+      "site_not_found": "The API key no longer has access to one of the sites.",
+      "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
+      "channels_unchanged": "The site's channels have not changed.",
+      "no_sites": "This account has no sites. Add one with Add site on the integration page."
     }
   },
   "selector": {
@@ -319,7 +345,7 @@
     },
     "unexpected_channel": {
       "title": "Amber reports a new metering channel",
-      "description": "Usage for {day} on {entry} contains a channel that is not configured: {details}.\n\nThis usually means a new meter channel (for example controlled load) was added to your Amber account. Imports are paused so that no data is lost or mis-assigned. Open the integration and choose **Reconfigure** to add the channel; imports then continue from {day}."
+      "description": "Usage for {day} on {entry} contains a channel that is not configured: {details}.\n\nThis usually means a new meter channel (for example controlled load) was added to your Amber account. Imports are paused so that no data is lost or mis-assigned. Open the site's settings (the cog on the integration, or the pencil on the site) and choose **Refresh channels** to add the channel; imports then continue from {day}."
     },
     "incomplete_data": {
       "title": "Amber usage data is incomplete",
@@ -407,8 +433,12 @@
           "description": "The NEM date (Australian Eastern Standard Time) to import."
         },
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site to import for. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -417,8 +447,12 @@
       "description": "Catch up now: import every missing day up to yesterday, as a scheduled run would.",
       "fields": {
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site to run for. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -427,8 +461,12 @@
       "description": "Discover Amber's usage retention boundary again from scratch (at most 8 API calls), instead of waiting for the daily check. The stored boundary is kept if the probe fails.",
       "fields": {
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -441,8 +479,12 @@
           "description": "Any date in the billing cycle (default today)."
         },
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -459,8 +501,12 @@
           "description": "Last NEM date to import (at most yesterday)."
         },
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -501,8 +547,12 @@
           "description": "Legacy export cost or compensation statistic (manual pick)."
         },
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -511,8 +561,12 @@
       "description": "Restore the Energy dashboard settings saved by the migration and turn back on the automations it turned off. Copied history stays.",
       "fields": {
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     },
@@ -525,13 +579,188 @@
           "description": "Must be on; the deletion cannot be reversed."
         },
         "config_entry_id": {
+          "name": "Account",
+          "description": "The Amber account (config entry). Optional when only one is configured."
+        },
+        "site": {
           "name": "Site",
-          "description": "The Amber site. Optional when only one site is configured."
+          "description": "The site's device. Optional while the account (or the whole integration) has only one site."
         }
       }
     }
   },
   "config_subentries": {
+    "site": {
+      "entry_type": "Site",
+      "initiate_flow": {
+        "user": "Add site",
+        "reconfigure": "Site settings"
+      },
+      "step": {
+        "user": {
+          "title": "Add a site",
+          "description": "Choose a site of this Amber account that isn't set up yet.",
+          "data": {
+            "site_id": "Site"
+          }
+        },
+        "site_name": {
+          "title": "Name this site",
+          "description": "- Network: {network}\n- NMI ending {nmi}\n- Active from: {active_from}\n\nGive the site a friendly name. It names the site's device; entity IDs don't depend on it. To rename the site later, or to give it an area or labels, use the pencil icon on the device's page.",
+          "data": {
+            "site_name": "Site name"
+          },
+          "data_description": {
+            "site_name": "For example \"Home\" or \"Beach house\". If you also use Amber Express, using the same name makes its devices and these easy to match."
+          }
+        },
+        "new_channels": {
+          "title": "Confirm channels",
+          "description": "These metering channels were found for NMI {nmi}. Usage, cost and feed-in compensation will be imported for each of them.\n\n{channels}"
+        },
+        "reconfigure": {
+          "title": "Site settings",
+          "menu_options": {
+            "settings": "Import settings",
+            "bill": "Bill estimate",
+            "allowance": "Export allowance",
+            "channels": "Refresh channels",
+            "migrate": "Migrate from the YAML kit",
+            "undo_migration": "Undo migration"
+          }
+        },
+        "settings": {
+          "title": "Import schedule",
+          "description": "Automatic picks a stable time each morning (between 06:30 and 08:30), with retries 3 and 6 hours later.",
+          "data": {
+            "schedule_mode": "Schedule",
+            "fixed_times": "Fixed times",
+            "patience_days": "Patience days",
+            "revision_days": "Revision days",
+            "usage_mode": "Usage mode",
+            "price_series": "Price series",
+            "own_fallback": "Hourly fallback for own sensors"
+          },
+          "data_description": {
+            "fixed_times": "Only for fixed times: up to 6 local times, comma separated, for example 07:15, 10:15, 13:15.",
+            "patience_days": "A day that stays empty on this many separate days, while later days have data, is skipped as a gap (default 7).",
+            "revision_days": "Days with estimated data are re-checked daily for this many days; if Amber revises them, history is rewritten from that day on (default 14, 0 turns it off).",
+            "usage_mode": "Full imports usage every day. Recovery-only imports nothing on a schedule (use the backfill service). Pricing-only writes no usage statistics, only prices and own-sensor cost. Switching never deletes statistics; ones no longer updated simply stop.",
+            "price_series": "Also write an hourly price series per channel (AUD/kWh). An hourly mean price is not a cost rate. Enabling it fetches the full retention window once (about 13 API calls for 90 days).",
+            "own_fallback": "When 5-minute sensor data is no longer available (after about 10 days), price hourly energy at the hour's mean price and flag the day as lower precision. If off, such days are skipped."
+          }
+        },
+        "bill": {
+          "title": "Bill estimate",
+          "description": "Estimates your Amber bill for the current billing cycle from the imported usage, plus your daily fixed charges. Enter the rates from your Amber bill's charges summary, excluding GST: see [Finding these on your bill]({bill_help_url}). Only complete imported days count, so the estimate runs a day behind. One-off charges (such as card payment fees) are not included. Leave the billing day empty to turn the estimate off.",
+          "data": {
+            "billing_day": "Billing day of the month",
+            "daily_supply": "Daily supply charge ($/day, excluding GST)",
+            "amber_subscription": "Amber subscription ($/day, excluding GST)",
+            "other_daily": "Other daily charges ($/day, excluding GST)",
+            "gst_percent": "GST rate",
+            "fixed_statistic": "Also write cost including fixed charges"
+          },
+          "data_description": {
+            "billing_day": "The first day of your bill period (for '28 Aug – 27 Sep', enter 28).",
+            "daily_supply": "The Network Daily Supply Charges rate in your bill's charges summary. It already includes metering; don't add the metering line separately.",
+            "amber_subscription": "From your bill's Amber Fees section. Enter 0 if your subscription is currently free (for example a first-year offer), and update it when the offer ends.",
+            "other_daily": "Optional: any other fixed daily charge on your bill (default 0).",
+            "gst_percent": "Added to the daily charges (default 10 %). Amber's usage figures already include GST.",
+            "fixed_statistic": "An extra statistic: the import cost plus the fixed charges (including GST), spread over each day's hours. It is built from this integration's own statistics, so it covers the whole history (including history copied from the YAML kit) with no API calls. Select it in the Energy dashboard instead of the cost if you want its totals to match your bill. Changed charges apply from the day after the last imported day."
+          }
+        },
+        "allowance": {
+          "title": "Export allowance",
+          "description": "Some networks charge for exports in a midday window, but only beyond a free allowance applied on the bill (for example Endeavour Energy's N61: 8 kWh a day, over the billing period). Amber's usage data charges every exported kWh in that window, so feed-in earnings look lower than on the bill. With this on, the integration measures the charge from your data, refunds it within the allowance in an extra \"adjusted compensation\" statistic, and uses it in the bill estimate.\n\n{detected}\n\nBilling day: {billing_day} (needed to total over the billing period).",
+          "data": {
+            "export_allowance": "Apply the export allowance",
+            "allowance_kwh_per_day": "Free allowance per day",
+            "allowance_totalling": "Allowance totalled over",
+            "penalty_period": "Charged period"
+          },
+          "data_description": {
+            "allowance_kwh_per_day": "kWh a day; the period's allowance is this times its days.",
+            "allowance_totalling": "Billing period: exports in the charged period are set against the whole period's allowance (as on the N61 bill). Daily: each day has its own allowance.",
+            "penalty_period": "The tariff period name in Amber's data in which exports are charged (solarSponge for N61)."
+          }
+        },
+        "migrate_pick": {
+          "title": "Choose the legacy statistics",
+          "description": "{reason}\n\nPick the statistics your YAML kit wrote. Only the grid import is required; statistics are never mixed with a detected layout.",
+          "data": {
+            "import_energy": "Grid import kWh (required)",
+            "export_energy": "Grid export kWh",
+            "import_cost": "Import cost",
+            "export_cost": "Export cost (compensation)"
+          },
+          "data_description": {
+            "export_cost": "The migration works out the sign from the days both the kit and this integration have."
+          }
+        },
+        "migrate_confirm": {
+          "title": "Migrate from the YAML kit: dry run",
+          "description": "{report}",
+          "data": {
+            "acknowledge_unverified": "I understand the old history can't be checked against Amber's data",
+            "confirm_backup": "I have a current Home Assistant backup"
+          },
+          "data_description": {
+            "acknowledge_unverified": "Shown only when the YAML kit's data doesn't overlap the integration's, so parity can't check it. The dry run above says why.",
+            "confirm_backup": "Required. Nothing has been changed yet; submitting runs the migration."
+          }
+        },
+        "migrate_flagged": {
+          "title": "Migrate from the YAML kit: implausible legacy rows",
+          "description": "{report}",
+          "data": {
+            "exclude_flagged": "Leave the flagged rows out and re-derive the sums around them"
+          },
+          "data_description": {
+            "exclude_flagged": "Nothing has been changed yet. Ticked: a new dry run without those rows is shown before anything runs. Not ticked: the migration stops."
+          }
+        },
+        "migrate_result": {
+          "title": "Migration",
+          "description": "{result}"
+        },
+        "undo_migration": {
+          "title": "Undo migration",
+          "description": "Restores the Energy dashboard settings saved before the migration, and turns back on only the automations the migration turned off. Copied history and the re-based sums stay.",
+          "data": {
+            "confirm": "Undo the migration"
+          }
+        },
+        "channels": {
+          "title": "Refresh channels",
+          "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
+        }
+      },
+      "error": {
+        "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
+        "backup_not_confirmed": "Confirm that you have a current Home Assistant backup.",
+        "invalid_pick": "{error}",
+        "not_confirmed": "Tick the box to confirm.",
+        "not_acknowledged": "Tick the acknowledgement: the old history can't be checked against Amber's data.",
+        "needs_billing_day": "Totalling over the billing period needs the billing day (Bill estimate). Set it first, or total daily.",
+        "allowance_required": "Enter the free allowance per day.",
+        "charge_required": "Enter this charge (0 is fine if it is currently free).",
+        "name_required": "Enter a name."
+      },
+      "abort": {
+        "not_loaded": "The integration is not loaded; migration and undo need it running.",
+        "invalid_auth": "The API key was rejected. Re-authenticate first.",
+        "cannot_connect": "Could not reach the Amber API. Try again later.",
+        "unknown": "Unexpected response from the Amber API.",
+        "site_not_found": "The API key no longer has access to one of the sites.",
+        "unsupported_channels": "This site has no channels, or a channel type this integration does not support.",
+        "channels_unchanged": "The site's channels have not changed.",
+        "no_sites": "This account has no sites. Add one with Add site on the integration page.",
+        "no_new_sites": "Every site this API key can see is already set up.",
+        "settings_closed": "Closed; the settings are unchanged.",
+        "reconfigure_successful": "The site's settings were saved."
+      }
+    },
     "grid_meter": {
       "entry_type": "Grid meter",
       "initiate_flow": {
@@ -553,6 +782,13 @@
             "import_channel": "The Amber channel this meter's import is billed on: general, or controlled load for a meter on that circuit.",
             "export_entity_id": "Cumulative energy sent to the grid, priced at the feed-in rate. Leave empty if you have no export, or the meter doesn't report it."
           }
+        },
+        "site": {
+          "title": "Choose a site",
+          "description": "This account has several sites. Choose the one this belongs to.",
+          "data": {
+            "site": "Site"
+          }
         }
       },
       "error": {
@@ -563,7 +799,8 @@
         "name_required": "Enter a name."
       },
       "abort": {
-        "no_import_channel": "This site has no general or controlled load channel to price an import on."
+        "no_import_channel": "This site has no general or controlled load channel to price an import on.",
+        "no_sites": "This account has no sites. Add one with Add site first."
       }
     },
     "appliance": {
@@ -585,6 +822,13 @@
             "entity_id": "Cumulative energy used by the appliance (kWh, always rising).",
             "channel": "The Amber channel the appliance is billed on: general, or controlled load if it is on that circuit (for example a hot water system)."
           }
+        },
+        "site": {
+          "title": "Choose a site",
+          "description": "This account has several sites. Choose the one this belongs to.",
+          "data": {
+            "site": "Site"
+          }
         }
       },
       "error": {
@@ -595,7 +839,8 @@
         "name_required": "Enter a name."
       },
       "abort": {
-        "no_import_channel": "This site has no general or controlled load channel to price an appliance on."
+        "no_import_channel": "This site has no general or controlled load channel to price an appliance on.",
+        "no_sites": "This account has no sites. Add one with Add site first."
       }
     },
     "own_sensor": {

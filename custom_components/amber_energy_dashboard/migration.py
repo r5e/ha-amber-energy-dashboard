@@ -1567,7 +1567,7 @@ async def async_check_cleanup(hass: HomeAssistant, manager: AmberManager) -> lis
     record = manager.store.migration
     if record is None or record["status"] != STATUS_COMPLETED:
         return []
-    issue_id = f"{ISSUE_LEGACY_CLEANUP}_{manager.entry.entry_id}"
+    issue_id = f"{ISSUE_LEGACY_CLEANUP}_{manager.site_key}"
     lines = await _async_leftovers(hass, record)
     if not lines:
         if ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None:
@@ -1583,7 +1583,7 @@ async def async_check_cleanup(hass: HomeAssistant, manager: AmberManager) -> lis
         severity=ir.IssueSeverity.WARNING,
         translation_key=ISSUE_LEGACY_CLEANUP,
         translation_placeholders={
-            "entry": manager.entry.title,
+            "entry": manager.site_label,
             "items": "\n".join(f"- {line}" for line in lines),
         },
     )
@@ -1749,7 +1749,7 @@ async def async_undo(hass: HomeAssistant, manager: AmberManager) -> dict[str, An
         record["undone"] = _now()
         _change(record, "undo", result)
         await store.async_set_migration(record)
-        ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_LEGACY_CLEANUP}_{manager.entry.entry_id}")
+        ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_LEGACY_CLEANUP}_{manager.site_key}")
         return result
 
 

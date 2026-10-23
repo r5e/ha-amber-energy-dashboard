@@ -51,6 +51,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     ALL_IDS,
     ENTRY_ID,
     NOW,
+    SITE_KEY,
     TODAY,
     YESTERDAY,
     Clock,
@@ -388,7 +389,7 @@ async def test_advanced_migration(
     ]
     # The result lists everything; the Repairs issue only what exists (the automation).
     assert any("script.amber_daily_import" in line for line in report["cleanup"])
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{SITE_KEY}")
     assert issue is not None
     assert issue.translation_placeholders["items"] == (
         f"- Automation {ADV_AUTOMATION}: turned off by the migration; delete it when you are "
@@ -433,7 +434,7 @@ async def test_second_run_refused_undo_and_rerun(
     assert energy.data["energy_sources"] == before_prefs
     assert hass.states.get(ADV_AUTOMATION).state == "on"
     assert _record(hass_storage)["status"] == "undone"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}") is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{SITE_KEY}") is None
     assert await _rows(hass) == rows_after  # copied history and re-based sums stay
     with pytest.raises(ServiceValidationError, match="no migration to undo"):
         await hass.services.async_call(DOMAIN, "undo_migration", {}, blocking=True)
@@ -1127,7 +1128,7 @@ async def test_options_flow_migrate_and_undo(
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
     assert flow["type"] is FlowResultType.MENU
-    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "channels", "migrate"]
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )
@@ -1150,7 +1151,7 @@ async def test_options_flow_migrate_and_undo(
     assert flow["type"] is FlowResultType.CREATE_ENTRY
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
-    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate", "undo_migration"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "channels", "migrate", "undo_migration"]
     migrate = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )
@@ -1225,7 +1226,7 @@ async def test_options_flow_needs_loaded_entry(
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     flow = await hass.config_entries.options.async_init(entry.entry_id)
-    assert flow["menu_options"] == ["settings", "bill", "allowance", "migrate"]
+    assert flow["menu_options"] == ["settings", "bill", "allowance", "channels", "migrate"]
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"next_step_id": "migrate"}
     )
@@ -1384,10 +1385,10 @@ async def test_cleanup_issue_survives_a_restart(
     await _advanced(hass)
     hass.states.async_set("script.amber_daily_import", "off")
     await _migrate(hass, dry_run=False, confirm_backup=True)
-    ir.async_delete_issue(hass, DOMAIN, f"legacy_cleanup_{ENTRY_ID}")
+    ir.async_delete_issue(hass, DOMAIN, f"legacy_cleanup_{SITE_KEY}")
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{ENTRY_ID}") is not None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"legacy_cleanup_{SITE_KEY}") is not None
 
 
 async def test_v1_empty_cost_history_is_not_copied(
@@ -1687,7 +1688,7 @@ async def test_options_flow_flagged_rows(
 
 # --- the "Finish removing the YAML kit" repair: live re-check --------------------------------
 
-CLEANUP_ISSUE = f"legacy_cleanup_{ENTRY_ID}"
+CLEANUP_ISSUE = f"legacy_cleanup_{SITE_KEY}"
 
 
 def _cleanup_items(hass: HomeAssistant) -> list[str] | None:

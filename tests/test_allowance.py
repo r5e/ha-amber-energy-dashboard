@@ -54,6 +54,7 @@ from .test_manager import (  # noqa: F401 - fixtures are used by name
     _run,
     _setup,
     _setup_entry,
+    _site_options,
     clock,
     sydney,
 )
@@ -493,14 +494,14 @@ async def test_allowance_options_step(
 
     result = await step({CONF_ALLOWANCE: False})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_ALLOWANCE] is False
+    assert _site_options(entry)[CONF_ALLOWANCE] is False
     assert hass.states.get(f"{SENSOR}export_allowance_used") is None
     registry = er.async_get(hass)
     assert registry.async_get_entity_id("sensor", DOMAIN, f"{SITE_ID}_allowance_used") is None
 
     await step({CONF_ALLOWANCE: True, CONF_ALLOWANCE_KWH: 6, CONF_PENALTY_PERIOD: ""})
-    assert entry.options[CONF_ALLOWANCE_KWH] == 6.0
-    assert entry.options[CONF_PENALTY_PERIOD] == "solarSponge"
+    assert _site_options(entry)[CONF_ALLOWANCE_KWH] == 6.0
+    assert _site_options(entry)[CONF_PENALTY_PERIOD] == "solarSponge"
     assert entry.runtime_data.manager.allowance.allowance_kwh_per_day == 6.0
 
     flow = await hass.config_entries.options.async_init(entry.entry_id)
@@ -511,7 +512,7 @@ async def test_allowance_options_step(
         flow["flow_id"], {CONF_SCHEDULE_MODE: "automatic", CONF_USAGE_MODE: "full"}
     )
     await hass.async_block_till_done(wait_background_tasks=True)
-    assert entry.options[CONF_ALLOWANCE_KWH] == 6.0
+    assert _site_options(entry)[CONF_ALLOWANCE_KWH] == 6.0
 
     # Without a billing day, only daily totalling.
     flow = await hass.config_entries.options.async_init(entry.entry_id)
@@ -622,7 +623,8 @@ async def test_turning_the_allowance_on_measures_without_a_run(
     assert len(rows[ADJUSTED]) == 10 * 24
 
     diag = await async_get_config_entry_diagnostics(hass, entry)
-    assert diag["export_measurement"]["measured"] == measurement["measured"]
+    [site_diag] = diag["sites"].values()
+    assert site_diag["export_measurement"]["measured"] == measurement["measured"]
 
     # A restart with every day measured makes no further calls.
     calls = len(aioclient_mock.mock_calls)
@@ -713,7 +715,11 @@ async def test_measurement_stops_on_api_errors_and_respects_the_budget(
     assert "Measuring the export aggregates (scheduled) stopped" in caplog.text
     assert manager.ctx.client.budget is None
 
+    # The account's rate limit carries over to the next attempt (section 23); once its
+    # window has reset, the next attempt measures the rest.
     fake.remaining = None
+    last = manager.ctx.client._last_budget
+    last._window_ends = dict.fromkeys(last._window_ends, 0.0)
     result = await manager.async_measure_export("scheduled")
     assert "error" not in result
     assert len(manager.store.export_days) == 10

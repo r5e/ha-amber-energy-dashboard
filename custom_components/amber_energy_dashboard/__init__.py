@@ -1,16 +1,17 @@
 """Amber Energy Dashboard (unofficial).
 
 Imports Amber Electric usage and cost history into Home Assistant external statistics.
-Milestone 3: Store, Guard 1, retention discovery, scheduled catch-up and display sensors.
+The config entry is the Amber account (its API key); each site is a sub-entry (section 23).
 """
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 import logging
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import (
     Event,
@@ -70,6 +71,7 @@ from .const import (
     CONF_PRICE_SERIES,
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
+    CONF_SITE,
     CONF_SITE_ID,
     CONF_SITE_NAME,
     CONF_USAGE_MODE,
@@ -117,6 +119,14 @@ from .migration import (
     async_undo,
 )
 from .schedule import ScheduleConfig, parse_times
+from .sites import (
+    SiteMigrationError,
+    async_ensure_site_ownership,
+    async_migrate_to_sites,
+    site_key,
+    site_options,
+    site_subentries,
+)
 from .statistics import ChannelConfig, build_specs
 from .storage import AmberStore, async_forget_chain
 
@@ -130,14 +140,18 @@ IMPORT_DAY_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_DATE): cv.date,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(CONF_SITE): cv.string,
     }
 )
-RUN_NOW_SCHEMA = vol.Schema({vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string})
+RUN_NOW_SCHEMA = vol.Schema(
+    {vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string, vol.Optional(CONF_SITE): cv.string}
+)
 BACKFILL_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_START_DATE): cv.date,
         vol.Required(ATTR_END_DATE): cv.date,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(CONF_SITE): cv.string,
     }
 )
 MIGRATE_SCHEMA = vol.Schema(
@@ -148,20 +162,23 @@ MIGRATE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ACKNOWLEDGE_UNVERIFIED, default=False): cv.boolean,
         **{vol.Optional(role): cv.string for role in ROLES},
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(CONF_SITE): cv.string,
     }
 )
 DELETE_LEGACY_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIRM): cv.boolean,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(CONF_SITE): cv.string,
     }
 )
 
 
 @dataclass(slots=True)
-class AmberRuntimeData:
-    """Per-entry runtime state."""
+class SiteRuntime:
+    """One site's runtime state (a site sub-entry, section 23)."""
 
+    subentry_id: str
     context: ImportContext
     manager: AmberManager
     device_id: str = ""
@@ -169,9 +186,50 @@ class AmberRuntimeData:
     last_import: dict[str, Any] | None = None
     last_error: dict[str, str] | None = None
     options: dict[str, Any] = field(default_factory=dict)
-    """The options the manager runs with (an entry update may change only the title)."""
+    """The settings the manager runs with (a sub-entry update may change only a title)."""
+
+
+@dataclass(slots=True)
+class AmberRuntimeData:
+    """Per-entry (Amber account) runtime state: the account's client and run lock, shared
+    by its sites, so their runs take turns on one rate budget (section 23)."""
+
+    client: AmberClient
+    lock: asyncio.Lock
+    sites: dict[str, SiteRuntime] = field(default_factory=dict)
+    """By site sub-entry ID, the entry's first site first."""
     converting: bool = False
     """Sub-entries are being converted (section 21): one reload follows, at the end."""
+
+    @property
+    def site(self) -> SiteRuntime:
+        """The entry's first site (its only one, for most accounts)."""
+        return next(iter(self.sites.values()))
+
+    @property
+    def manager(self) -> AmberManager:
+        """The first site's manager."""
+        return self.site.manager
+
+    @property
+    def context(self) -> ImportContext:
+        """The first site's import context."""
+        return self.site.context
+
+    @property
+    def device_id(self) -> str:
+        """The first site's device."""
+        return self.site.device_id
+
+    @property
+    def last_import(self) -> dict[str, Any] | None:
+        """The first site's last import_day result."""
+        return self.site.last_import
+
+    @property
+    def last_error(self) -> dict[str, str] | None:
+        """The first site's last import_day error."""
+        return self.site.last_error
 
 
 type AmberConfigEntry = ConfigEntry[AmberRuntimeData]
@@ -251,9 +309,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the services (once, independent of config entries)."""
 
     async def _import_day(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        entry, runtime = _resolve_site(hass, call.data)
         day: date = call.data[ATTR_DATE]
-        runtime = entry.runtime_data
         try:
             summary = await runtime.manager.async_import_day(day)
         except AmberAuthError as err:
@@ -290,8 +347,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return summary if call.return_response else None
 
     async def _run_now(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
-        summary = await entry.runtime_data.manager.async_run("run_now")
+        _, site = _resolve_site(hass, call.data)
+        summary = await site.manager.async_run("run_now")
         return summary if call.return_response else None
 
     hass.services.async_register(
@@ -303,10 +360,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
 
     async def _backfill(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        _, site = _resolve_site(hass, call.data)
         start: date = call.data[ATTR_START_DATE]
         end: date = call.data[ATTR_END_DATE]
-        manager = entry.runtime_data.manager
+        manager = site.manager
         if manager.usage_mode == MODE_PRICING:
             raise ServiceValidationError(
                 "Pricing-only mode writes no usage statistics; there is nothing to backfill."
@@ -358,8 +415,8 @@ def _register_retention_service(hass: HomeAssistant) -> None:
     """probe_retention: force a fresh discovery of the retention boundary."""
 
     async def _probe_retention(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
-        result = await async_probe_retention(entry.runtime_data.manager)
+        _, site = _resolve_site(hass, call.data)
+        result = await async_probe_retention(site.manager)
         return result if call.return_response else None
 
     hass.services.async_register(
@@ -375,8 +432,8 @@ def _register_bill_service(hass: HomeAssistant) -> None:
     """bill_estimate: the estimate for the cycle containing a date (default today)."""
 
     async def _bill_estimate(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
-        manager = entry.runtime_data.manager
+        _, site = _resolve_site(hass, call.data)
+        manager = site.manager
         if manager.bill is None:
             raise ServiceValidationError(
                 "Set a billing day in the integration's options (Bill estimate) first."
@@ -392,7 +449,11 @@ def _register_bill_service(hass: HomeAssistant) -> None:
         SERVICE_BILL_ESTIMATE,
         _bill_estimate,
         schema=vol.Schema(
-            {vol.Optional(ATTR_DATE): cv.date, vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string}
+            {
+                vol.Optional(ATTR_DATE): cv.date,
+                vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
+                vol.Optional(CONF_SITE): cv.string,
+            }
         ),
         supports_response=SupportsResponse.ONLY,
     )
@@ -402,11 +463,11 @@ def _register_migration_services(hass: HomeAssistant) -> None:
     """The YAML-kit migration services (section 14)."""
 
     async def _migrate(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        _, site = _resolve_site(hass, call.data)
         try:
             report = await async_migrate(
                 hass,
-                entry.runtime_data.manager,
+                site.manager,
                 dry_run=call.data[ATTR_DRY_RUN],
                 confirm_backup=call.data[ATTR_CONFIRM_BACKUP],
                 picks={role: call.data.get(role) for role in ROLES},
@@ -418,19 +479,17 @@ def _register_migration_services(hass: HomeAssistant) -> None:
         return report if call.return_response else None
 
     async def _undo(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        _, site = _resolve_site(hass, call.data)
         try:
-            result = await async_undo(hass, entry.runtime_data.manager)
+            result = await async_undo(hass, site.manager)
         except MigrationRefused as err:
             raise ServiceValidationError(str(err)) from err
         return result if call.return_response else None
 
     async def _delete_legacy(call: ServiceCall) -> ServiceResponse:
-        entry = _resolve_entry(hass, call.data.get(ATTR_CONFIG_ENTRY_ID))
+        _, site = _resolve_site(hass, call.data)
         try:
-            result = await async_delete_legacy(
-                hass, entry.runtime_data.manager, confirm=call.data[ATTR_CONFIRM]
-            )
+            result = await async_delete_legacy(hass, site.manager, confirm=call.data[ATTR_CONFIRM])
         except MigrationRefused as err:
             raise ServiceValidationError(str(err)) from err
         return result if call.return_response else None
@@ -445,22 +504,36 @@ def _register_migration_services(hass: HomeAssistant) -> None:
         )
 
 
-def _resolve_entry(hass: HomeAssistant, entry_id: str | None) -> AmberConfigEntry:
+def _resolve_site(
+    hass: HomeAssistant, data: Mapping[str, Any]
+) -> tuple[AmberConfigEntry, SiteRuntime]:
+    """The site a service call is for (section 23): ``site`` (the site's device, its
+    Amber site ID or its sub-entry ID) and/or ``config_entry_id``; either may be left
+    out while it leaves exactly one loaded site."""
+    entry_id, ref = data.get(ATTR_CONFIG_ENTRY_ID), data.get(CONF_SITE)
     entries = [
         e for e in hass.config_entries.async_entries(DOMAIN) if e.state is ConfigEntryState.LOADED
     ]
     if entry_id is not None:
-        for entry in entries:
-            if entry.entry_id == entry_id:
-                return entry
-        raise ServiceValidationError(f"No loaded {DOMAIN} config entry {entry_id}")
-    if not entries:
-        raise ServiceValidationError(f"No loaded {DOMAIN} config entry")
-    if len(entries) > 1:
+        entries = [e for e in entries if e.entry_id == entry_id]
+        if not entries:
+            raise ServiceValidationError(f"No loaded {DOMAIN} config entry {entry_id}")
+    sites = [(e, s) for e in entries for s in e.runtime_data.sites.values()]
+    if ref is not None:
+        sites = [
+            (e, s)
+            for e, s in sites
+            if ref in (s.device_id, s.subentry_id) or ref.lower() == s.context.site_id.lower()
+        ]
+        if not sites:
+            raise ServiceValidationError(f"No loaded {DOMAIN} site {ref}")
+    if not sites:
+        raise ServiceValidationError(f"No loaded {DOMAIN} site")
+    if len(sites) > 1:
         raise ServiceValidationError(
-            f"Several {DOMAIN} config entries are loaded; pass config_entry_id"
+            f"Several {DOMAIN} sites are loaded; pass site (the site's device)"
         )
-    return entries[0]
+    return sites[0]
 
 
 async def _async_detect_tariff(store: AmberStore, site: Site) -> TwoWayTariff | None:
@@ -489,49 +562,96 @@ async def _async_detect_tariff(store: AmberStore, site: Site) -> TwoWayTariff | 
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
-    """Set up one Amber site, validating the key with one GET /sites.
+    """Set up an Amber account and its sites, validating the key with one GET /sites.
 
-    A rejected key, or a key that no longer sees this site, starts reauth. Network
-    errors, 5xx, 429 and unexpected responses retry setup later.
+    A rejected key, or a key that no longer sees one of the sites, starts reauth.
+    Network errors, 5xx, 429 and unexpected responses retry setup later.
     """
-    channels = tuple(ChannelConfig.from_dict(c) for c in entry.data[CONF_CHANNELS])
-    site_id = entry.data[CONF_SITE_ID]
     client = AmberClient(async_get_clientsession(hass), entry.data[CONF_API_KEY])
     try:
-        sites = await client.async_get_sites()
+        sites = {s.id: s for s in await client.async_get_sites()}
     except AmberAuthError as err:
         raise ConfigEntryAuthFailed("Amber rejected the API key") from err
     except (AmberConnectionError, AmberServerError, AmberRateLimitError) as err:
         raise ConfigEntryNotReady(f"Amber API unavailable: {err}") from err
     except AmberError as err:
         raise ConfigEntryNotReady(f"Unexpected response from Amber: {err}") from err
-    site = next((s for s in sites if s.id == site_id), None)
-    if site is None:
-        raise ConfigEntryAuthFailed("The API key no longer has access to this site")
+    subentries = site_subentries(entry)
+    if any(sub.data[CONF_SITE_ID] not in sites for sub in subentries):
+        raise ConfigEntryAuthFailed("The API key no longer has access to one of the sites")
 
-    store = AmberStore(hass, entry.entry_id, today=nem_today)
+    # Before any platform is set up: each site's device and entities in its sub-entry.
+    async_ensure_site_ownership(hass, entry)
+    runtime = AmberRuntimeData(client=client, lock=asyncio.Lock())
+    entry.runtime_data = runtime
+    for sub in subentries:
+        runtime.sites[sub.subentry_id] = await _async_setup_site(
+            hass, entry, runtime, sub, sites[sub.data[CONF_SITE_ID]], several=len(subentries) > 1
+        )
+    async_update_titles(hass)
+    if runtime.sites:
+        _follow_site_renames(hass, entry, runtime.site.device_id)
+
+    async def _started(_hass: HomeAssistant) -> None:
+        await async_listen_for_changes(hass)
+        for site in list(runtime.sites.values()):
+            await site.manager.async_refresh_calibration()
+            await async_check_cleanup(hass, site.manager)
+            await async_check_energy_issue(hass, site.manager)
+
+    # Re-check the YAML kit's leftovers and the Energy dashboard once Home Assistant has
+    # started (so the kit's entities have been set up), and after each scheduled attempt;
+    # the Energy dashboard also after every run and whenever its preferences change.
+    entry.async_on_unload(async_at_started(hass, _started))
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    for site in runtime.sites.values():
+        site.manager.async_start()
+        entry.async_on_unload(site.manager.async_stop)
+        _schedule_startup_work(hass, entry, site.manager)
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    return True
+
+
+async def _async_setup_site(
+    hass: HomeAssistant,
+    entry: AmberConfigEntry,
+    runtime: AmberRuntimeData,
+    sub: ConfigSubentry,
+    site: Site,
+    *,
+    several: bool,
+) -> SiteRuntime:
+    """One site: its Store, manager and device (created in its sub-entry)."""
+    site_id = sub.data[CONF_SITE_ID]
+    channels = tuple(ChannelConfig.from_dict(c) for c in sub.data[CONF_CHANNELS])
+    key = site_key(entry.entry_id, site_id)
+    # The entry's first site keeps the entry's schedule offset (as before sites).
+    seed = entry.entry_id if site_id == entry.unique_id else key
+    store = AmberStore(hass, key, today=nem_today, seed_source=seed)
     await store.async_load()
     ctx = ImportContext(
-        client=client,
+        client=runtime.client,
         site_id=site_id,
         channels=channels,
         specs=tuple(build_specs(site_id, channels)),
-        lock=asyncio.Lock(),
+        lock=runtime.lock,
     )
     tariff = await _async_detect_tariff(store, site)
-    (schedule, patience_days, revision_days), extra = settings_from_options(
-        dict(entry.options), tariff
-    )
-    own = own_sensors_from_entry(entry, channels)
-    for key in list(store.as_dict()["chains"]):
-        if key.startswith("own:") and key.split(":")[1] not in entry.subentries:
-            await async_forget_chain(store, key)  # mapping removed; statistics are kept
+    options = site_options(sub)
+    (schedule, patience_days, revision_days), extra = settings_from_options(options, tariff)
+    own = own_sensors_from_entry(entry, channels, site_id)
+    for chain in list(store.as_dict()["chains"]):
+        if chain.startswith("own:") and chain.split(":")[1] not in entry.subentries:
+            await async_forget_chain(store, chain)  # mapping removed; statistics are kept
     manager = AmberManager(
         hass,
         entry,
         ctx,
         store,
         schedule,
+        site_key=key,
+        site_title=sub.title if several else None,
         active_from=site.active_from,
         patience_days=patience_days,
         revision_days=revision_days,
@@ -539,47 +659,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         tariff=tariff,
         **extra,
     )
-    # The site's device first, so own-sensor devices can link to it (section 18).
+    # The site's device first, in its sub-entry, so mapping devices can link to it.
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
-        **device_info(site_id, site_model(site.network, site.nmi), entry.data.get(CONF_SITE_NAME)),
+        config_subentry_id=sub.subentry_id,
+        **device_info(site_id, site_model(site.network, site.nmi), sub.data.get(CONF_SITE_NAME)),
     )
-    entry.runtime_data = AmberRuntimeData(
-        context=ctx, manager=manager, device_id=device.id, options=dict(entry.options)
-    )
-    async_update_titles(hass)
-    _follow_site_renames(hass, entry, device.id)
-    async_update_convert_issue(hass, entry, channels)
-    if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
+    async_update_convert_issue(hass, entry, manager)
+    if sub.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
         # Chosen in the config flow: carried out once (section 18).
         await async_add_to_energy(hass, manager, "setup")
 
     async def _check_energy() -> None:
         await async_check_energy_issue(hass, manager)
 
-    async def _check_all(_hass: HomeAssistant | None = None) -> None:
+    async def _check_all() -> None:
         await async_check_cleanup(hass, manager)
         await _check_energy()
 
-    async def _started(_hass: HomeAssistant) -> None:
-        await async_listen_for_changes(hass)
-        await manager.async_refresh_calibration()
-        await _check_all()
-
-    # Re-check the YAML kit's leftovers and the Energy dashboard once Home Assistant has
-    # started (so the kit's entities have been set up), and after each scheduled attempt;
-    # the Energy dashboard also after every run and whenever its preferences change.
-    entry.async_on_unload(async_at_started(hass, _started))
     manager.after_scheduled = _check_all
     manager.after_run = _check_energy
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    manager.async_start()
-    entry.async_on_unload(manager.async_stop)
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
-
-    _schedule_startup_work(hass, entry, manager)
-    return True
+    return SiteRuntime(sub.subentry_id, ctx, manager, device.id, options=options)
 
 
 def _schedule_startup_work(
@@ -616,7 +716,8 @@ def _follow_site_renames(hass: HomeAssistant, entry: AmberConfigEntry, device_id
     def _renamed(event: Event[dr.EventDeviceRegistryUpdatedData]) -> None:
         changes = event.data.get("changes") or {}
         if "name_by_user" in changes:
-            old = changes["name_by_user"] or entry.data.get(CONF_SITE_NAME)
+            sites = site_subentries(entry)
+            old = changes["name_by_user"] or (sites[0].data.get(CONF_SITE_NAME) if sites else None)
             async_update_titles(hass, previous={entry.entry_id: old})
 
     entry.async_on_unload(async_track_device_registry_updated_event(hass, device_id, _renamed))
@@ -627,11 +728,12 @@ def async_update_titles(
     hass: HomeAssistant, removed: str | None = None, previous: dict[str, str | None] | None = None
 ) -> None:
     """Give every entry still on a default title the current default (2.1.1: no NMI; with
-    several sites the site's name (2.2), or its NMI's last 4 digits). A title the user
-    chose is kept. ``previous`` is a site's name before a rename, by entry."""
+    several entries the entry's first site's name (2.2), or its NMI's last 4 digits). A
+    title the user chose is kept. ``previous`` is a site's name before a rename, by entry."""
     entries = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != removed]
     for entry in entries:
-        nmi = entry.data.get(CONF_NMI, "")
+        sites = site_subentries(entry)
+        nmi = sites[0].data.get(CONF_NMI, "") if sites else entry.data.get(CONF_NMI, "")
         name = displayed_site_name(hass, entry)
         title = entry_title(nmi, len(entries) > 1, name)
         old = (previous or {}).get(entry.entry_id, name)
@@ -641,41 +743,61 @@ def async_update_titles(
             hass.config_entries.async_update_entry(entry, title=title)
 
 
-async def _async_options_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
-    """Apply option changes in place; reload only when the mappings (grid meters,
-    appliances, 2.1 own sensors) changed."""
+async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
+    """Apply a site's new settings in place. Reload when sites, mappings (grid meters,
+    appliances, 2.1 own sensors) or a site's channels change, or the bill estimate or the
+    allowance is turned on or off (they add or remove entities)."""
     runtime = entry.runtime_data
     if runtime.converting:
         return
-    manager = runtime.manager
-    current = {s.subentry_id for s in manager.own_sensors}
-    wanted = {s.subentry_id for s in own_sensors_from_entry(entry, manager.ctx.channels)}
-    if current == wanted and dict(entry.options) == runtime.options:
-        return  # the title (or nothing the manager uses) changed
-    runtime.options = dict(entry.options)
-    args, kwargs = settings_from_options(dict(entry.options), manager.tariff)
-    # Own-sensor mappings, or turning the bill estimate or the allowance on or off,
-    # change the entities.
-    if (
-        current != wanted
-        or (manager.bill is None) != (kwargs["bill"] is None)
-        or (manager.allowance is None) != (kwargs["allowance"] is None)
-    ):
+    subs = {s.subentry_id: s for s in site_subentries(entry)}
+    if set(subs) != set(runtime.sites):
+        for sub_id in set(runtime.sites) - set(subs):
+            await runtime.sites[sub_id].manager.store.async_remove()  # the site was removed
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
-    manager.async_update_settings(*args, **kwargs)
+    for sub_id, site in runtime.sites.items():
+        sub, manager = subs[sub_id], site.manager
+        options = site_options(sub)
+        current = {s.subentry_id for s in manager.own_sensors}
+        wanted = {
+            s.subentry_id
+            for s in own_sensors_from_entry(entry, manager.ctx.channels, manager.ctx.site_id)
+        }
+        channels = tuple(ChannelConfig.from_dict(c) for c in sub.data[CONF_CHANNELS])
+        if current != wanted or channels != manager.ctx.channels:
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
+        if options == site.options:
+            continue  # a title (or nothing the manager uses) changed
+        site.options = options
+        args, kwargs = settings_from_options(options, manager.tariff)
+        if (manager.bill is None) != (kwargs["bill"] is None) or (manager.allowance is None) != (
+            kwargs["allowance"] is None
+        ):
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
+        manager.async_update_settings(*args, **kwargs)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
     """1.1 -> 1.2: fold rc1's network, metering and subscription charges into the daily
-    supply charge and the Amber subscription (the bill estimate's figures are unchanged)."""
-    if entry.version > 1:
+    supply charge and the Amber subscription (the bill estimate's figures are unchanged).
+    1.x -> 2.1 (2.2.0-dev2): the entry becomes the Amber account, with the site as a
+    sub-entry (section 23)."""
+    if entry.version > 2:
         return False
-    if entry.minor_version < 2:
-        options = migrate_charges(entry.options)
-        if options != dict(entry.options):
-            _LOGGER.info("Bill estimate charges migrated to the daily supply charge")
-        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+    if entry.version == 1:
+        if entry.minor_version < 2:
+            options = migrate_charges(entry.options)
+            if options != dict(entry.options):
+                _LOGGER.info("Bill estimate charges migrated to the daily supply charge")
+            hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+        try:
+            await async_migrate_to_sites(hass, entry)
+        except SiteMigrationError, HomeAssistantError:
+            _LOGGER.exception("Migration to site sub-entries failed; it is retried at next start")
+            return False
     return True
 
 
@@ -685,6 +807,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bo
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
-    """Delete the entry's Store when the entry is removed (statistics are kept)."""
-    await AmberStore(hass, entry.entry_id).async_remove()
+    """Delete the sites' Stores when the entry is removed (statistics are kept)."""
+    for sub in site_subentries(entry):
+        await AmberStore(hass, site_key(entry.entry_id, sub.data[CONF_SITE_ID])).async_remove()
+    await AmberStore(hass, entry.entry_id).async_remove()  # an entry never migrated
     async_update_titles(hass, removed=entry.entry_id)

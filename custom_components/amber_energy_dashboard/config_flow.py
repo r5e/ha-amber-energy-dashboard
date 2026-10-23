@@ -9,6 +9,8 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentry,
+    ConfigSubentryData,
     ConfigSubentryFlow,
     OptionsFlow,
     SubentryFlowResult,
@@ -67,6 +69,7 @@ from .const import (
     CONF_IMPORT_CHANNEL,
     CONF_IMPORT_SENSOR,
     CONF_NMI,
+    CONF_OPTIONS,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
     CONF_PENALTY_PERIOD,
@@ -74,6 +77,7 @@ from .const import (
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
     CONF_SENSOR,
+    CONF_SITE,
     CONF_SITE_ID,
     CONF_SITE_NAME,
     CONF_USAGE_MODE,
@@ -88,6 +92,7 @@ from .const import (
     SCHEDULE_FIXED,
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
+    SUBENTRY_SITE,
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
 )
@@ -112,6 +117,7 @@ from .migration import (
     format_result,
 )
 from .schedule import format_times, parse_times
+from .sites import site_key, site_options, site_subentries, site_title
 from .statistics import CHANNEL_LABELS, ChannelConfig
 from .storage import AmberStore
 
@@ -237,10 +243,11 @@ def _schedule_options(user_input: dict[str, Any]) -> tuple[dict[str, Any], str |
 class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Amber Energy Dashboard."""
 
-    VERSION = 1
-    MINOR_VERSION = 2
+    VERSION = 2
+    MINOR_VERSION = 1
     """1.2 (2.1.0-rc2): the bill estimate's charges as on the Amber bill (daily supply,
-    Amber subscription, other)."""
+    Amber subscription, other). 2.1 (2.2.0-dev2): the entry is the Amber account, each
+    site a sub-entry (section 23)."""
 
     def __init__(self) -> None:
         """Initialise flow state."""
@@ -250,17 +257,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         self._site_name: str | None = None
 
     async def _async_fetch_sites(self, api_key: str) -> tuple[list[Site] | None, str | None]:
-        """Return (sites, None) or (None, error key)."""
-        client = AmberClient(async_get_clientsession(self.hass), api_key)
-        try:
-            return await client.async_get_sites(), None
-        except AmberAuthError:
-            return None, "invalid_auth"
-        except AmberConnectionError, AmberServerError, AmberRateLimitError:
-            return None, "cannot_connect"
-        except AmberError:
-            _LOGGER.exception("Unexpected response from Amber")
-            return None, "unknown"
+        return await _async_fetch_sites(self.hass, api_key)
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask for the API key and validate it live."""
@@ -285,6 +282,8 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             site = self._sites[user_input[CONF_SITE_ID]]
             await self.async_set_unique_id(site.id)
             self._abort_if_unique_id_configured()
+            if site.id in configured_site_ids(self.hass):
+                return self.async_abort(reason="already_configured")
             self._site = site
             return await self.async_step_site_name()
         options = [
@@ -338,15 +337,10 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="unsupported_channels")
         if user_input is not None:
             return await self.async_step_schedule()
-        channel_list = "\n".join(
-            f"- {c.identifier}: {CHANNEL_LABELS[c.type]}"
-            + (f" (tariff {c.tariff})" if c.tariff else "")
-            for c in site.channels
-        )
         return self.async_show_form(
             step_id="channels",
             data_schema=vol.Schema({}),
-            description_placeholders={"nmi": site.nmi, "channels": channel_list},
+            description_placeholders=channel_details(site),
         )
 
     async def async_step_schedule(
@@ -372,19 +366,16 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=entry_title(
                         site.nmi, bool(self._async_current_entries()), self._site_name
                     ),
-                    data={
-                        CONF_API_KEY: self._api_key,
-                        CONF_SITE_ID: site.id,
-                        CONF_NMI: site.nmi,
-                        CONF_SITE_NAME: self._site_name,
-                        CONF_CHANNELS: [
-                            {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
-                            for c in site.channels
-                        ],
-                        CONF_ADD_TO_ENERGY: offer_energy
-                        and bool(user_input.get(CONF_ADD_TO_ENERGY, True)),
-                    },
-                    options=options,
+                    data={CONF_API_KEY: self._api_key},
+                    subentries=[
+                        new_site(
+                            site,
+                            self._site_name,
+                            options,
+                            add_to_energy=offer_energy
+                            and bool(user_input.get(CONF_ADD_TO_ENERGY, True)),
+                        )
+                    ],
                 )
         return self.async_show_form(
             step_id="schedule",
@@ -406,58 +397,14 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     def async_get_supported_subentry_types(
         cls, config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
-        """Grid meters and appliances are config sub-entries (2.2). The 2.1 own-sensor
-        mappings are still loaded, but no longer offered; a Repairs issue converts them."""
+        """Sites (2.2.0-dev2), grid meters and appliances (2.2) are config sub-entries. The
+        2.1 own-sensor mappings are still loaded, but no longer offered; a Repairs issue
+        converts them."""
         return {
+            SUBENTRY_SITE: SiteSubentryFlow,
             SUBENTRY_GRID_METER: GridMeterSubentryFlow,
             SUBENTRY_APPLIANCE: ApplianceSubentryFlow,
         }
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Refresh the channel list from Amber (for example a new controlled load).
-
-        New channels get statistics from the next day to be imported; statistics of
-        channels that disappeared are kept but no longer written.
-        """
-        entry = self._get_reconfigure_entry()
-        sites, error = await self._async_fetch_sites(entry.data[CONF_API_KEY])
-        if error:
-            return self.async_abort(reason=error)
-        site = next((s for s in sites or [] if s.id == entry.unique_id), None)
-        if site is None:
-            return self.async_abort(reason="site_not_found")
-        if any(c.type not in SUPPORTED_CHANNEL_TYPES for c in site.channels) or not site.channels:
-            return self.async_abort(reason="unsupported_channels")
-        current = {c["identifier"] for c in entry.data[CONF_CHANNELS]}
-        found = {c.identifier for c in site.channels}
-        added = sorted(found - current)
-        removed = sorted(current - found)
-        if not added and not removed:
-            return self.async_abort(reason="channels_unchanged")
-        if user_input is not None:
-            if added:
-                await _async_record_new_channels(self.hass, entry, added)
-            ir.async_delete_issue(self.hass, DOMAIN, f"unexpected_channel_{entry.entry_id}")
-            return self.async_update_reload_and_abort(
-                entry,
-                data_updates={
-                    CONF_CHANNELS: [
-                        {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
-                        for c in site.channels
-                    ]
-                },
-            )
-        labels = {c.identifier: CHANNEL_LABELS[c.type] for c in site.channels}
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema({}),
-            description_placeholders={
-                "added": ", ".join(f"{i} ({labels[i]})" for i in added) or "none",
-                "removed": ", ".join(removed) or "none",
-            },
-        )
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """Start reauth after the key was rejected."""
@@ -466,7 +413,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for a new key; it must still see this entry's site."""
+        """Ask for a new key; it must still see every site of this entry."""
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -474,7 +421,9 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             sites, error = await self._async_fetch_sites(api_key)
             if error:
                 errors["base"] = error
-            elif entry.unique_id not in {s.id for s in sites or []}:
+            elif not {s.data[CONF_SITE_ID] for s in site_subentries(entry)} <= {
+                s.id for s in sites or []
+            }:
                 errors["base"] = "site_not_found"
             else:
                 return self.async_update_reload_and_abort(
@@ -484,46 +433,182 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=_KEY_SCHEMA,
             errors=errors,
-            description_placeholders={"nmi": entry.data.get(CONF_NMI, "")},
+            description_placeholders={"entry": entry.title},
         )
 
 
+def configured_site_ids(hass: HomeAssistant) -> set[str]:
+    """Every site configured in any entry (a site can be in one entry only)."""
+    return {
+        s.data[CONF_SITE_ID]
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        for s in site_subentries(entry)
+    }
+
+
+def channel_details(site: Site) -> dict[str, str]:
+    """The site's channels for the confirmation step (never the full NMI)."""
+    return {
+        "nmi": f"…{site.nmi[-4:]}",
+        "channels": "\n".join(
+            f"- {c.identifier}: {CHANNEL_LABELS[c.type]}"
+            + (f" (tariff {c.tariff})" if c.tariff else "")
+            for c in site.channels
+        ),
+    }
+
+
+def _channels_data(site: Site) -> list[dict[str, Any]]:
+    return [{"identifier": c.identifier, "type": c.type, "tariff": c.tariff} for c in site.channels]
+
+
+def new_site(
+    site: Site, name: str | None, options: dict[str, Any], *, add_to_energy: bool
+) -> ConfigSubentryData:
+    """A new site sub-entry (section 23)."""
+    return ConfigSubentryData(
+        data={
+            CONF_SITE_ID: site.id,
+            CONF_NMI: site.nmi,
+            CONF_SITE_NAME: name,
+            CONF_CHANNELS: _channels_data(site),
+            CONF_ADD_TO_ENERGY: add_to_energy,
+            CONF_OPTIONS: options,
+        },
+        subentry_type=SUBENTRY_SITE,
+        title=site_title(name, site.nmi),
+        unique_id=site.id,
+    )
+
+
+async def _async_fetch_sites(
+    hass: HomeAssistant, api_key: str
+) -> tuple[list[Site] | None, str | None]:
+    """Return (sites, None) or (None, error key)."""
+    client = AmberClient(async_get_clientsession(hass), api_key)
+    try:
+        return await client.async_get_sites(), None
+    except AmberAuthError:
+        return None, "invalid_auth"
+    except AmberConnectionError, AmberServerError, AmberRateLimitError:
+        return None, "cannot_connect"
+    except AmberError:
+        _LOGGER.exception("Unexpected response from Amber")
+        return None, "unknown"
+
+
 async def _async_record_new_channels(
-    hass: HomeAssistant, entry: ConfigEntry, identifiers: list[str]
+    hass: HomeAssistant, entry: ConfigEntry, site_id: str, identifiers: list[str]
 ) -> None:
     """Record that new channels start at the next day to import (marker + 1)."""
     runtime = getattr(entry, "runtime_data", None)
-    if runtime is not None:
-        await runtime.manager.async_add_channels(identifiers)
+    site = next(
+        (s for s in (runtime.sites.values() if runtime else []) if s.context.site_id == site_id),
+        None,
+    )
+    if site is not None:
+        await site.manager.async_add_channels(identifiers)
         return
-    store = AmberStore(hass, entry.entry_id)
+    store = AmberStore(hass, site_key(entry.entry_id, site_id))
     await store.async_load()
     if store.marker is not None:
         await store.async_set_channel_since(identifiers, store.marker + timedelta(days=1))
 
 
-class AmberOptionsFlow(OptionsFlow):
-    """Import settings (applied without a reload), and the YAML-kit migration."""
+class _SiteSettings:
+    """A site's settings steps (section 23): import settings, bill estimate, export
+    allowance, refreshing the channels, and the YAML-kit migration. Shared by the entry's
+    options flow (which first asks which site, when there are several) and the site
+    sub-entry's reconfigure flow. A step that saves updates the site sub-entry."""
 
-    def __init__(self) -> None:
-        """Start with no migration picks or report."""
-        self._picks: dict[str, str | None] | None = None
+    hass: HomeAssistant
+    _sub_id: str | None
+    _picks: dict[str, str | None] | None
+    _exclude_flagged: bool
+    _report: dict[str, Any] | None
+    _result: str
+
+    def _init_settings(self) -> None:
+        self._sub_id = None
+        self._picks = None
         self._exclude_flagged = False
-        self._report: dict[str, Any] | None = None
+        self._report = None
         self._result = ""
 
-    def _manager(self) -> Any:
-        runtime = getattr(self.config_entry, "runtime_data", None)
-        return runtime.manager if runtime is not None else None
+    def _settings_entry(self) -> ConfigEntry:
+        raise NotImplementedError
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Menu: settings, migration, and undo once a migration has started."""
-        options = ["settings", "bill", "allowance", "migrate"]
+    def _site(self) -> ConfigSubentry:
+        assert self._sub_id is not None
+        return self._settings_entry().subentries[self._sub_id]
+
+    def _current(self) -> dict[str, Any]:
+        return site_options(self._site())
+
+    def _manager(self) -> Any:
+        runtime = getattr(self._settings_entry(), "runtime_data", None)
+        site = runtime.sites.get(self._sub_id) if runtime is not None else None
+        return site.manager if site is not None else None
+
+    def _save_site(self, data_updates: dict[str, Any]) -> Any:
+        """Update the site sub-entry and close the flow."""
+        raise NotImplementedError
+
+    def _close(self) -> Any:
+        """Close the flow without a change."""
+        raise NotImplementedError
+
+    def _save_options(self, options: dict[str, Any]) -> Any:
+        return self._save_site({CONF_OPTIONS: options})
+
+    def _settings_menu(self, step_id: str) -> Any:
+        """Settings, bill estimate, allowance, channels, migration, and undo once a
+        migration has started."""
+        options = ["settings", "bill", "allowance", "channels", "migrate"]
         manager = self._manager()
         record = manager.store.migration if manager is not None else None
         if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
             options.append("undo_migration")
-        return self.async_show_menu(step_id="init", menu_options=options)
+        return self.async_show_menu(step_id=step_id, menu_options=options)  # type: ignore[attr-defined]
+
+    async def async_step_channels(self, user_input: dict[str, Any] | None = None) -> Any:
+        """Refresh the site's channels from Amber (for example a new controlled load).
+
+        New channels get statistics from the next day to be imported; statistics of
+        channels that disappeared are kept but no longer written.
+        """
+        entry, sub = self._settings_entry(), self._site()
+        site_id = sub.data[CONF_SITE_ID]
+        sites, error = await _async_fetch_sites(self.hass, entry.data[CONF_API_KEY])
+        if error:
+            return self.async_abort(reason=error)  # type: ignore[attr-defined]
+        site = next((s for s in sites or [] if s.id == site_id), None)
+        if site is None:
+            return self.async_abort(reason="site_not_found")  # type: ignore[attr-defined]
+        if any(c.type not in SUPPORTED_CHANNEL_TYPES for c in site.channels) or not site.channels:
+            return self.async_abort(reason="unsupported_channels")  # type: ignore[attr-defined]
+        current = {c["identifier"] for c in sub.data[CONF_CHANNELS]}
+        found = {c.identifier for c in site.channels}
+        added = sorted(found - current)
+        removed = sorted(current - found)
+        if not added and not removed:
+            return self.async_abort(reason="channels_unchanged")  # type: ignore[attr-defined]
+        if user_input is not None:
+            if added:
+                await _async_record_new_channels(self.hass, entry, site_id, added)
+            ir.async_delete_issue(
+                self.hass, DOMAIN, f"unexpected_channel_{site_key(entry.entry_id, site_id)}"
+            )
+            return self._save_site({CONF_CHANNELS: _channels_data(site)})
+        labels = {c.identifier: CHANNEL_LABELS[c.type] for c in site.channels}
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="channels",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "added": ", ".join(f"{i} ({labels[i]})" for i in added) or "none",
+                "removed": ", ".join(removed) or "none",
+            },
+        )
 
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
@@ -535,7 +620,7 @@ class AmberOptionsFlow(OptionsFlow):
             if error:
                 errors[CONF_FIXED_TIMES] = error
             else:
-                current = self.config_entry.options
+                current = self._current()
                 options[CONF_PATIENCE_DAYS] = int(
                     user_input.get(
                         CONF_PATIENCE_DAYS, current.get(CONF_PATIENCE_DAYS, DEFAULT_PATIENCE_DAYS)
@@ -559,8 +644,8 @@ class AmberOptionsFlow(OptionsFlow):
                 options.update(
                     {k: v for k, v in current.items() if k in _BILL_KEYS | _ALLOWANCE_KEYS}
                 )
-                return self.async_create_entry(data=options)
-        current = dict(self.config_entry.options)
+                return self._save_options(options)
+        current = self._current()
         suggested = user_input or {
             CONF_SCHEDULE_MODE: current.get(CONF_SCHEDULE_MODE, SCHEDULE_AUTOMATIC),
             CONF_FIXED_TIMES: format_times(parse_times(current[CONF_FIXED_TIMES]))
@@ -580,7 +665,7 @@ class AmberOptionsFlow(OptionsFlow):
 
     async def async_step_bill(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """The bill estimate: billing day, daily fixed charges (ex GST), GST, statistic."""
-        current = dict(self.config_entry.options)
+        current = self._current()
         errors: dict[str, str] = {}
         if user_input is not None:
             # The daily supply charge and the subscription have no default: with a
@@ -600,7 +685,7 @@ class AmberOptionsFlow(OptionsFlow):
                         user_input.get(CONF_GST_PERCENT, DEFAULT_GST_PERCENT)
                     )
                     options[CONF_FIXED_STATISTIC] = bool(user_input.get(CONF_FIXED_STATISTIC))
-                return self.async_create_entry(data=options)
+                return self._save_options(options)
         suggested = {
             "other_daily": 0.0,
             CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
@@ -618,7 +703,7 @@ class AmberOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """The free export allowance of a two-way network tariff (section 20)."""
-        current = dict(self.config_entry.options)
+        current = self._current()
         manager = self._manager()
         tariff = manager.tariff if manager is not None else None
         errors: dict[str, str] = {}
@@ -639,7 +724,7 @@ class AmberOptionsFlow(OptionsFlow):
                     options[CONF_PENALTY_PERIOD] = (
                         user_input.get(CONF_PENALTY_PERIOD) or DEFAULT_PENALTY_PERIOD
                     )
-                return self.async_create_entry(data=options)
+                return self._save_options(options)
         defaults: dict[str, Any] = {
             CONF_ALLOWANCE: tariff is not None and bool(current.get(CONF_BILLING_DAY)),
             CONF_ALLOWANCE_TOTALLING: tariff.totalling if tariff else TOTALLING_PERIOD,
@@ -834,8 +919,166 @@ class AmberOptionsFlow(OptionsFlow):
     async def async_step_migrate_result(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Close the flow, leaving the options unchanged."""
+        """Close the flow, leaving the settings unchanged."""
+        return self._close()
+
+
+class AmberOptionsFlow(_SiteSettings, OptionsFlow):
+    """The entry's options (the cog): a site's settings, after asking which site when the
+    account has several (section 23). The entry's own options are account-wide; there
+    are none yet."""
+
+    def __init__(self) -> None:
+        """Start with no site chosen, and no migration picks or report."""
+        self._init_settings()
+
+    def _settings_entry(self) -> ConfigEntry:
+        return self.config_entry
+
+    def _save_site(self, data_updates: dict[str, Any]) -> ConfigFlowResult:
+        sub = self._site()
+        self.hass.config_entries.async_update_subentry(
+            self.config_entry, sub, data={**sub.data, **data_updates}
+        )
         return self.async_create_entry(data=dict(self.config_entry.options))
+
+    def _close(self) -> ConfigFlowResult:
+        return self.async_create_entry(data=dict(self.config_entry.options))
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Which site, when there are several; then its settings menu."""
+        sites = site_subentries(self.config_entry)
+        if not sites:
+            return self.async_abort(reason="no_sites")
+        if len(sites) == 1:
+            self._sub_id = sites[0].subentry_id
+            return self._settings_menu("init")
+        return await self.async_step_site()
+
+    async def async_step_site(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Choose the site whose settings to change."""
+        if user_input is not None:
+            self._sub_id = user_input[CONF_SITE]
+            return self._settings_menu("menu")
+        sites = site_subentries(self.config_entry)
+        return self.async_show_form(
+            step_id="site",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_SITE, default=sites[0].subentry_id): _site_selector(sites)}
+            ),
+        )
+
+
+class SiteSubentryFlow(_SiteSettings, ConfigSubentryFlow):
+    """ "+ Site": add a site the account's key can see (its name, its channels); and a
+    site's settings (reconfigure, the pencil on the site), as in the entry's options."""
+
+    def __init__(self) -> None:
+        """Start with no site chosen."""
+        self._init_settings()
+        self._sites: dict[str, Site] = {}
+        self._new: Site | None = None
+        self._name: str | None = None
+
+    def _settings_entry(self) -> ConfigEntry:
+        return self._get_entry()
+
+    def _save_site(self, data_updates: dict[str, Any]) -> SubentryFlowResult:
+        return self.async_update_and_abort(
+            self._get_entry(), self._site(), data_updates=data_updates
+        )
+
+    def _close(self) -> SubentryFlowResult:
+        return self.async_abort(reason="settings_closed")
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """The site's settings menu."""
+        self._sub_id = self._get_reconfigure_subentry().subentry_id
+        return self._settings_menu("reconfigure")
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Choose a site the key can see that isn't set up yet."""
+        if user_input is not None:
+            self._new = self._sites[user_input[CONF_SITE_ID]]
+            return await self.async_step_site_name()
+        sites, error = await _async_fetch_sites(self.hass, self._get_entry().data[CONF_API_KEY])
+        if error:
+            return self.async_abort(reason=error)
+        configured = configured_site_ids(self.hass)
+        self._sites = {
+            s.id: s for s in sites or [] if s.status == "active" and s.id not in configured
+        }
+        if not self._sites:
+            return self.async_abort(reason="no_new_sites")
+        options = [
+            SelectOptionDict(
+                value=site.id,
+                label=f"NMI …{site.nmi[-4:]}" + (f" ({site.network})" if site.network else ""),
+            )
+            for site in self._sites.values()
+        ]
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_SITE_ID, default=options[0]["value"]): SelectSelector(
+                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.LIST)
+                    )
+                }
+            ),
+        )
+
+    async def async_step_site_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """The site's details, and a name for its device."""
+        site = self._new
+        assert site is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get(CONF_SITE_NAME) or "").strip()
+            if name:
+                self._name = name
+                return await self.async_step_new_channels()
+            errors[CONF_SITE_NAME] = "name_required"
+        return self.async_show_form(
+            step_id="site_name",
+            data_schema=self.add_suggested_values_to_schema(_SITE_NAME_SCHEMA, user_input or {}),
+            errors=errors,
+            description_placeholders=site_details(site),
+        )
+
+    async def async_step_new_channels(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Confirm the site's channels; the site is added with automatic scheduling."""
+        site = self._new
+        assert site is not None
+        if any(c.type not in SUPPORTED_CHANNEL_TYPES for c in site.channels) or not site.channels:
+            return self.async_abort(reason="unsupported_channels")
+        if user_input is not None:
+            sub = new_site(
+                site, self._name, {CONF_SCHEDULE_MODE: SCHEDULE_AUTOMATIC}, add_to_energy=False
+            )
+            return self.async_create_entry(
+                title=sub["title"], data=sub["data"], unique_id=sub["unique_id"]
+            )
+        return self.async_show_form(
+            step_id="new_channels",
+            data_schema=vol.Schema({}),
+            description_placeholders=channel_details(site),
+        )
+
+
+def _site_selector(sites: list[ConfigSubentry]) -> SelectSelector:
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[SelectOptionDict(value=s.subentry_id, label=s.title) for s in sites],
+            mode=SelectSelectorMode.LIST,
+        )
+    )
 
 
 def _energy_sensor_error(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -891,28 +1134,73 @@ def _channel_selector(channels: list[ChannelConfig]) -> SelectSelector:
     )
 
 
-def _import_channels(entry: ConfigEntry) -> list[ChannelConfig]:
+def _import_channels(site: Mapping[str, Any]) -> list[ChannelConfig]:
     """The channels an import is priced on: general first, then controlled load."""
-    channels = [ChannelConfig.from_dict(c) for c in entry.data[CONF_CHANNELS]]
+    channels = [ChannelConfig.from_dict(c) for c in site[CONF_CHANNELS]]
     return [c for c in channels if c.type == CHANNEL_GENERAL] + [
         c for c in channels if c.type == CHANNEL_CONTROLLED_LOAD
     ]
 
 
-class GridMeterSubentryFlow(ConfigSubentryFlow):
+class _MappingFlow(ConfigSubentryFlow):
+    """A grid meter or appliance belongs to one site: ask which, when there are several
+    (section 23)."""
+
+    _site_data: Mapping[str, Any] | None = None
+
+    def _pick_site(self) -> bool:
+        """True when the user must choose the site first."""
+        if self._site_data is None:
+            sites = site_subentries(self._get_entry())
+            if len(sites) > 1:
+                return True
+            if sites:
+                self._site_data = sites[0].data
+        return False
+
+    async def async_step_site(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Choose the site."""
+        sites = site_subentries(self._get_entry())
+        if user_input is not None:
+            self._site_data = self._get_entry().subentries[user_input[CONF_SITE]].data
+            return await self.async_step_user()
+        return self.async_show_form(
+            step_id="site",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_SITE, default=sites[0].subentry_id): _site_selector(sites)}
+            ),
+        )
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """The form, once the site is known."""
+        if self._pick_site():
+            return await self.async_step_site()
+        if self._site_data is None:
+            return self.async_abort(reason="no_sites")
+        return await self._async_form(self._site_data, user_input)
+
+    async def _async_form(
+        self, site: Mapping[str, Any], user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
+        raise NotImplementedError
+
+
+class GridMeterSubentryFlow(_MappingFlow):
     """A meter on the main supply: import priced on the general (or controlled load)
     channel, and optionally export priced on the feed-in channel (section 21)."""
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def _async_form(
+        self, site: Mapping[str, Any], user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
         """Name the meter and choose its sensors."""
         entry = self._get_entry()
-        imports = _import_channels(entry)
+        imports = _import_channels(site)
         if not imports:
             return self.async_abort(reason="no_import_channel")
         feed_in = next(
             (
                 ChannelConfig.from_dict(c)
-                for c in entry.data[CONF_CHANNELS]
+                for c in site[CONF_CHANNELS]
                 if c["type"] == CHANNEL_FEED_IN
             ),
             None,
@@ -929,7 +1217,7 @@ class GridMeterSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_NAME] = "name_required"
             if not errors:
                 data = {
-                    CONF_SITE_ID: entry.data[CONF_SITE_ID],
+                    CONF_SITE_ID: site[CONF_SITE_ID],
                     CONF_NAME: name,
                     CONF_IMPORT_SENSOR: import_id,
                     CONF_IMPORT_CHANNEL: user_input.get(CONF_IMPORT_CHANNEL)
@@ -962,14 +1250,16 @@ class GridMeterSubentryFlow(ConfigSubentryFlow):
         )
 
 
-class ApplianceSubentryFlow(ConfigSubentryFlow):
+class ApplianceSubentryFlow(_MappingFlow):
     """Any single energy sensor, priced on the general (or controlled load) channel,
     without reconciliation (section 21)."""
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def _async_form(
+        self, site: Mapping[str, Any], user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
         """Name the appliance, choose its sensor and the channel it is priced on."""
         entry = self._get_entry()
-        imports = _import_channels(entry)
+        imports = _import_channels(site)
         if not imports:
             return self.async_abort(reason="no_import_channel")
         errors: dict[str, str] = {}
@@ -985,7 +1275,7 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
                 return self.async_create_entry(
                     title=appliance_title(name, channel),
                     data={
-                        CONF_SITE_ID: entry.data[CONF_SITE_ID],
+                        CONF_SITE_ID: site[CONF_SITE_ID],
                         CONF_NAME: name,
                         CONF_SENSOR: entity_id,
                         CONF_CHANNEL: ident,

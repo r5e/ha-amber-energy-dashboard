@@ -77,6 +77,8 @@ is merged or tagged. **Stopped for review.**
     run: here `test_meters` and `test_recovery`; earlier runs today, other tests. They
     come from the harness, not this code.
 - `ruff check`, `ruff format --check` and `uv lock --check` are clean.
+- **CI on GitHub** (`2333085`, the branch head with this report's first version): Tests
+  39923959643, hassfest 39923959543 and HACS validation 39923959499 all succeeded.
 - **New tests** (`tests/test_sites.py`, 18; `test_schedule.py`, 1):
   - **Migration with existing state:** a 2.1-layout entry with its device and entities in
     the registries (one renamed entity ID, one site entity without a device), a Store at

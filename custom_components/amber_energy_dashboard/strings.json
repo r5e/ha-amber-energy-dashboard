@@ -599,7 +599,10 @@
       }
     },
     "own_sensor": {
-      "entry_type": "Own energy sensor (2.1)"
+      "entry_type": "Own energy sensor (2.1)",
+      "initiate_flow": {
+        "user": "Add own energy sensor (2.1)"
+      }
     }
   }
 }

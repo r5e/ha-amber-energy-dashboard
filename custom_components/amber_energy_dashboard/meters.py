@@ -6,6 +6,9 @@ sensor priced on the feed-in channel. An **appliance** is any single energy sens
 on one channel. A 2.1 **own-sensor mapping** (one sensor on one channel) keeps working
 unchanged until the user converts it (a Repairs issue with a fix flow).
 
+Grid meters and appliances record their site's ID (``site_id``), so a later split of the
+entry into per-site sub-entries knows where each belongs (see the M17 report).
+
 Every side is an ``OwnSensor`` with its own cost chain. The cost statistic's ID comes from
 the sensor's entity ID only, so a conversion keeps every statistic; the chain state in
 the Store moves to the new chain key.
@@ -284,6 +287,7 @@ async def async_convert(
         if plan.grid_import:
             imp = old[plan.grid_import].data
             data: dict[str, Any] = {
+                CONF_SITE_ID: entry.data[CONF_SITE_ID],
                 CONF_NAME: plan.grid_name,
                 CONF_IMPORT_SENSOR: imp[CONF_SENSOR],
                 CONF_IMPORT_CHANNEL: imp[CONF_CHANNEL],
@@ -312,6 +316,7 @@ async def async_convert(
             appliance = ConfigSubentry(
                 data=MappingProxyType(
                     {
+                        CONF_SITE_ID: entry.data[CONF_SITE_ID],
                         CONF_NAME: name,
                         CONF_SENSOR: data[CONF_SENSOR],
                         CONF_CHANNEL: data[CONF_CHANNEL],

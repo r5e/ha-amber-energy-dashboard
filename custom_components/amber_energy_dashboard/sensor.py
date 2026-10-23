@@ -32,7 +32,7 @@ from .const import (
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
 )
-from .devices import async_site_entity_ids, device_info
+from .devices import async_site_entity_ids, site_link
 from .manager import STATUSES, OwnSensor
 from .meters import mapping_device_info
 from .statistics import CURRENCY, Metric
@@ -409,7 +409,7 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
             self.entity_id = entity_id
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
-        self._attr_device_info = device or device_info(site)
+        self._attr_device_info = device or site_link(site)
 
     @property
     def available(self) -> bool:

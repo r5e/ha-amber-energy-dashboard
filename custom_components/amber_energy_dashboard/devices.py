@@ -3,13 +3,15 @@ the site entities' IDs, and the config entry's title."""
 
 from collections.abc import Iterable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.translation import async_get_translations
 from homeassistant.util import slugify
 
-from .const import DOMAIN
+from .const import CONF_SITE_ID, CONF_SITE_NAME, DOMAIN
 
 MANUFACTURER = "Amber Electric (unofficial integration)"
 DEFAULT_TITLE = "Amber Energy Dashboard"
@@ -18,15 +20,34 @@ ENTITY_ID_PREFIX = "Amber Energy Dashboard"
 """The site device's name until 2.1.0, which new site entities' IDs still start with."""
 
 
-def entry_title(nmi: str, several_sites: bool) -> str:
-    """The default entry title (2.1.1). It names no NMI, except its last 4 digits when
-    several sites are configured, to tell them apart."""
-    return f"{DEFAULT_TITLE} (…{nmi[-4:]})" if several_sites else DEFAULT_TITLE
+def entry_title(nmi: str, several_sites: bool, site_name: str | None = None) -> str:
+    """The default entry title (2.1.1). With several sites it names the site: its name
+    (2.2), else the NMI's last 4 digits. It never shows the full NMI."""
+    if not several_sites:
+        return DEFAULT_TITLE
+    return f"{DEFAULT_TITLE} ({site_name})" if site_name else f"{DEFAULT_TITLE} (…{nmi[-4:]})"
 
 
-def is_default_title(title: str, nmi: str) -> bool:
+def is_default_title(title: str, nmi: str, site_name: str | None = None) -> bool:
     """True for a title the integration chose (until 2.1.0 "Amber <NMI>"), not the user."""
-    return title in (f"Amber {nmi}", entry_title(nmi, False), entry_title(nmi, True))
+    return title in (
+        f"Amber {nmi}",
+        entry_title(nmi, False),
+        entry_title(nmi, True),
+        entry_title(nmi, True, site_name),
+    )
+
+
+def displayed_site_name(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+    """The site's name wherever the integration shows it: the name the user gave the
+    site's device on Home Assistant's device page, else the one from setup (2.2)."""
+    device = dr.async_get(hass).async_get_device({(DOMAIN, entry.data.get(CONF_SITE_ID, ""))})
+    return (device.name_by_user if device else None) or entry.data.get(CONF_SITE_NAME)
+
+
+def site_device_name(site_name: str | None) -> str:
+    """The site device's name: the site name (2.2), else "Amber Energy Dashboard (site)"."""
+    return site_name or SITE_DEVICE_NAME
 
 
 def site_model(network: str | None, nmi: str | None) -> str | None:
@@ -36,12 +57,11 @@ def site_model(network: str | None, nmi: str | None) -> str | None:
     return " · ".join(p for p in parts if p) or None
 
 
-def device_info(site: str, model: str | None = None) -> DeviceInfo:
-    """The site's device, shared by the sensors and buttons. The model is set once, at
-    setup; entities leave it out, so the registry keeps it."""
+def device_info(site: str, model: str | None, site_name: str | None) -> DeviceInfo:
+    """The site's device, as created at setup (named, with its model line)."""
     info = DeviceInfo(
         identifiers={(DOMAIN, site)},
-        name=SITE_DEVICE_NAME,
+        name=site_device_name(site_name),
         manufacturer=MANUFACTURER,
         entry_type=DeviceEntryType.SERVICE,
     )
@@ -50,14 +70,21 @@ def device_info(site: str, model: str | None = None) -> DeviceInfo:
     return info
 
 
+def site_link(site: str) -> DeviceInfo:
+    """The site's entities only link to its device (created at setup), so they never
+    reset its name or model."""
+    return DeviceInfo(identifiers={(DOMAIN, site)})
+
+
 async def async_site_entity_ids(
     hass: HomeAssistant, platform: str, descriptions: Iterable[EntityDescription]
 ) -> dict[str, str]:
     """The entity IDs the site's new entities ask for, by description key (2.1.1).
 
     HA derives a new entity's ID from its device's name, and the site device was renamed
-    to say it is the site's; this keeps new installs on the IDs 2.1.0 gave (existing
-    entities keep theirs in the entity registry). Names come from the English strings,
+    to say it is the site's (2.1.1), and can carry the site's name (2.2); this keeps new
+    installs on the IDs 2.1.0 gave, whatever the name (existing entities keep theirs in
+    the entity registry). Names come from the English strings,
     as before (the integration has no other language).
     """
     strings = await async_get_translations(hass, "en", "entity", [DOMAIN])

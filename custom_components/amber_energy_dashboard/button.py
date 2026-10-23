@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import AmberConfigEntry, async_probe_retention
-from .devices import async_site_entity_ids, device_info
+from .devices import async_site_entity_ids, site_link
 from .manager import AmberManager
 
 PARALLEL_UPDATES = 0
@@ -69,7 +69,7 @@ class AmberButton(ButtonEntity):
         self._manager = entry.runtime_data.manager
         site = entry.runtime_data.context.site_id
         self._attr_unique_id = f"{site}_{description.key}"
-        self._attr_device_info = device_info(site)
+        self._attr_device_info = site_link(site)
 
     async def async_press(self) -> None:
         """Run the action; errors are shown in the UI."""

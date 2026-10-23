@@ -1,16 +1,17 @@
-"""Diagnostics, with the API key and NMI redacted."""
+"""Diagnostics, with the API key, the NMI and user-given names redacted."""
 
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.const import CONF_API_KEY
+from homeassistant.const import CONF_API_KEY, CONF_NAME
 from homeassistant.core import HomeAssistant
 
 from . import AmberConfigEntry
-from .const import CONF_NMI
+from .const import CONF_NMI, CONF_SITE_NAME
 
-# The title is redacted too, because it contains the NMI.
-TO_REDACT = {CONF_API_KEY, CONF_NMI, "title"}
+# The title is redacted too, because it may contain the NMI or the site's name; the site's
+# name and the mappings' names because a user may have typed an address into them (2.2).
+TO_REDACT = {CONF_API_KEY, CONF_NMI, CONF_SITE_NAME, CONF_NAME, "title"}
 
 
 async def async_get_config_entry_diagnostics(

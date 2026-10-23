@@ -13,6 +13,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er, issue_registry as ir
 from homeassistant.setup import async_setup_component
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
@@ -108,6 +109,88 @@ async def test_site_device_shows_network_and_nmi_tail(
     assert hass.states.get("sensor.amber_energy_dashboard_import_status") is not None
 
 
+SITE_ENTITY_IDS = [
+    "button.amber_energy_dashboard_re_check_retention",
+    "button.amber_energy_dashboard_run_now",
+    "sensor.amber_energy_dashboard_days_behind",
+    "sensor.amber_energy_dashboard_import_status",
+    "sensor.amber_energy_dashboard_last_imported_date",
+    "sensor.amber_energy_dashboard_next_scheduled_run",
+    "sensor.amber_energy_dashboard_yesterday_b1_compensation",
+    "sensor.amber_energy_dashboard_yesterday_b1_energy",
+    "sensor.amber_energy_dashboard_yesterday_e1_cost",
+    "sensor.amber_energy_dashboard_yesterday_e1_energy",
+]
+
+
+def _entity_ids(hass: HomeAssistant, entry) -> list[str]:
+    return sorted(
+        e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    )
+
+
+async def test_site_name_names_the_device(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """A new install's site name is the device's name; entity IDs stay pinned."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    entry = await _setup_entry(hass, aioclient_mock, fake, data={"site_name": "Home"})
+    device = dr.async_get(hass).async_get(entry.runtime_data.device_id)
+    assert (device.name, device.model) == ("Home", "Example Network · NMI …I000")
+    assert _entity_ids(hass, entry) == SITE_ENTITY_IDS
+    state = hass.states.get("sensor.amber_energy_dashboard_days_behind")
+    assert state.attributes["friendly_name"] == "Home Days behind"
+    assert entry.title == "Amber Energy Dashboard"
+
+
+async def test_site_name_upgrade_and_device_page_rename(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """An existing install keeps "Amber Energy Dashboard (site)". A name given on Home
+    Assistant's device page is the site's name: a default multi-site title follows it, a
+    title the user chose is kept, and entity IDs never change. The options have no site
+    name field."""
+    _preload_store(hass_storage, retention_days=2)
+    fake = FakeAmber(TODAY - timedelta(days=30), YESTERDAY)
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="01OTHERSITE",
+        title="Amber Energy Dashboard (…9999)",
+        data={"nmi": "6000009999"},
+    )
+    other.add_to_hass(hass)
+    entry = await _setup_entry(hass, aioclient_mock, fake)
+    devices = dr.async_get(hass)
+    site_device = entry.runtime_data.device_id
+    assert devices.async_get(site_device).name == "Amber Energy Dashboard (site)"
+    assert entry.title == "Amber Energy Dashboard (…I000)"
+    assert _entity_ids(hass, entry) == SITE_ENTITY_IDS
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    assert "site_name" not in flow["menu_options"]
+
+    async def rename(name: str | None) -> None:
+        devices.async_update_device(site_device, name_by_user=name)
+        await hass.async_block_till_done()
+
+    await rename("Beach house")
+    assert entry.title == "Amber Energy Dashboard (Beach house)"
+    await rename("Shack")
+    assert entry.title == "Amber Energy Dashboard (Shack)"
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert devices.async_get(site_device).name_by_user == "Shack"
+    assert entry.title == "Amber Energy Dashboard (Shack)"
+    devices.async_update_device(site_device, model="changed elsewhere")  # not a rename
+    await hass.async_block_till_done()
+    await rename(None)
+    assert entry.title == "Amber Energy Dashboard (…I000)"
+    hass.config_entries.async_update_entry(entry, title="My place")  # the user's own
+    await rename("Home")
+    assert entry.title == "My place"
+    assert _entity_ids(hass, entry) == SITE_ENTITY_IDS
+
+
 # --- the sub-entry flows --------------------------------------------------------------------
 
 
@@ -162,6 +245,7 @@ async def test_grid_meter_flow(
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     assert flow["title"] == "Hot water meter · grid meter"
     assert flow["data"] == {
+        "site_id": SITE_ID,
         "name": "Hot water meter",
         "import_entity_id": SENSOR,
         "import_channel": "E2",
@@ -212,7 +296,12 @@ async def test_grid_meter_without_export_or_feed_in(
     flow = await hass.config_entries.subentries.async_configure(
         flow["flow_id"], {"name": "Mains", "import_entity_id": SENSOR}
     )
-    assert flow["data"] == {"name": "Mains", "import_entity_id": SENSOR, "import_channel": "E1"}
+    assert flow["data"] == {
+        "site_id": SITE_ID,
+        "name": "Mains",
+        "import_entity_id": SENSOR,
+        "import_channel": "E1",
+    }
     await hass.async_block_till_done()
     [subentry_id] = list(entry.subentries)
     assert list(_mapping_states(hass, entry, subentry_id)) == ["import_reconciliation"]
@@ -518,6 +607,7 @@ async def test_convert_import_and_export_to_a_grid_meter(
     assert grid.subentry_type == SUBENTRY_GRID_METER
     assert grid.title == "Whole house meter · grid meter"
     assert dict(grid.data) == {
+        "site_id": SITE_ID,
         "name": "Whole house meter",
         "import_entity_id": SENSOR,
         "import_channel": "E1",

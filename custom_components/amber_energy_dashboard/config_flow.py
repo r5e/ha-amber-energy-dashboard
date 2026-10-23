@@ -75,9 +75,11 @@ from .const import (
     CONF_SCHEDULE_MODE,
     CONF_SENSOR,
     CONF_SITE_ID,
+    CONF_SITE_NAME,
     CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
+    DEFAULT_SITE_NAME,
     DOMAIN,
     MODE_FULL,
     ROLE_IMPORT_ENERGY,
@@ -130,6 +132,18 @@ _SCHEDULE_SCHEMA = vol.Schema(
         vol.Optional(CONF_FIXED_TIMES): TextSelector(),
     }
 )
+
+
+_SITE_NAME_SCHEMA = vol.Schema({vol.Optional(CONF_SITE_NAME): TextSelector()})
+
+
+def site_details(site: Site) -> dict[str, str]:
+    """The site's details for the site-name step: never the full NMI."""
+    return {
+        "network": site.network or "not given",
+        "nmi": f"…{site.nmi[-4:]}",
+        "active_from": site.active_from.isoformat() if site.active_from else "not given",
+    }
 
 
 _OPTIONS_SCHEMA = _SCHEDULE_SCHEMA.extend(
@@ -233,6 +247,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         self._api_key: str | None = None
         self._sites: dict[str, Site] = {}
         self._site: Site | None = None
+        self._site_name: str | None = None
 
     async def _async_fetch_sites(self, api_key: str) -> tuple[list[Site] | None, str | None]:
         """Return (sites, None) or (None, error key)."""
@@ -271,7 +286,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(site.id)
             self._abort_if_unique_id_configured()
             self._site = site
-            return await self.async_step_channels()
+            return await self.async_step_site_name()
         options = [
             SelectOptionDict(
                 value=site.id,
@@ -288,6 +303,28 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                 }
             ),
+        )
+
+    async def async_step_site_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the site's details and ask for a friendly name for its device (2.2)."""
+        site = self._site
+        assert site is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get(CONF_SITE_NAME) or "").strip()
+            if name:
+                self._site_name = name
+                return await self.async_step_channels()
+            errors[CONF_SITE_NAME] = "name_required"
+        return self.async_show_form(
+            step_id="site_name",
+            data_schema=self.add_suggested_values_to_schema(
+                _SITE_NAME_SCHEMA, user_input or {CONF_SITE_NAME: DEFAULT_SITE_NAME}
+            ),
+            errors=errors,
+            description_placeholders=site_details(site),
         )
 
     async def async_step_channels(
@@ -332,11 +369,14 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_FIXED_TIMES] = error
             else:
                 return self.async_create_entry(
-                    title=entry_title(site.nmi, bool(self._async_current_entries())),
+                    title=entry_title(
+                        site.nmi, bool(self._async_current_entries()), self._site_name
+                    ),
                     data={
                         CONF_API_KEY: self._api_key,
                         CONF_SITE_ID: site.id,
                         CONF_NMI: site.nmi,
+                        CONF_SITE_NAME: self._site_name,
                         CONF_CHANNELS: [
                             {"identifier": c.identifier, "type": c.type, "tariff": c.tariff}
                             for c in site.channels
@@ -889,6 +929,7 @@ class GridMeterSubentryFlow(ConfigSubentryFlow):
                 errors[CONF_NAME] = "name_required"
             if not errors:
                 data = {
+                    CONF_SITE_ID: entry.data[CONF_SITE_ID],
                     CONF_NAME: name,
                     CONF_IMPORT_SENSOR: import_id,
                     CONF_IMPORT_CHANNEL: user_input.get(CONF_IMPORT_CHANNEL)
@@ -943,7 +984,12 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
                 channel = next(c for c in imports if c.identifier == ident)
                 return self.async_create_entry(
                     title=appliance_title(name, channel),
-                    data={CONF_NAME: name, CONF_SENSOR: entity_id, CONF_CHANNEL: ident},
+                    data={
+                        CONF_SITE_ID: entry.data[CONF_SITE_ID],
+                        CONF_NAME: name,
+                        CONF_SENSOR: entity_id,
+                        CONF_CHANNEL: ident,
+                    },
                     unique_id=appliance_unique_id(entity_id),
                 )
         fields: dict[Any, Any] = {

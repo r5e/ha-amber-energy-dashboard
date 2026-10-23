@@ -13,6 +13,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import (
+    Event,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
@@ -27,6 +28,7 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_device_registry_updated_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
@@ -69,6 +71,7 @@ from .const import (
     CONF_REVISION_DAYS,
     CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
+    CONF_SITE_NAME,
     CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
@@ -87,7 +90,13 @@ from .const import (
     SERVICE_RUN_NOW,
     SERVICE_UNDO_MIGRATION,
 )
-from .devices import device_info, entry_title, is_default_title, site_model
+from .devices import (
+    device_info,
+    displayed_site_name,
+    entry_title,
+    is_default_title,
+    site_model,
+)
 from .energy import async_add_to_energy, async_check_energy_issue, async_listen_for_changes
 from .export import (
     DEFAULT_PENALTY_PERIOD,
@@ -532,12 +541,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     )
     # The site's device first, so own-sensor devices can link to it (section 18).
     device = dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id, **device_info(site_id, site_model(site.network, site.nmi))
+        config_entry_id=entry.entry_id,
+        **device_info(site_id, site_model(site.network, site.nmi), entry.data.get(CONF_SITE_NAME)),
     )
     entry.runtime_data = AmberRuntimeData(
         context=ctx, manager=manager, device_id=device.id, options=dict(entry.options)
     )
     async_update_titles(hass)
+    _follow_site_renames(hass, entry, device.id)
     async_update_convert_issue(hass, entry, channels)
     if entry.data.get(CONF_ADD_TO_ENERGY) and store.energy_setup is None:
         # Chosen in the config flow: carried out once (section 18).
@@ -597,14 +608,36 @@ def _schedule_startup_work(
 
 
 @callback
-def async_update_titles(hass: HomeAssistant, removed: str | None = None) -> None:
-    """Give every entry still on a default title the current default (2.1.1: no NMI, or
-    its last 4 digits with several sites). A title the user chose is kept."""
+def _follow_site_renames(hass: HomeAssistant, entry: AmberConfigEntry, device_id: str) -> None:
+    """A name given to the site's device on Home Assistant's device page is the site's
+    name (2.2): a default entry title follows it."""
+
+    @callback
+    def _renamed(event: Event[dr.EventDeviceRegistryUpdatedData]) -> None:
+        changes = event.data.get("changes") or {}
+        if "name_by_user" in changes:
+            old = changes["name_by_user"] or entry.data.get(CONF_SITE_NAME)
+            async_update_titles(hass, previous={entry.entry_id: old})
+
+    entry.async_on_unload(async_track_device_registry_updated_event(hass, device_id, _renamed))
+
+
+@callback
+def async_update_titles(
+    hass: HomeAssistant, removed: str | None = None, previous: dict[str, str | None] | None = None
+) -> None:
+    """Give every entry still on a default title the current default (2.1.1: no NMI; with
+    several sites the site's name (2.2), or its NMI's last 4 digits). A title the user
+    chose is kept. ``previous`` is a site's name before a rename, by entry."""
     entries = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != removed]
     for entry in entries:
         nmi = entry.data.get(CONF_NMI, "")
-        title = entry_title(nmi, len(entries) > 1)
-        if entry.title != title and is_default_title(entry.title, nmi):
+        name = displayed_site_name(hass, entry)
+        title = entry_title(nmi, len(entries) > 1, name)
+        old = (previous or {}).get(entry.entry_id, name)
+        if entry.title != title and (
+            is_default_title(entry.title, nmi, name) or is_default_title(entry.title, nmi, old)
+        ):
             hass.config_entries.async_update_entry(entry, title=title)
 
 

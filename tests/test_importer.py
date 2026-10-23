@@ -779,10 +779,12 @@ async def test_diagnostics_redacts_key_and_nmi(
     """Diagnostics carry the model and last import, never the key or NMI."""
     _mock_day(aioclient_mock, D3, make_usage_day(D3))
     await _import(hass, D3)
+    hass.config_entries.async_update_entry(entry, data={**entry.data, "site_name": "1 Test St"})
 
     diag = await async_get_config_entry_diagnostics(hass, entry)
 
     text = repr(diag)
+    assert "1 Test St" not in text
     assert "psk_secret_test_key" not in text
     assert "FAKENMI000" not in text
     assert diag["entry"]["data"]["api_key"] == "**REDACTED**"

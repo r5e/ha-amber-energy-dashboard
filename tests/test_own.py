@@ -38,7 +38,7 @@ from custom_components.amber_energy_dashboard.const import (
 )
 
 from .fake_amber import FakeAmber
-from .synthetic import make_usage_day
+from .synthetic import SITE_ID, make_usage_day
 from .test_manager import (  # noqa: F401 - fixtures are used by name
     ALL_IDS,
     E1,
@@ -677,7 +677,12 @@ async def test_subentry_flow_validation_and_removal(
     )
     assert flow["type"] is FlowResultType.CREATE_ENTRY
     assert flow["title"] == "House meter · appliance (general E1)"
-    assert flow["data"] == {"entity_id": SENSOR, "channel": "E1", "name": "House meter"}
+    assert flow["data"] == {
+        "site_id": SITE_ID,
+        "entity_id": SENSOR,
+        "channel": "E1",
+        "name": "House meter",
+    }
     await hass.async_block_till_done()
     assert entry.runtime_data.manager.own_sensors[0].name == "House meter"
     states = [

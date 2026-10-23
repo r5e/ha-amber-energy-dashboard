@@ -19,6 +19,7 @@ from custom_components.amber_energy_dashboard.const import (
     CONF_NMI,
     CONF_SCHEDULE_MODE,
     CONF_SITE_ID,
+    CONF_SITE_NAME,
     DOMAIN,
 )
 
@@ -79,6 +80,22 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
     )
+    assert result["step_id"] == "site_name"
+    assert result["description_placeholders"] == {
+        "network": "Example Network",
+        "nmi": "…I000",
+        "active_from": "2025-01-01",
+    }
+    schema = result["data_schema"].schema
+    assert [str(k) for k in schema] == [CONF_SITE_NAME]
+    assert next(iter(schema)).description == {"suggested_value": "Home"}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: "  "}
+    )
+    assert result["errors"] == {CONF_SITE_NAME: "name_required"}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: " Beach house "}
+    )
     assert result["step_id"] == "channels"
     assert result["description_placeholders"] == {
         "nmi": "FAKENMI000",
@@ -99,6 +116,7 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
         CONF_API_KEY: KEY,
         CONF_SITE_ID: SITE_ID,
         CONF_NMI: "FAKENMI000",
+        CONF_SITE_NAME: "Beach house",
         CONF_CHANNELS: [
             {"identifier": "E1", "type": "general", "tariff": "EA116"},
             {"identifier": "B1", "type": "feedIn", "tariff": None},
@@ -203,15 +221,18 @@ async def test_unsupported_channel(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
     )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: "Home"}
+    )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "unsupported_channels"
 
 
-async def test_second_site_title_shows_last_nmi_digits(
+async def test_second_site_title_shows_the_site_name(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
 ) -> None:
     """With a site already configured, a new entry's title tells them apart by the
-    NMI's last 4 digits, and nothing more of it."""
+    site's name (2.2), and shows nothing of the NMI."""
     MockConfigEntry(
         domain=DOMAIN, unique_id="01OTHERSITE", title="Amber Energy Dashboard"
     ).add_to_hass(hass)
@@ -221,12 +242,15 @@ async def test_second_site_title_shows_last_nmi_digits(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
     )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: "Home"}
+    )
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SCHEDULE_MODE: "automatic"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Amber Energy Dashboard (…0456)"
+    assert result["title"] == "Amber Energy Dashboard (Home)"
 
 
 def _entry(hass: HomeAssistant) -> MockConfigEntry:
@@ -289,6 +313,9 @@ async def _to_schedule_step(hass: HomeAssistant, aioclient_mock: AiohttpClientMo
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: "Home"}
     )
     return await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
@@ -394,6 +421,9 @@ async def _to_schedule(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_SITE_NAME: "Home"}
     )
     return await hass.config_entries.flow.async_configure(result["flow_id"], {})
 

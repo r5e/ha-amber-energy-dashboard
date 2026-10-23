@@ -15,6 +15,16 @@
           "site_id": "Site"
         }
       },
+      "site_name": {
+        "title": "Name this site",
+        "description": "- Network: {network}\n- NMI ending {nmi}\n- Active from: {active_from}\n\nGive the site a friendly name. It names the site's device; entity IDs don't depend on it. To rename the site later, or to give it an area or labels, use the pencil icon on the device's page.",
+        "data": {
+          "site_name": "Site name"
+        },
+        "data_description": {
+          "site_name": "For example \"Home\" or \"Beach house\". If you also use Amber Express, using the same name makes its devices and these easy to match."
+        }
+      },
       "channels": {
         "title": "Confirm channels",
         "description": "These metering channels were found for NMI {nmi}. Usage, cost and feed-in compensation will be imported for each of them.\n\n{channels}"
@@ -49,7 +59,8 @@
       "cannot_connect": "Could not reach the Amber API. Try again later.",
       "site_not_found": "This key does not have access to the configured site.",
       "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
-      "unknown": "Unexpected response from the Amber API."
+      "unknown": "Unexpected response from the Amber API.",
+      "name_required": "Enter a name."
     },
     "abort": {
       "already_configured": "This site is already configured.",

@@ -602,6 +602,23 @@
       "entry_type": "Own energy sensor (2.1)",
       "initiate_flow": {
         "user": "Add own energy sensor (2.1)"
+      },
+      "step": {
+        "user": {
+          "title": "Price your own energy sensor",
+          "description": "Choose a cumulative energy sensor (for example CT clamps or a smart plug) and the Amber channel whose billed price applies. Its cost is recorded as a statistic, from the later of the sensor's history start and Amber's retention boundary.",
+          "data": {
+            "entity_id": "Energy sensor",
+            "channel": "Amber channel"
+          }
+        }
+      },
+      "error": {
+        "sensor_not_found": "The sensor was not found.",
+        "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing."
+      },
+      "abort": {
+        "already_configured": "This sensor is already mapped."
       }
     }
   }

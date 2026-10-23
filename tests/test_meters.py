@@ -437,6 +437,8 @@ async def test_calibration_leaves_out_meter_gaps(
     offset = _mapping_states(hass, entry, "sub_grid")["calibration_offset"]
     assert offset.attributes["hours_used"] == 24  # the export has no data the day before
     assert float(offset.state) == pytest.approx(14.0, abs=0.05)
+    assert offset.attributes["days_used"] == 1
+    assert offset.attributes["first_day"] == offset.attributes["last_day"] == str(YESTERDAY)
     entry.runtime_data.manager.calibration = {}
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()

@@ -51,6 +51,7 @@ async def async_offset(
     """The offset over ``days``: ``meter`` and ``amber`` are (import, export) statistic
     IDs. Hours where either meter statistic has a gap are left out."""
     hourly: list[float] = []
+    used: list[date] = []
     if days:
         start = nem_day_start(days[0]) - HOUR
         end = nem_day_start(days[-1]) + DAY_HOURS * HOUR
@@ -79,7 +80,9 @@ async def async_offset(
                     continue
                 meter_in, meter_out, amber_in, amber_out = values
                 hourly.append(((amber_in - amber_out) - (meter_in - meter_out)) * 1000)
-    return summarise(hourly, days, now)
+                if not used or used[-1] != day:
+                    used.append(day)
+    return summarise(hourly, used, now)
 
 
 def _by_start(rows: Sequence[Mapping[str, Any]], key: str) -> dict[int, float | None]:
@@ -96,7 +99,8 @@ def _change(sums: Mapping[int, float | None], hour: datetime) -> float | None:
 
 
 def summarise(hourly: Sequence[float], days: Sequence[date], now: datetime) -> dict[str, Any]:
-    """The median offset (W) with its spread; no value below ``MIN_HOURS`` hours."""
+    """The median offset (W) with its spread; no value below ``MIN_HOURS`` hours.
+    ``days`` are the days that gave at least one hour."""
     result: dict[str, Any] = {
         "offset_w": None,
         "hours_used": len(hourly),

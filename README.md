@@ -118,6 +118,10 @@ approximate figures this integration exists to replace.
 - `backfill`: import a date range; see Recovery-only below;
 - `migrate_v1`, `undo_migration` and `delete_legacy_statistics`: see the migration guide.
 
+Every service takes an optional **site** (the site's device). With one site it can be left
+out; with several, it says which. The older `config_entry_id` field still works for an
+account with one site.
+
 ## How importing works
 
 - Amber publishes a day's usage about a day later. Each morning the integration imports
@@ -128,6 +132,10 @@ approximate figures this integration exists to replace.
   - A day is written only when it is complete: every interval is present, with no
     duplicates.
   - Every write is read back and checked before the integration records the day as done.
+- **If yesterday isn't published by the day's last attempt** (Amber sometimes publishes
+  it only in the afternoon), the integration keeps trying every 3 hours until 22:00 (for
+  example 16:22 and 19:22), and stops as soon as the day is imported. Days that import
+  normally get no extra attempts.
 - **After an outage,** the next run catches up on all the missing days. It fetches 7 days
   per API call and stays well inside Amber's rate limit (50 calls per 5 minutes, shared
   with your other Amber tools).
@@ -412,7 +420,7 @@ is outstanding):
 |---|---|
 | Amber import is behind | The day's last attempt still left days missing. It clears itself once caught up |
 | Amber usage data is incomplete | A day failed the completeness check on the day's last attempt. Nothing was written; the next attempt fetches it again, and the item clears once the day is complete |
-| Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the integration and choose **Reconfigure** to add it |
+| Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the site's settings and choose **Refresh channels** to add it |
 | Amber import stopped: marker and statistics disagree | The stored progress and the statistics disagree, for example after restoring an old database backup. Nothing is written until this is resolved; download diagnostics and open an issue |
 | Amber import could not be verified | A day was written but did not read back as expected. Progress was not advanced; the next attempt rewrites the day |
 | The Energy dashboard isn't using Amber Energy Dashboard | A day after the first import, nothing in the Energy dashboard uses this integration's statistics. **Fix** adds them if there is no grid connection yet, points to the migration if the YAML kit is in use, or explains how to choose them (and lets you dismiss the item). It clears itself once the statistics are in use |

@@ -348,6 +348,16 @@ rewrite uses the same guarded per-day path, so it is covered by the same tests.
   wait for the next scheduled attempt.
 - If still behind after the day's final attempt, raise a Repairs issue (replaces the
   YAML-era 12:05 notification). It clears automatically once caught up.
+- **Evening retries (2.2.0-dev2):** when the day is still `waiting_for_data` after the
+  last daytime attempt, retry every 3 hours after it while the attempt is by 22:00 local
+  time (16:22 and 19:22 after 07:22, 10:22 and 13:22; fixed times likewise). The manager
+  asks for them only while its last run is waiting, and reschedules after every run, so a
+  day that imports (scheduled or by Run now) gets no further attempt, and a day that
+  imports normally gets none at all. The last daytime attempt is not final when it ends
+  waiting with an evening retry to come; the last evening retry is the final attempt (the
+  "behind" and `incomplete_data` issues). Recovery-only mode schedules nothing. Background:
+  on 2026-10-23 Amber published the previous day's usage only mid-afternoon, after every
+  scheduled attempt.
 - **`incomplete_data` (Guard 3) Repairs issue:** raised only if the day still fails on the
   **final attempt of the day**. A day that is incomplete in the morning and complete by a
   later attempt raises nothing. `unexpected_channel` is raised immediately.
@@ -454,6 +464,9 @@ help and the README say so. Afterwards it shares each run's fetch at no extra co
    grid source (section 18).
 
 A **reauth flow** handles key rotation (triggered on 401/403).
+
+From 2.2.0-dev2 the entry is the Amber account and each site a sub-entry; the per-site
+steps and settings below belong to the site (section 23).
 
 **Options flow:** usage mode, schedule, revision window, patience days, optional price
 series, own-sensor mappings, lower-precision fallback behaviour, and (from Milestone 6a)
@@ -713,7 +726,9 @@ Each milestone ends with a written report and the maintainer's sign-off before t
 12.–16. 2.1.0 release candidates, and 2.1.1 (own-sensor fixes, naming, retention guard).
 17. **2.2.0-dev1:** site identity, grid meters, appliances, the calibration offset, and
     converting 2.1 own-sensor mappings (section 21).
-18. **Site-wide sources** (design only so far, section 22): a live price source, a solar
+18. **2.2.0-dev2:** the account entry with site sub-entries (section 23), and evening
+    retries (section 10).
+19. **Site-wide sources** (design only so far, section 22): a live price source, a solar
     production sensor and battery sensors, and solar-aware appliance cost.
 
 ## 17. Carried-forward lessons (do not rediscover)
@@ -1084,9 +1099,11 @@ setup while 2.1 mappings with an existing channel remain):
 - Unconverted 2.1 mappings keep their reconciliation sensors; the user may ignore the
   issue.
 
-## 22. Site-wide sources and solar-aware cost (Milestone 18, design only)
+## 22. Site-wide sources and solar-aware cost (Milestone 19, design only)
 
-Recorded in M17 for M18; nothing of it is built yet.
+Recorded in M17 (then planned as M18; renumbered when the account/site restructure took
+M18); nothing of it is built yet. The settings below belong to the site sub-entry
+(section 23), in its settings menu.
 
 **Site-wide settings** (options flow, a "Site sources" step, per site):
 - **Live price source:** an entity giving the current general price, for display and
@@ -1116,3 +1133,77 @@ their own chains and devices; an appliance's data can gain a cost-basis option w
 changing its statistic; grid meters and appliances record `site_id`; the site-wide sources
 belong to the site (entry options today, a site sub-entry later).
 
+## 23. The account entry and site sub-entries (Milestone 18)
+
+Decided at the M17 review (M17 report, section 5, point 1): the config entry is the Amber
+account; each site is a sub-entry. Existing per-site entries are never merged.
+
+**Data model.**
+- Entry (version 2.1): `data = {api_key}`; `options = {}` (account-wide settings; none
+  yet). Its unique ID stays its first site's ID.
+- Site sub-entry (`site`): `data = {site_id, nmi, site_name, channels, add_to_energy,
+  options}`, where `options` are the site's settings (schedule, usage mode, patience,
+  revisions, price series, own fallback, bill estimate, export allowance). Title: the site
+  name, else "Site …1234". Unique ID: the Amber site ID (a site can be in one entry only).
+- Grid meters, appliances and 2.1 own-sensor mappings stay sub-entries, linked to their
+  site by `site_id` (a 2.1 mapping without one belongs to the entry's first site).
+- **Site key** `<entry ID>_<site ID>`: the site's Store (`amber_energy_dashboard.<site key>`)
+  and its Repairs issue IDs (`<kind>_<site key>`). The entry's first site keeps the
+  entry's schedule offset (seeded from the entry ID); a further site's is seeded from its
+  key.
+
+**Runtime.** One manager per site (`SiteRuntime`), in `AmberRuntimeData.sites` by
+sub-entry ID. An account's sites share one `AmberClient` and one run lock, so their runs
+take turns; each run starts from the rate-limit state (`RateLimit-Remaining`, window end)
+the account's previous run saw, so the reserve applies before its first call (one budget
+for the account, as Amber's limit is). Setup fetches `/sites` once; a configured site the
+key no longer sees fails setup with reauth.
+
+**Devices and entities.** Each site's device is created in its sub-entry
+(`config_subentry_id`), and its sensors and buttons are added in it. The first site keeps
+the 2.1.0 entity IDs (`<platform>.amber_energy_dashboard_<name>`); a further site's follow
+its device's name. Mapping devices link via their site's device. Every device belongs to a
+sub-entry, so Home Assistant no longer shows "Devices that don't belong to a sub-entry".
+
+**Flows.**
+- Config flow: key, first site, site name, channels, schedule (and "Add to the Energy
+  dashboard"); creates the entry with its site sub-entry. A site already set up in any
+  entry is refused.
+- "+ Site" (`site` sub-entry flow): the active sites the key sees that aren't set up
+  anywhere, then a name and the channels; added with automatic scheduling.
+- Site settings: the entry's options (the cog; asks which site when there are several)
+  and the site's reconfigure flow (the pencil) share one set of steps
+  (`_SiteSettings`): import settings, bill estimate, export allowance, **Refresh channels**
+  (replaces the entry's reconfigure), the YAML-kit migration and its undo. Saving updates
+  the site sub-entry; the update listener applies it in place, or reloads when sites,
+  mappings or channels change, or the bill estimate or allowance is turned on or off.
+- Grid meter and appliance flows ask which site first when there are several.
+- Reauth: the new key must see every configured site.
+
+**Services, Repairs, diagnostics.** Every service takes `site` (the site's device, its
+Amber site ID or its sub-entry ID); `config_entry_id` alone works while the entry has one
+site, and either may be left out while only one site is loaded. Repairs issues carry
+`{entry_id, site_id}` and name the site ("<entry title> (<site>)" with several sites); the
+fix flows find their site from it (the entry's first site without `site_id`). Diagnostics
+list each site under `sites`, by sub-entry; site names, NMIs and titles are redacted.
+
+**Migration** (`sites.async_migrate_to_sites`, from `async_migrate_entry`, 1.x to 2.1,
+before any platform is set up):
+1. Create the site sub-entry, with a sub-entry ID derived from the site ID
+   (`site_<site id>`), so a re-run finds it; data and the entry's options move into it.
+2. Give every mapping its `site_id`.
+3. Move the site's device (`async_update_device(new_config_subentry_id=...)`) and every
+   site entity (on the device, or a site entity without a device) into the site sub-entry.
+4. Move the Store from the entry's key to the site's (`storage.async_move_store`: copied,
+   read back, then the old one removed; a Store already at the new key wins).
+5. Remove the entry's old per-entry Repairs issues (the checks raise any still due).
+6. Leave the entry with only the API key, version 2.1; read every step back
+   (`SiteMigrationError` otherwise: the migration fails, is logged, and runs again at the
+   next start).
+
+Entity IDs, unique IDs and statistic IDs do not change. Home Assistant saves the device and
+entity registries about 10 s after a change, later than the config entries: a kill in
+between leaves a migrated entry with the device and entities not yet moved. So step 3 also
+runs at **every** setup (`async_ensure_site_ownership`), before the platforms: no platform
+ever adds an entity whose sub-entry differs from its device's (the 2.0.x sensor-drop
+cause).

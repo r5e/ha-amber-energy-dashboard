@@ -83,8 +83,10 @@ different version?** in the download dialog and pick it from the list.*
 
    <img src="images/09-api-key.png" alt="Entering the API key" width="329">
 
-3. **Choose a site:** if your Amber account has more than one site, pick the one to set
-   up. Each site becomes its own entry. The site is shown with its NMI and network.
+3. **Choose a site:** if your Amber account has more than one site, pick the first one to
+   set up. The entry is your Amber account; you add its other sites afterwards with
+   **Add site** (see "More than one site" in section 4). Each site is shown with the last
+   four digits of its NMI and its network.
 
    <img src="images/10-choose-site.png" alt="Choosing the site" width="331">
 
@@ -159,30 +161,47 @@ shows the entry for each site:
 
 ### How the integration page is laid out
 
-Each site's entry is titled **Amber Energy Dashboard**. If you add a second site, each
-title gets the site's name, for example **Amber Energy Dashboard (Beach house)** (or the
-last four digits of the NMI, **Amber Energy Dashboard (…1234)**, for a site set up
-before version 2.2 that has no name yet). Rename an entry (its **⋮** menu) and the
-integration leaves your name alone.
+The entry is your **Amber account** (its API key), titled **Amber Energy Dashboard**. If
+you set up a second account (a second API key), each title gets its first site's name,
+for example **Amber Energy Dashboard (Beach house)**. Rename an entry (its **⋮** menu) and
+the integration leaves your name alone.
 
-Under each entry, Home Assistant lists the devices:
+Under the entry, Home Assistant groups the sub-entries by kind:
 
-- The **site's device**, named after the site (for example **Home**; installs from before
-  version 2.2 keep **Amber Energy Dashboard (site)** until you set a name), with the
-  status sensors, the Yesterday sensors and the buttons described above. Home Assistant
-  always lists it under the heading **Devices that don't belong to a sub-entry**. That
-  heading is Home Assistant's, not an error: the site's device belongs to the entry
-  itself.
-- Each **grid meter** and **appliance** you add (section 5) is a sub-entry, listed by its
-  title, for example **Whole house meter · grid meter** or **Pool heat pump · appliance
-  (general E1)**. Each has its own device, named as you named it, which holds its sensors
-  and links back to the site's device.
-- Own energy sensors added before version 2.2 are listed as **Own energy sensor (2.1)**,
-  each with a device **<sensor name> (own sensor)**, until you convert them (section 5).
+- **Site:** each site, titled by its name (for example **Home**; a site set up before
+  version 2.2 is titled **Site …1234** until you rename it). Its device holds the status
+  sensors, the Yesterday sensors and the buttons described above. The site's device is
+  named after the site; installs from before version 2.2 keep **Amber Energy Dashboard
+  (site)** until you rename it.
+- **Grid meter** and **Appliance:** each one you add (section 5), listed by its title, for
+  example **Whole house meter · grid meter** or **Pool heat pump · appliance (general
+  E1)**. Each has its own device, named as you named it, which holds its sensors and links
+  back to its site's device.
+- **Own energy sensor (2.1):** own energy sensors added before version 2.2, each with a
+  device **<sensor name> (own sensor)**, until you convert them (section 5).
 
-<!-- TODO(screenshot): the integration page with the site device, a grid meter and an
-     appliance. The maintainer to supply as images/integration-layout.png. -->
+Every device belongs to one of these, so there is no longer a heading "Devices that don't
+belong to a sub-entry".
+
+<!-- TODO(screenshot): the integration page with a site, a grid meter and an appliance.
+     The maintainer to supply as images/integration-layout.png. -->
 *(Screenshot to follow.)*
+
+### More than one site
+
+If your Amber account has several sites (for example a home and a holiday house), click
+**Add site** on the integration's page. It lists the sites your API key can see that aren't
+set up yet; choose one, give it a name, and confirm its channels. Each site imports on its
+own schedule, but the sites of one account take turns, so together they stay within
+Amber's rate limit (which belongs to the account).
+
+<!-- TODO(screenshot): the "Add a site" step. The maintainer to supply as
+     images/add-site.png. -->
+*(Screenshot to follow.)*
+
+The site's entity IDs: the first site keeps `sensor.amber_energy_dashboard_…`; a further
+site's follow its name, for example `sensor.beach_house_import_status`. Services and
+actions take the site's device as **site** when there are several.
 
 ### Renaming the site, areas and labels
 
@@ -195,8 +214,8 @@ Energy Dashboard (site)** until you rename the device this way.
 
 ## 5. Settings
 
-On the integration's page, click the **cog** next to your site's entry to open the
-options:
+A site's settings open from the **cog** next to the entry (with several sites, it asks
+which one first) or from the **pencil** on the site's row. Both show the same menu:
 
 <img src="images/options-menu.png" alt="The options menu" width="681">
 
@@ -221,6 +240,13 @@ options:
   precision"; with it off, they are skipped.
 - **Patience days** and **Revision days:** how long to wait for missing days, and how long
   to re-check days Amber marked as estimated. The defaults suit almost everyone.
+
+### Refresh channels
+
+If Amber starts reporting a new metering channel for a site (for example a newly installed
+controlled load), imports pause and a Repairs item says so. Open the site's settings and
+choose **Refresh channels**: it shows what changed, and the new channel's statistics start
+from the day imports paused.
 
 ### Bill estimate (optional)
 
@@ -287,7 +313,8 @@ Amber bills. Examples:
 - the grid meter of an inverter or battery system, for example a Sigenergy system's grid
   sensor or a Fronius smart meter.
 
-On the integration's page, click **Add grid meter** (under your site's entry) and fill in:
+On the integration's page, click **Add grid meter** and fill in the form below (if your
+account has several sites, it first asks which site the meter belongs to):
 
 - **Name:** for example **Whole house meter**. It names the meter's device and sensors.
 - **Import energy sensor:** cumulative energy drawn from the grid (a kWh sensor that
@@ -333,7 +360,7 @@ An **appliance** is any single energy sensor. Examples:
 - an appliance's own energy sensor, such as a heat pump or a hot water system;
 - an EV charger.
 
-Click **Add appliance** and fill in a **Name** (for example **Pool heat pump**), the
+Click **Add appliance** (with several sites, choose the site first) and fill in a **Name** (for example **Pool heat pump**), the
 **Energy sensor**, and, if your site has a controlled load, the channel to price it on
 (general by default; controlled load for, say, a hot water system on that circuit).
 

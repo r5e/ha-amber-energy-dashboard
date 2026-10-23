@@ -88,13 +88,24 @@ different version?** in the download dialog and pick it from the list.*
 
    <img src="images/10-choose-site.png" alt="Choosing the site" width="331">
 
-4. **Confirm channels:** the integration lists the metering channels it found, for
+4. **Name the site:** the integration shows the site's details (its network, the last
+   four digits of its NMI, and the date it became active with Amber) and asks for a
+   friendly name, for example **Home** or **Beach house**. The name becomes the site
+   device's name; entity IDs don't depend on it. If you also use Amber Express, giving
+   the site the same name there makes the two sets of devices easy to match. To rename
+   the site later, see "Renaming the site" in section 4.
+
+   <!-- TODO(screenshot): the "Name this site" step. The maintainer to supply as
+        images/site-name-step.png. -->
+   *(Screenshot to follow.)*
+
+5. **Confirm channels:** the integration lists the metering channels it found, for
    example a general (import) channel and a feed-in (export) channel, each with its
    tariff code. Usage, cost and feed-in compensation are imported for each one.
 
    <img src="images/11-confirm-channels.png" alt="Confirming channels" width="336">
 
-5. **Import schedule:** keep **Automatic** unless you have a reason not to. It picks a
+6. **Import schedule:** keep **Automatic** unless you have a reason not to. It picks a
    stable time for your installation each morning (between 06:30 and 08:30), with retries
    3 and 6 hours later. Once the day is imported, the retries are skipped without any API
    calls. **Fixed times** lets you choose up to 6 times yourself.
@@ -107,7 +118,7 @@ different version?** in the download dialog and pick it from the list.*
 
    <img src="images/12-import-schedule.png" alt="Import schedule" width="332">
 
-6. **Name and assign:** optionally rename the device or assign it to an area, then click
+7. **Name and assign:** optionally rename the device or assign it to an area, then click
    **Finish**.
 
    <img src="images/13-name-and-assign.png" alt="Name and assign" width="333">
@@ -117,7 +128,9 @@ days). That takes a minute or two and about 15 API calls.
 
 ## 4. After setup
 
-Open the integration's device to see its status:
+Open the site's device (named after your site, for example **Home**) to see its status.
+Its model line shows the network and the NMI's last four digits, for example
+"Endeavour Energy · NMI …1234":
 
 <img src="images/device-page.png" alt="The device page after setup" width="716">
 
@@ -146,23 +159,39 @@ shows the entry for each site:
 
 ### How the integration page is laid out
 
-Each site's entry is titled **Amber Energy Dashboard**. If you add a second site, both
-titles get the last four digits of the site's NMI, for example **Amber Energy Dashboard
-(…1234)**. Rename an entry (its **⋮** menu) and the integration leaves your name alone.
+Each site's entry is titled **Amber Energy Dashboard**. If you add a second site, each
+title gets the site's name, for example **Amber Energy Dashboard (Beach house)** (or the
+last four digits of the NMI, **Amber Energy Dashboard (…1234)**, for a site set up
+before version 2.2 that has no name yet). Rename an entry (its **⋮** menu) and the
+integration leaves your name alone.
 
 Under each entry, Home Assistant lists the devices:
 
-- **Amber Energy Dashboard (site)** is the site's device, with the status sensors, the
-  Yesterday sensors and the buttons described above. Home Assistant always lists it under
-  the heading **Devices that don't belong to a sub-entry**. That heading is Home
-  Assistant's, not an error: the site's device belongs to the entry itself.
-- Each **own energy sensor** you add (section 5) is a sub-entry, listed by the sensor's
-  name. It has its own device, **<sensor name> (own sensor)**, which holds that mapping's
-  **Reconciliation** sensor and links back to the site's device.
+- The **site's device**, named after the site (for example **Home**; installs from before
+  version 2.2 keep **Amber Energy Dashboard (site)** until you set a name), with the
+  status sensors, the Yesterday sensors and the buttons described above. Home Assistant
+  always lists it under the heading **Devices that don't belong to a sub-entry**. That
+  heading is Home Assistant's, not an error: the site's device belongs to the entry
+  itself.
+- Each **grid meter** and **appliance** you add (section 5) is a sub-entry, listed by its
+  title, for example **Whole house meter · grid meter** or **Pool heat pump · appliance
+  (general E1)**. Each has its own device, named as you named it, which holds its sensors
+  and links back to the site's device.
+- Own energy sensors added before version 2.2 are listed as **Own energy sensor (2.1)**,
+  each with a device **<sensor name> (own sensor)**, until you convert them (section 5).
 
-<!-- TODO(screenshot): the integration page with the site device and two own-sensor
-     mappings (one general, one feed-in). The maintainer to supply as images/integration-layout.png. -->
+<!-- TODO(screenshot): the integration page with the site device, a grid meter and an
+     appliance. The maintainer to supply as images/integration-layout.png. -->
 *(Screenshot to follow.)*
+
+### Renaming the site, areas and labels
+
+Use Home Assistant's own device page: open the site's device and click the **pencil**
+icon. There you can rename it, and give it an area and labels. The integration treats
+the name you set there as the site's name wherever it shows one (for example, with
+several sites, in the entry's title, unless you have renamed the entry yourself). Entity
+IDs never change with the name. Installs from before version 2.2 keep the name **Amber
+Energy Dashboard (site)** until you rename the device this way.
 
 ## 5. Settings
 
@@ -170,6 +199,7 @@ On the integration's page, click the **cog** next to your site's entry to open t
 options:
 
 <img src="images/options-menu.png" alt="The options menu" width="681">
+
 
 **Import settings** contains:
 
@@ -185,7 +215,10 @@ options:
   Switching mode never deletes statistics; ones no longer updated simply stop.
 - **Price series:** optionally write an hourly price series per channel. Turning it on
   fetches the full retention window once (about 13 API calls).
-- **Hourly fallback for own sensors:** see "Own energy sensors" below.
+- **Hourly fallback for own sensors:** for grid meters and appliances (below), Home
+  Assistant keeps 5-minute data for only about 10 days. With this on (the default), older
+  days are priced from hourly energy at the hour's average price and marked "lower
+  precision"; with it off, they are skipped.
 - **Patience days** and **Revision days:** how long to wait for missing days, and how long
   to re-check days Amber marked as estimated. The defaults suit almost everyone.
 
@@ -245,12 +278,89 @@ select it as the grid connection's compensation (section 6). Turning the allowan
 changing it) measures your imported days straight away, in the background, with a few API
 calls; you don't need to press **Run now**.
 
-### Own energy sensors (optional)
+### Adding a grid meter
 
-If you measure your own consumption (for example with CT clamps or smart plugs), click
-**Add own energy sensor** on the integration's page. The integration then calculates that
-sensor's cost at Amber's real 5-minute prices. A whole-house sensor can even be used as
-the Energy dashboard's cost source.
+A **grid meter** measures the energy flowing through your main supply, the same energy
+Amber bills. Examples:
+
+- a CT clamp or energy monitor on the mains feed;
+- the grid meter of an inverter or battery system, for example a Sigenergy system's grid
+  sensor or a Fronius smart meter.
+
+On the integration's page, click **Add grid meter** (under your site's entry) and fill in:
+
+- **Name:** for example **Whole house meter**. It names the meter's device and sensors.
+- **Import energy sensor:** cumulative energy drawn from the grid (a kWh sensor that
+  keeps rising, state class `total` or `total_increasing`).
+- **Price import on:** shown only if your site has a controlled load: choose controlled
+  load for a meter on that circuit. Otherwise the general channel is used.
+- **Export energy sensor** (optional, shown when your site has a feed-in channel): the
+  energy sent to the grid, priced at the feed-in rate.
+
+<!-- TODO(screenshot): the "Add a grid meter" form. The maintainer to supply as
+     images/add-grid-meter.png. -->
+*(Screenshot to follow.)*
+
+The integration then prices the meter's readings at Amber's billed rate for each 5-minute
+interval, from the later of the sensor's history start and Amber's retention boundary:
+`amber_energy_dashboard:<site>_own_<sensor>_cost` for the import and
+`…_own_<sensor>_cost` (positive when earned) for the export.
+
+The meter's device has:
+
+- **Import reconciliation** and **Export reconciliation:** for the latest day both have,
+  your meter's kWh minus Amber's billed kWh (the percentage and both totals are
+  attributes). Because the meter measures the energy Amber bills, a difference shows
+  calibration drift or readings that went missing.
+- **Calibration offset** (with import and export): for each hour of the last 14 complete
+  billed days, Amber's net energy (import minus export) minus the meter's, in watts; the
+  sensor shows the median, with the hours used, the spread (interquartile range) and the
+  date range as attributes. Hours where the meter's statistics have a gap are left out.
+  A CT clamp typically shows a small, steady offset (tens of watts); an inverter's
+  revenue-grade meter shows close to 0 W.
+
+**Map the raw sensors.** Choose the sensors as the meter reports them, not ones you have
+already corrected (for example with a template that adds the offset). The offset is
+measured from the mapped sensors, so a corrected sensor would feed its own correction back
+and the offset would drift towards zero.
+
+### Adding your own appliances
+
+An **appliance** is any single energy sensor. Examples:
+
+- a smart plug;
+- a CT clamp on one circuit;
+- an appliance's own energy sensor, such as a heat pump or a hot water system;
+- an EV charger.
+
+Click **Add appliance** and fill in a **Name** (for example **Pool heat pump**), the
+**Energy sensor**, and, if your site has a controlled load, the channel to price it on
+(general by default; controlled load for, say, a hot water system on that circuit).
+
+<!-- TODO(screenshot): the "Add an appliance" form. The maintainer to supply as
+     images/add-appliance.png. -->
+*(Screenshot to follow.)*
+
+The appliance's cost is recorded as a statistic in the same way, and its device shows
+**Yesterday energy** and **Yesterday cost**. An appliance is not compared with Amber's
+billed totals: one circuit is only part of what the house draws, so the difference would
+mean nothing.
+
+A sensor can be priced by one grid meter or appliance only.
+
+### Converting own energy sensors (from version 2.1)
+
+Own energy sensors added before version 2.2 keep working unchanged: the same statistics,
+entity IDs and reconciliation sensors. A Repairs item **"Convert own energy sensors to grid
+meters and appliances"** offers to convert them:
+
+- an import mapping (general or controlled load) and a feed-in mapping become one grid
+  meter, named as you choose;
+- every other mapping becomes an appliance, keeping its name.
+
+The cost statistics and their history are kept, and the grid meter's reconciliation
+sensors keep the old sensors' entity IDs. Appliances get Yesterday sensors in place of
+reconciliation. You can also ignore the Repairs item and keep the old mappings.
 
 ## 6. Add it to the Energy dashboard
 

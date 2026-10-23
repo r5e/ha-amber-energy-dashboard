@@ -4,6 +4,37 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0-dev1] - Unreleased
+
+Grid meters, appliances and site identity.
+
+### Added
+
+- **Grid meters:** a meter on the main supply (a CT clamp or energy monitor on the mains,
+  or an inverter or battery system's grid meter). An import sensor priced on the general
+  (or controlled load) channel, and an optional export sensor priced at the feed-in rate.
+  Its device has **Import reconciliation**, **Export reconciliation** and, with both, a
+  **Calibration offset** sensor: the 14-day median of Amber's hourly net energy minus the
+  meter's, in watts, from complete billed days, leaving out hours where the meter's
+  statistics have gaps.
+- **Appliances:** any single energy sensor (a smart plug, a circuit, a heat pump, an EV
+  charger), priced on the general or controlled load channel, with **Yesterday energy**
+  and **Yesterday cost**. Appliances are not reconciled.
+- **Site name:** setup shows the site's details (network, NMI ending, active from) and
+  asks for a friendly name, which names the site's device. A name given later on Home
+  Assistant's device page is used as the site's name (for example in a multi-site entry
+  title). Entity IDs don't change with it.
+- The site device's model line shows the network and the NMI's last four digits, for
+  example "Endeavour Energy · NMI …1234".
+
+### Changed
+
+- **Own energy sensors** are replaced by grid meters and appliances. Existing ones keep
+  working unchanged; a Repairs item converts them, keeping every statistic and the
+  reconciliation sensors' entity IDs.
+- With several sites, a new entry's title shows the site's name instead of the NMI's last
+  four digits.
+
 ## [2.1.1] - 2026-10-23
 
 Fixes from the first production use of own-sensor mappings, and naming that is easier to

@@ -31,8 +31,11 @@ What you get:
 - **Revision handling:** estimated days are re-checked, and history is corrected when
   Amber revises them.
 - **Controlled load** support, detected from your site's channels.
-- **Own-sensor cost (optional):** your own meter (CT clamps, smart plugs) priced at
-  Amber's billed rate for every 5-minute interval.
+- **Grid meters and appliances (optional):** your own meters priced at Amber's billed
+  rate for every 5-minute interval. A grid meter (a CT clamp on the mains, or an
+  inverter's grid meter) is also reconciled with Amber's billed totals and gets a
+  calibration offset; an appliance (a smart plug, a circuit, a heat pump) gets
+  yesterday's energy and cost.
 - **Price series (optional):** an hourly price series.
 - **Migration** from the v1 YAML kit, with a dry run and undo.
 
@@ -157,41 +160,58 @@ default is **Full**.
 **Switching modes never deletes statistics.** Statistics that a mode does not update simply
 stop, and resume where they left off when you switch back.
 
-## Own-sensor cost (for example CT clamps)
+## Grid meters and appliances (own-sensor cost)
 
 If you measure energy yourself, you can price it at the rate Amber actually billed you.
-Examples: CT clamps on the mains, a smart plug, or another integration's cumulative energy
-sensor.
+Add each meter under the integration's entry ([guide, section 5](docs/INSTALL.md#adding-a-grid-meter)):
 
-1. Open the integration and choose **Add own energy sensor**.
-2. Pick the sensor. It must be an energy sensor with state class `total` or
-   `total_increasing`.
-3. Pick the Amber channel whose price applies: general, controlled load or feed-in.
+- **Grid meter:** a meter on your main supply, for example a CT clamp or energy monitor
+  on the mains feed, or an inverter or battery system's own grid meter (such as a
+  Sigenergy system or a Fronius smart meter). An import energy sensor (priced on the
+  general channel, or controlled load), and optionally an export energy sensor (priced at
+  the feed-in rate).
+- **Appliance:** any single energy sensor, for example a smart plug, a CT clamp on one
+  circuit, a heat pump's or hot water system's own energy sensor, or an EV charger,
+  priced on the general channel (or controlled load).
+
+Each sensor must be an energy sensor with state class `total` or `total_increasing`, and
+can be priced by one grid meter or appliance only.
 
 **How the cost is worked out.** Each 5-minute interval of your sensor's energy is
 multiplied by Amber's billed price for that interval. The result is summed per hour into
 `amber_energy_dashboard:<site>_own_<sensor>_cost` (AUD).
-- Feed-in mappings are recorded as **positive earnings**.
+- Export (feed-in) is recorded as **positive earnings**.
 - Home Assistant keeps 5-minute data for only about 10 days. Older days are priced from
   hourly energy at the hour's average price, and are marked "lower precision". An option
   can skip them instead.
 - History starts from the later of your sensor's first statistics and Amber's retention
   boundary.
-- Each mapping appears as its own entry under the integration, and can be deleted there.
-  Deleting a mapping keeps its statistic.
+- Deleting a grid meter or appliance keeps its statistic.
 
 **Energy dashboard with your own meter (the CT-clamp use case).** In the grid section:
-- set "Grid consumption" to **your own sensor**;
-- under "Use an entity tracking the total costs", pick the **own-sensor cost statistic**.
+- set "Grid consumption" to **your grid meter's import sensor**;
+- under "Use an entity tracking the total costs", pick its **cost statistic**.
 
 The dashboard then shows your own meter's energy, in real time, priced at Amber's real
-billed rates (the cost arrives a day later, when Amber publishes it). This was verified on
-Home Assistant 2026.9: the Energy dashboard accepts the statistic and reports no issues.
+billed rates (the cost arrives a day later, when Amber publishes it).
 
-**Reconciliation.** Each mapping (general or feed-in) gets a **Reconciliation** sensor on
-a device named "<your sensor> (own sensor)". It shows, for the most recent day both have,
-your meter's kWh minus Amber's kWh on that channel (the percentage and both totals are
-attributes). It catches CT calibration drift or a sensor that stopped reporting.
+**Grid meter sensors.** On the meter's device:
+- **Import reconciliation** and **Export reconciliation:** for the most recent day both
+  have, your meter's kWh minus Amber's billed kWh (the percentage and both totals are
+  attributes). They catch calibration drift or a sensor that stopped reporting.
+- **Calibration offset** (with import and export): the median, over the hours of the last
+  14 complete billed days, of Amber's net energy minus the meter's, in watts. Attributes
+  give the hours used, the spread (interquartile range) and the date range. Hours where
+  the meter's statistics have gaps are left out. Map the **raw, uncorrected** sensors: the
+  offset is measured from them, so a sensor already corrected by it would feed the
+  correction back.
+
+**Appliance sensors.** **Yesterday energy** and **Yesterday cost**. Appliances are not
+reconciled: one circuit compared with the whole house's billed total means nothing.
+
+**Own energy sensors from version 2.1** keep working unchanged (same statistics, entity
+IDs and reconciliation). A Repairs item offers to convert them: an import and a feed-in
+mapping become one grid meter, every other one an appliance, keeping every statistic.
 
 ## Bill estimate (optional)
 

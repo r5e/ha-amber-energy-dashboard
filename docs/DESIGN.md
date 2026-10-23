@@ -416,6 +416,9 @@ earliest changed day.
 - Price history depth (section 4, item 2) does not limit this in practice; the sensor's own
   statistics and Amber's usage retention do.
 
+From 2.2 the own-sensor mapping is replaced by **grid meters** and **appliances** (section
+21); 2.1 mappings keep working as described here until converted.
+
 **Reconciliation** (Full mode, for each own-sensor mapping: general, controlled load or,
 from 2.1.1, feed-in, which 2.1.0 left without a sensor or a device): a display
 sensor (no `state_class`) for the last NEM day that both Amber and the sensor have. Its
@@ -707,6 +710,11 @@ Each milestone ends with a written report and the maintainer's sign-off before t
 10. **v2.1 bill estimate** (section 19).
 11. **v2.1 export allowance for two-way network tariffs** (section 20). Depends on M10's
     billing day.
+12.–16. 2.1.0 release candidates, and 2.1.1 (own-sensor fixes, naming, retention guard).
+17. **2.2.0-dev1:** site identity, grid meters, appliances, the calibration offset, and
+    converting 2.1 own-sensor mappings (section 21).
+18. **Site-wide sources** (design only so far, section 22): a live price source, a solar
+    production sensor and battery sensors, and solar-aware appliance cost.
 
 ## 17. Carried-forward lessons (do not rediscover)
 
@@ -982,3 +990,129 @@ $3.2511) = **$5.3749**, against the bill's $5.38.
   plus the full penalty (what the bill credits before the network's charge), and a
   `network_export_charge` line is the penalty less the refund. Their sum is the adjusted
   compensation.
+
+---
+
+# Version 2.2
+
+Agreed in the v2.2 planning chat (October 2026).
+
+## 21. Site identity, grid meters and appliances (Milestone 17)
+
+**Site identity.**
+- The site device's **model** line is "<network> · NMI …<last 4>" (for example "Endeavour
+  Energy · NMI …1234"), from the `/sites` answer at each setup. The full NMI is never shown.
+- **Site name.** The config flow asks for it once, after the site is chosen
+  (`site_name` step): it shows the network, "NMI ending …1234" and the active-from date,
+  and suggests "Home". It is stored in the entry's data (`site_name`) and is the site
+  device's **name**. Installs from before 2.2 have none and keep "Amber Energy Dashboard
+  (site)".
+- There is no options field for it: later renames, areas and labels use Home Assistant's
+  device page. A name the user gives the device there (`name_by_user`) is the site's name
+  wherever the integration shows one (`devices.displayed_site_name`), so far the
+  multi-site entry title; a device-registry listener updates a default title on a rename.
+- **Entity IDs stay pinned** (section 18's `async_site_entity_ids`). Site entities link to
+  the device by identifier only (`devices.site_link`), so they never reset its name or
+  model; the device is created, named and given its model at setup.
+- **Entry title:** "Amber Energy Dashboard", or with several sites "Amber Energy Dashboard
+  (<site name>)" (the NMI's last 4 digits for a site without a name). Default titles follow
+  the name; a title the user set is kept.
+
+**Sub-entry types** (`async_get_supported_subentry_types`): `grid_meter` and `appliance`.
+The 2.1 `own_sensor` type is no longer offered, but existing ones load and work unchanged
+(statistics, entity IDs, reconciliation). Grid meters and appliances store their site's
+ID (`site_id`), for a later split into per-site sub-entries (see the M17 report).
+
+- **Grid meter** (`grid_meter`): a meter on the main supply. Data: `name`,
+  `import_entity_id`, `import_channel` (general; controlled load selectable when the site
+  has one), and optionally `export_entity_id` with `export_channel` (the feed-in channel;
+  the field is offered only when the site has one). Title "<name> · grid meter"; unique ID
+  `grid_meter:<import entity>`. One device per meter, named `<name>`, model "Grid meter",
+  holding **Import reconciliation**, **Export reconciliation** (with an export) and the
+  **Calibration offset** (with both). Each side is a cost chain, keyed `own:<sub>:import`
+  and `own:<sub>:export`.
+- **Appliance** (`appliance`): any single energy sensor. Data: `name`, `entity_id`,
+  `channel` (general by default, controlled load when the site has one; a converted 2.1
+  feed-in mapping keeps feed-in). Title "<name> · appliance (<channel label> <id>)";
+  unique ID `appliance:<entity>`. One device, model "Appliance (<channel>)", with
+  **Yesterday energy** and **Yesterday cost** (or **Yesterday compensation** on feed-in),
+  from the chain's record for yesterday's NEM day. **No reconciliation:** comparing one
+  circuit with the whole house's billed total means nothing. Chain key `own:<sub>`.
+- A sensor can be priced by one mapping only (`sensor_in_use`), because the cost
+  statistic's ID comes from its entity ID: `amber_energy_dashboard:{site}_own_{slug}_cost`
+  for every kind. The statistic's display name follows the mapping ("<name> import cost
+  (Amber prices)"); a 2.1 mapping keeps "Amber own <slug> cost".
+- Help text in both flows explains the kind with generic examples, and for grid meters
+  why they are reconciled and that the mapped sensors must be the raw ones.
+
+**Calibration offset** (`calibration.py`; grid meters with import and export):
+- For each hour of the **complete billed days** in the 14 NEM days ending at the last
+  imported day (status imported, no estimated interval): Amber net (import − export, the
+  hour's `state` of the integration's energy statistics on the meter's channels) minus the
+  meter net (the change of each mapped sensor's hourly `sum`), × 1000 → watts.
+- Hours where either meter statistic lacks the row at the hour or the one before are left
+  out. Below 24 usable hours there is no value.
+- The sensor (W, device class power, no state class) shows the **median**, rounded to
+  0.1 W. Attributes: `hours_used`, `days_used`, `first_day`, `last_day`, `p25_w`, `p75_w`,
+  `iqr_w`, `last_updated`.
+- Recomputed after every run and once Home Assistant has started (so after a reload);
+  a failure is logged and never stops a run.
+- Always from the mapped (raw) sensors; the docs say to map raw, uncorrected sensors, since
+  a sensor corrected by the offset would feed it back. Expected: about 14 W on the
+  maintainer's CT meter, near 0 W for an accurate inverter meter.
+
+**Converting 2.1 mappings** (Repairs issue `convert_own_sensors_<entry>`, fixable, raised at
+setup while 2.1 mappings with an existing channel remain):
+- The fix flow proposes a grid meter: the only general-channel mapping (else the only
+  import mapping) as its import, and the only feed-in mapping as its export; with a
+  choice, the user picks (or None). An export needs an import; the grid meter needs a
+  name (default "Grid meter"). Every other mapping becomes an appliance with its stored
+  name. With no import mapping the flow goes straight to the confirmation.
+- `meters.async_convert`, under the run lock: each old chain's Store state moves to its
+  new key (`storage.async_rename_chains`) and is read back **before** any sub-entry
+  changes (on a mismatch nothing else changes); then the old sub-entries are removed
+  (their devices and entities with them), the new ones added, and the entry reloaded once.
+  Reloads triggered by the individual sub-entry changes are suppressed
+  (`AmberRuntimeData.converting`): Home Assistant runs the update listener eagerly, and an
+  intermediate setup would otherwise see neither the old nor the new mapping.
+- A grid meter's reconciliation sensors ask for the entity IDs of the mappings they
+  replace (`entity_ids` in the sub-entry data), so dashboards keep working.
+- Statistics are untouched (same IDs). The next run continues each chain after its last
+  written day.
+- **Setup forgets a chain only when its sub-entry is gone** (not merely when its key is
+  not currently known), so no intermediate state can drop a moved chain.
+- Unconverted 2.1 mappings keep their reconciliation sensors; the user may ignore the
+  issue.
+
+## 22. Site-wide sources and solar-aware cost (Milestone 18, design only)
+
+Recorded in M17 for M18; nothing of it is built yet.
+
+**Site-wide settings** (options flow, a "Site sources" step, per site):
+- **Live price source:** an entity giving the current general price, for display and
+  live estimates only (billed figures always come from Amber's usage data). Auto-detected
+  from Amber Express (`amber_express`) or the core `amberelectric` integration when one is
+  set up for the same site (matched by site ID where the integration exposes it, else
+  offered as a choice); selectable by hand.
+- **Solar production sensor:** cumulative energy produced (kWh, `total_increasing`).
+- **Battery charge** and **battery discharge** energy sensors (optional, cumulative).
+
+**Solar-aware appliance cost** (opt-in per appliance; the M17 cost statistic stays the
+billed-rate figure):
+- For each 5-minute interval, the house's load is supplied by solar first, then battery
+  discharge, then the grid. An appliance's share of each source is its share of the load.
+- **Solar** is valued at the interval's **feed-in price** (the export income forgone).
+- **Grid** is valued at the interval's billed import price, as now.
+- **Battery discharge** is its own source, valued at a **cost basis**: the average cost of
+  the energy charged into the battery, tracked as a running pool. Energy charged from solar
+  enters at that interval's feed-in price; energy charged from the grid at its import price.
+  Discharge takes the pool's average cost. The pool's state (kWh and AUD) is kept in the
+  Store per site, so it survives restarts and is rebuilt by a rewrite.
+- Delivery order: the solar-only version first (battery discharge treated as grid), then
+  the battery cost basis as a follow-up, if that keeps M18 small.
+
+**Compatibility kept by M17:** appliances and grid meters are separate sub-entries with
+their own chains and devices; an appliance's data can gain a cost-basis option without
+changing its statistic; grid meters and appliances record `site_id`; the site-wide sources
+belong to the site (entry options today, a site sub-entry later).
+

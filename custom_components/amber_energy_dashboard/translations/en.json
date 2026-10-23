@@ -186,17 +186,6 @@
           "confirm": "Undo the migration"
         }
       },
-      "menu": {
-        "title": "Site settings",
-        "menu_options": {
-          "settings": "Import settings",
-          "bill": "Bill estimate",
-          "allowance": "Export allowance",
-          "channels": "Refresh channels",
-          "migrate": "Migrate from the YAML kit",
-          "undo_migration": "Undo migration"
-        }
-      },
       "site": {
         "title": "Choose a site",
         "description": "This account has several sites. Choose the one whose settings to change.",

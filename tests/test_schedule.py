@@ -1,6 +1,7 @@
 """Schedule tests: stable seeded offsets, fixed times and daylight saving."""
 
 from datetime import UTC, date, datetime, time, timedelta
+import itertools
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,10 +9,12 @@ import pytest
 from custom_components.amber_energy_dashboard.const import (
     AUTO_WINDOW_LENGTH_MINUTES,
     AUTO_WINDOW_START_MINUTES,
+    SCHEDULE_FIXED,
 )
 from custom_components.amber_energy_dashboard.schedule import (
     ScheduleConfig,
     attempts_on,
+    evening_retry_after,
     format_times,
     is_final_attempt,
     local_attempt_times,
@@ -151,3 +154,41 @@ def test_parse_times_rejects(bad: str) -> None:
     """Invalid, empty or too many times are rejected."""
     with pytest.raises(ValueError):
         parse_times(bad)
+
+
+# --- evening retries (2.2.0-dev2) -------------------------------------------------------
+
+
+def test_evening_retries_every_three_hours_until_22() -> None:
+    """After the last daytime attempt, every 3 h while the attempt is by 22:00; with fixed
+    times as with automatic ones. None when the last daytime attempt is after 19:00."""
+    tz = ZoneInfo("Australia/Sydney")
+    fixed = ScheduleConfig(SCHEDULE_FIXED, (time(7, 22), time(10, 22), time(13, 22)))
+    assert local_attempt_times(fixed, 0, evening=True)[3:] == (time(16, 22), time(19, 22))
+    late = ScheduleConfig(SCHEDULE_FIXED, (time(7, 0), time(19, 30)))
+    assert local_attempt_times(late, 0, evening=True) == (time(7, 0), time(19, 30))
+    edge = ScheduleConfig(SCHEDULE_FIXED, (time(13, 0),))
+    assert local_attempt_times(edge, 0, evening=True)[-1] == time(22, 0)  # by 22:00
+    auto = local_attempt_times(ScheduleConfig(), 0, evening=True)
+    assert len(auto) > 3 and all(a < b for a, b in itertools.pairwise(auto))
+
+    def at(hour: int) -> datetime:
+        return datetime(2026, 10, 23, hour, 22, tzinfo=tz)
+
+    # The last daytime attempt and the last evening retry are final; the others are not.
+    assert [is_final_attempt(at(h), fixed, 0, tz) for h in (7, 10, 13, 16, 19)] == [
+        False,
+        False,
+        True,
+        False,
+        True,
+    ]
+    assert [evening_retry_after(at(h), fixed, 0, tz) for h in (13, 16, 19)] == [True, True, False]
+    assert is_final_attempt(datetime(2026, 10, 23, 19, 30, tzinfo=tz), late, 0, tz)
+    # Evening retries count only today; tomorrow starts with its first attempt.
+    after = datetime(2026, 10, 23, 13, 30, tzinfo=tz)
+    assert next_attempt(after, fixed, 0, tz, evening=True) == at(16)
+    assert next_attempt(at(20), fixed, 0, tz, evening=True) == datetime(
+        2026, 10, 24, 7, 22, tzinfo=tz
+    )
+    assert next_attempt(after, fixed, 0, tz) == datetime(2026, 10, 24, 7, 22, tzinfo=tz)

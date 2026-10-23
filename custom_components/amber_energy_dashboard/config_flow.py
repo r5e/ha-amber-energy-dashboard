@@ -536,7 +536,7 @@ class _SiteSettings:
         self._result = ""
 
     def _settings_entry(self) -> ConfigEntry:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - each flow defines it
 
     def _site(self) -> ConfigSubentry:
         assert self._sub_id is not None
@@ -552,11 +552,11 @@ class _SiteSettings:
 
     def _save_site(self, data_updates: dict[str, Any]) -> Any:
         """Update the site sub-entry and close the flow."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - each flow defines it
 
     def _close(self) -> Any:
         """Close the flow without a change."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - each flow defines it
 
     def _save_options(self, options: dict[str, Any]) -> Any:
         return self._save_site({CONF_OPTIONS: options})
@@ -959,7 +959,7 @@ class AmberOptionsFlow(_SiteSettings, OptionsFlow):
         """Choose the site whose settings to change."""
         if user_input is not None:
             self._sub_id = user_input[CONF_SITE]
-            return self._settings_menu("menu")
+            return self._settings_menu("init")
         sites = site_subentries(self.config_entry)
         return self.async_show_form(
             step_id="site",
@@ -1182,7 +1182,7 @@ class _MappingFlow(ConfigSubentryFlow):
     async def _async_form(
         self, site: Mapping[str, Any], user_input: dict[str, Any] | None
     ) -> SubentryFlowResult:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - each flow defines it
 
 
 class GridMeterSubentryFlow(_MappingFlow):

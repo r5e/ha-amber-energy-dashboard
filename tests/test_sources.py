@@ -1147,3 +1147,26 @@ async def test_today_sensor_offset_attributes(
     assert cost.attributes["offset_corrected_kwh"] == pytest.approx(0.51)
     credit = hass.states.get(CREDIT)
     assert credit.attributes["offset_corrected"] == 0.0
+
+
+async def test_reload_keeps_the_last_interval(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A reload right after an interval keeps it: the state is saved on unload, not only
+    after the 30 s delay."""
+    freezer.move_to(NOW)
+    _amber_express(hass)
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    tracker = entry.runtime_data.manager.today
+    await _tick(hass, freezer, tracker, NOW)
+    _energy(hass, IMPORT, 101.0)
+    await _tick(hass, freezer, tracker, NOW + FIVE)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    summary = entry.runtime_data.manager.today.summary(NOW + FIVE)
+    assert summary["last_interval_end"] == (NOW + FIVE).isoformat()
+    assert summary["import"]["amount"] == pytest.approx(0.30)

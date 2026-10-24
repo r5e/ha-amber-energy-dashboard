@@ -662,7 +662,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
         entry.async_on_unload(site.manager.async_stop)
         if (today := site.manager.today) is not None:
             today.async_start()
-            entry.async_on_unload(today.async_stop)
+            entry.async_on_unload(today.async_shutdown)
         _schedule_startup_work(hass, entry, site.manager)
         _watch_for_prices(hass, entry, site)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
@@ -870,7 +870,7 @@ async def _async_redetect_prices(
     if tracker is not None:
         await tracker.async_load()
         tracker.async_start()
-        entry.async_on_unload(tracker.async_stop)
+        entry.async_on_unload(tracker.async_shutdown)
     assert site.add_today_sensors is not None  # set by the sensor platform
     site.add_today_sensors()
     manager.publish()
@@ -968,6 +968,8 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
     subs = {s.subentry_id: s for s in site_subentries(entry)}
     if set(subs) != set(runtime.sites) | set(runtime.skipped):
         for sub_id in set(runtime.sites) - set(subs):  # the site was removed
+            if (today := runtime.sites[sub_id].manager.today) is not None:
+                await today.async_remove()  # not saved again by the unload
             await _async_forget_site(hass, entry.entry_id, runtime.sites[sub_id].context.site_id)
         for sub_id in set(runtime.skipped) - set(subs):
             await _async_forget_site(hass, entry.entry_id, runtime.skipped[sub_id])

@@ -152,6 +152,7 @@ class TodayTracker:
         self._prices: dict[str, list[tuple[float, float | None]]] = {r: [] for r in self.sides}
         """Each side's price samples since the last boundary: (time, $/kWh or None)."""
         self._unsubs: list[CALLBACK_TYPE] = []
+        self._removed = False
 
     @property
     def history(self) -> dict[str, dict[str, Any]]:
@@ -218,8 +219,16 @@ class TodayTracker:
         """Save the state now (before another tracker takes over the Store)."""
         await self._store.async_save(self._data)
 
+    async def async_shutdown(self) -> None:
+        """Stop, and save now unless the site was removed: on an unload or a reload the
+        next tracker loads the state (the delayed save would come too late)."""
+        self.async_stop()
+        if not self._removed:
+            await self.async_save()
+
     async def async_remove(self) -> None:
         """Delete the saved state (the site was removed)."""
+        self._removed = True
         await self._store.async_remove()
 
     def _reading(self, entity_id: str) -> float | None:

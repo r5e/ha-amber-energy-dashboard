@@ -31,6 +31,7 @@ from custom_components.amber_energy_dashboard.sites import (
     mapping_site_id,
 )
 from custom_components.amber_energy_dashboard.storage import async_move_store
+from custom_components.amber_energy_dashboard.today import TodayTracker
 
 from .fake_amber import FakeAmber
 from .synthetic import SITE_ID, site_json
@@ -436,9 +437,17 @@ async def test_removing_a_site_removes_its_store(
     """Removing a site sub-entry deletes its Store and reloads; statistics are kept. Then
     removing the entry deletes the other site's Store."""
     entry, _, _ = await _account(hass, aioclient_mock, hass_storage)
+    # The second site's Today so far: its state isn't saved again by the unload.
+    tracker = TodayTracker(hass, SITE_2_KEY, [], "Meter", lambda: None)
+    await tracker.async_load()
+    await tracker.async_save()
+    entry.runtime_data.sites[_sub_id(entry, SITE_2)].manager.today = tracker
+    entry.async_on_unload(tracker.async_shutdown)
+    assert f"{DOMAIN}.{SITE_2_KEY}_today" in hass_storage
     hass.config_entries.async_remove_subentry(entry, _sub_id(entry, SITE_2))
     await hass.async_block_till_done()
     assert f"{DOMAIN}.{SITE_2_KEY}" not in hass_storage
+    assert f"{DOMAIN}.{SITE_2_KEY}_today" not in hass_storage
     assert list(entry.runtime_data.sites) == [_sub_id(entry, SITE_ID)]
     assert hass.states.get("sensor.beach_house_import_status") is None
     await hass.config_entries.async_remove(entry.entry_id)

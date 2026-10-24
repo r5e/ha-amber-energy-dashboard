@@ -6,6 +6,38 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
+## [2.2.0b4] - 2026-10-25
+
+Fourth beta for 2.2: everything in 2.2.0b3, plus the changes below (the [2.2.0] entry
+further down describes the whole release). **Take a Home Assistant backup before updating
+from 2.1.1 or earlier.** Updating from a 2.2 beta needs no migration.
+
+### Fixed
+
+- **Solar-aware cost skipped every day** ("no complete statistics … from" the solar
+  sensor) when the solar inverter goes offline at night, as most do: Home Assistant then
+  records no statistics for those hours. For the site's solar sensor only, a gap now
+  counts as no production when the solar energy total is unchanged across it, or when it
+  is at night (from an hour before sunset to an hour after sunrise at Home Assistant's
+  home location; it may end up to three hours after sunrise), and for a solar power
+  sensor also when it reads 0 W on both sides. A gap that starts in daylight while the
+  total changes is still refused. Grid meters and appliances still need complete
+  statistics. **Days skipped this way are worked out again** at the first run after
+  updating.
+- **Diagnostics** showed a grid meter's name in the Sources, solar-aware and Today so far
+  sections; it is now redacted like the other names.
+
+### Changed
+
+- A move of Amber's retention boundary is logged as info instead of a warning (on an
+  account whose window rolls, it moved every day).
+- Wording: the settings step is titled **Import settings**; the schedule help mentions
+  the evening retries; texts say "the site's settings" and "grid meters and appliances";
+  the `probe_retention` action is shown as **Re-check retention**, like its button.
+- `hacs.json` declares the country (AU).
+- The guides are rewritten for 2.2, with **Upgrading from version 2.1** in its own
+  section.
+
 ## [2.2.0] - Unreleased
 
 Everything since 2.1.1 (betas b1 to b3 merged). **Take a Home Assistant backup before
@@ -33,8 +65,9 @@ migration.
   includes the refunded network charge while within the allowance. Needs a solar sensor
   in Sources and a grid meter with import and export; existing appliances turn it on with
   **Reconfigure**. With battery sensors, battery discharge is shown as its own share
-  (valued at the import price for now). A Repairs item appears when it has waited more
-  than 2 days for a missing sensor.
+  (valued at the import price for now). A solar sensor that goes offline at night is
+  handled (night gaps count as no production). A Repairs item appears when it has waited
+  more than 2 days for a missing sensor.
 - **Sources** (site settings): a live price for the general and feed-in channels, found
   automatically from Amber Express or Home Assistant's Amber Electric integration for the
   same site, also when they are set up later (you can choose another sensor, or none;
@@ -487,6 +520,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.2.0b4]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.2.0b4
 [2.2.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.2.0
 [2.1.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.1
 [2.1.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0

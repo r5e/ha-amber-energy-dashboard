@@ -6,7 +6,11 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
-## [Unreleased] (2.2.0-dev4)
+## [2.2.0b3] - 2026-10-24
+
+Third beta for 2.2: everything in 2.2.0b2, plus the changes below. **Take a Home
+Assistant backup before updating from 2.1.1 or earlier** (see 2.2.0b1). Updating from a
+2.2 beta needs no migration.
 
 ### Added
 
@@ -27,6 +31,8 @@ Assistant and HACS compare versions that way.
   estimate with the grid meter's calibration offset applied, and
   `yesterday_estimate_vs_billed` compares both with the bill. The estimate itself is
   unchanged.
+- A **Repairs item** when an appliance's solar-aware cost has been waiting for more than
+  2 days for the site's solar sensor or grid meter, naming what is missing.
 
 ### Fixed
 

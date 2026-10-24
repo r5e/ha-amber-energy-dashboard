@@ -447,10 +447,13 @@ would really have earned.
 - **Battery:** with battery sensors, battery discharge is shown as its own share
   (`battery_kwh`) but is, for now, valued at the import price. Valuing it at the average
   cost of the energy that charged the battery (solar at the feed-in price, grid at the
-  import price) is planned.
+  import price) is planned for version 2.3.
 - Home Assistant keeps 5-minute statistics for about 10 days. Older days (and days when
   one of the sensors has only hourly statistics) use hourly shares and the hour's average
   prices, and are marked "lower precision", as for the normal cost.
+- If the solar sensor or the grid meter is removed later, the solar-aware cost waits;
+  after more than 2 days a Repairs item names what is missing, so you can fix it before
+  the days fall out of Amber's retention.
 - Turning it on starts the statistic from the earliest day all the sensors have
   statistics for (at most Amber's usage retention). A day when one of the site's sensors
   has no statistics is skipped.

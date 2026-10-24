@@ -245,7 +245,8 @@ existing one) to record a second statistic, **"<name> cost (solar-aware)"**, and
 It needs a solar sensor in the site's **Sources**, a grid meter with import and export,
 and an appliance on the general channel. The normal cost statistic doesn't change. With
 battery sensors in Sources, battery discharge is reported as its own share
-(`battery_kwh`); for now it is valued at the import price. The method and its limits are
+(`battery_kwh`); for now it is valued at the import price (valuing it at the cost of
+the energy that charged it is planned for 2.3). The method and its limits are
 in the [guide](docs/INSTALL.md#solar-aware-cost).
 
 ## Today so far (estimated)

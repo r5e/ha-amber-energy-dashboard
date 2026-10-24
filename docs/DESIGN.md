@@ -734,7 +734,10 @@ Each milestone ends with a written report and the maintainer's sign-off before t
 20. **2.2.0-dev4:** solar-aware appliance cost with the battery's data path (section 22),
     the previous bill estimate (section 19), Today so far's offset-corrected value and
     live prices found after setup (section 22).
-21. **Battery cost basis** for solar-aware appliance cost (section 22, planned).
+21. **2.2.0b3:** the Repairs issue for a waiting solar-aware chain (section 22); beta 3.
+
+The battery cost basis for solar-aware appliance cost moves to 2.3, after the 2.2 release
+(decided at the M20 review).
 
 ## 17. Carried-forward lessons (do not rediscover)
 
@@ -1119,7 +1122,7 @@ setup while 2.1 mappings with an existing channel remain):
 
 Sources and Today so far are built (2.2.0-dev3, `sources.py`, `today.py`); solar-aware
 appliance cost is built without the battery's cost basis (2.2.0-dev4, `solar.py`; the
-cost basis is planned for M21). The settings belong to the site sub-entry's options
+cost basis is planned for 2.3). The settings belong to the site sub-entry's options
 (section 23), set in the site settings' **Sources** step; a change reloads the entry.
 
 **Site-wide sources** (`sources.resolve`, at setup):
@@ -1229,7 +1232,7 @@ billed-rate figure):
   appliance takes the same shares; with L = 0 its energy counts as grid. Netting within
   an interval and the house-average share are the documented limits.
 - **Valuation:** solar share × the feed-in record's −perKwh, the rest (grid and, until
-  M21, battery) × the general record's perKwh, per interval (30-minute records price each
+  2.3, battery) × the general record's perKwh, per interval (30-minute records price each
   of their buckets). With the allowance active, the feed-in value in the penalty period
   gets `penalty_rate × fraction(hour)` (`export.refund_fractions`: 1 while the period's
   window export so far, the hour included, is within the allowance, the part within it
@@ -1244,7 +1247,14 @@ billed-rate figure):
   `grid_kwh`, `lower_precision`, `allowance_adjusted`. Sensor **Yesterday solar-aware
   cost** on the appliance's device, with these and `solar_share` as attributes.
 - **Battery:** the data path is built (the charge and discharge series, the battery
-  share); its cost basis (the running pool, section 22 above) is left for M21.
+  share); its cost basis (the running pool, section 22 above) moves to 2.3. Until then the
+  import-price valuation of battery discharge is a documented limitation.
+- **Waiting chain issue** (2.2.0b3): a solar-aware chain that waits for the site's flows
+  with more than 2 days unwritten (from its first unwritten day to yesterday) raises the
+  Repairs issue `solar_aware_waiting_<site key>_own_<sub>_solar_aware` (warning), naming
+  the appliance, what is missing (`solar.flows_missing`: a solar sensor in Sources, a grid
+  meter with import and export) and the first waiting day. It clears at the next run that
+  has the flows. Unconverted 2.1 own-sensor mappings get no solar-aware cost (M20 review).
 
 **Compatibility kept by M17:** appliances and grid meters are separate sub-entries with
 their own chains and devices; an appliance's data can gain a cost-basis option without

@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime, timedelta
 import math
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.core import HomeAssistant
@@ -664,3 +665,53 @@ def test_september_acceptance_figures(allowance: bool, credit_line: float, total
     assert result["lines"]["amber_subscription"] == 25.4761
     expected_credit = -(2.123809 + 3.251076) if allowance else credit_line
     assert result["lines"]["export_credit"] == pytest.approx(expected_credit, abs=1e-4)
+
+
+async def test_previous_bill_estimate(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """The last complete billing cycle's total (2.2.0-dev4), with its lines and dates;
+    ``complete`` only once every day of that cycle is imported."""
+    await _entry(hass, aioclient_mock, hass_storage)
+    state = hass.states.get(f"{SENSOR}previous_bill_estimate")
+    days = [date(2026, 9, d) for d in range(16, 20)]  # 08-20..09-19 holds 4 days
+    cost = math.fsum(_day_money(d)[0] for d in days)
+    comp = math.fsum(_day_money(d)[1] for d in days)
+    assert float(state.state) == pytest.approx(cost - comp + DAILY_FIXED * 4, abs=0.006)
+    attrs = state.attributes
+    assert (attrs["cycle_start"], attrs["cycle_end"], attrs["days_in_cycle"]) == (
+        "2026-08-20",
+        "2026-09-19",
+        31,
+    )
+    assert (attrs["data_from"], attrs["data_through"], attrs["days_imported"]) == (
+        "2026-09-16",
+        "2026-09-19",
+        4,
+    )
+    assert attrs["complete"] is False
+    assert attrs["lines"]["usage"] == pytest.approx(cost, abs=1e-4)
+    assert attrs["unit_of_measurement"] == "AUD"
+    assert attrs["friendly_name"].endswith("Previous bill estimate")
+
+
+async def test_previous_bill_complete(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Every day of the previous cycle imported: complete, and equal to the bill_estimate
+    action's figure for that cycle; a missing day makes it incomplete again."""
+    entry = await _entry(hass, aioclient_mock, hass_storage, days=45)
+    state = hass.states.get(f"{SENSOR}previous_bill_estimate")
+    assert state.attributes["complete"] is True
+    assert state.attributes["missing_days"] == []
+    response = await hass.services.async_call(
+        DOMAIN, "bill_estimate", {"date": "2026-09-01"}, blocking=True, return_response=True
+    )
+    assert float(state.state) == response["bill_to_date"]
+    manager = entry.runtime_data.manager
+    with patch.object(
+        manager.store,
+        "day",
+        side_effect=lambda d, _day=manager.store.day: None if d == date(2026, 9, 1) else _day(d),
+    ):
+        assert manager.previous_bill_estimate()["complete"] is False

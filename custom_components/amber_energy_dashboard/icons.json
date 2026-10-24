@@ -56,6 +56,9 @@
       "projected_bill": {
         "default": "mdi:receipt-text-clock-outline"
       },
+      "previous_bill": {
+        "default": "mdi:receipt-text-check-outline"
+      },
       "days_into_cycle": {
         "default": "mdi:calendar-range"
       },

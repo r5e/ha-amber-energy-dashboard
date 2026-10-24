@@ -149,6 +149,39 @@ BILL_SENSORS = (
 )
 
 
+def _previous_bill_value(data: dict[str, Any]) -> float | None:
+    previous = data.get("previous_bill")
+    return None if previous is None else previous["bill_to_date"]
+
+
+def _previous_bill_attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+    previous = data.get("previous_bill")
+    if previous is None:
+        return None
+    keys = (
+        "lines",
+        *_CYCLE,
+        *_DATA,
+        "days_imported",
+        "missing_days",
+        "complete",
+        "gst_percent",
+    )
+    return {k: previous[k] for k in keys}
+
+
+PREVIOUS_BILL_SENSOR = AmberSensorDescription(
+    key="previous_bill",
+    translation_key="previous_bill",
+    device_class=SensorDeviceClass.MONETARY,
+    native_unit_of_measurement=CURRENCY,
+    suggested_display_precision=2,
+    value_fn=_previous_bill_value,
+    attrs_fn=_previous_bill_attrs,
+)
+BILL_SENSORS = (*BILL_SENSORS, PREVIOUS_BILL_SENSOR)
+
+
 def _allowance(key: str) -> Callable[[dict[str, Any]], Any]:
     def value(data: dict[str, Any]) -> Any:
         return None if data.get("allowance") is None else data["allowance"][key]

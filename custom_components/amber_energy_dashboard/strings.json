@@ -332,6 +332,9 @@
       "projected_bill": {
         "name": "Projected bill"
       },
+      "previous_bill": {
+        "name": "Previous bill estimate"
+      },
       "days_into_cycle": {
         "name": "Days into billing cycle"
       },

@@ -2258,10 +2258,11 @@ class AmberManager:
         record = self.store.day(yesterday) or {}
         totals = record.get("totals") if record.get("status") == "imported" else None
         today = self.today_snapshot()
-        bill = None
+        bill = previous_bill = None
         if self.bill_available:
             bill = self.bill_estimate(nem_today())
             bill.update(self._bill_including_today(bill, today))
+            previous_bill = self.previous_bill_estimate()
         return {
             "reconciliation": self._reconciliation(),
             "appliances": self._appliances(),
@@ -2279,6 +2280,7 @@ class AmberManager:
             "yesterday": yesterday,
             "yesterday_totals": totals,
             "bill": bill,
+            "previous_bill": previous_bill,
             "today": today,
             "allowance": self.allowance_summary(nem_today() - timedelta(days=1))
             if self.allowance_active
@@ -2289,6 +2291,19 @@ class AmberManager:
     def bill_available(self) -> bool:
         """The bill estimate needs its options and imported usage (not Pricing-only)."""
         return self.bill is not None and self._usage_active
+
+    def previous_bill_estimate(self) -> dict[str, Any]:
+        """The estimate for the last billing cycle before the current one (2.2.0-dev4),
+        with ``complete`` when every one of its days is imported."""
+        assert self.bill is not None
+        start, _ = cycle_for(nem_today(), self.bill.billing_day)
+        result = self.bill_estimate(start - timedelta(days=1))
+        result["complete"] = (
+            result["data_from"] == result["cycle_start"]
+            and result["data_through"] == result["cycle_end"]
+            and not result["missing_days"]
+        )
+        return result
 
     def bill_estimate(self, cycle_day: date) -> dict[str, Any]:
         """The bill estimate for the cycle containing ``cycle_day`` (section 19)."""

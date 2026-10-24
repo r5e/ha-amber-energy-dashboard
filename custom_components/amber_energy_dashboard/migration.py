@@ -1340,7 +1340,7 @@ def _check_ready(plan: _Plan, report: dict[str, Any], *, confirm_backup: bool) -
         raise MigrationRefused(
             "unverified",
             f"{parity['unverified_reason']} Nothing was changed. To go ahead, run it again "
-            "with acknowledge_unverified (or tick the acknowledgement in the options).",
+            "with acknowledge_unverified (or tick the acknowledgement in the site's settings).",
             report,
         )
     if not parity["passed"] and not parity["unverified"]:

@@ -478,7 +478,7 @@ def _register_bill_service(hass: HomeAssistant) -> None:
         manager = site.manager
         if manager.bill is None:
             raise ServiceValidationError(
-                "Set a billing day in the integration's options (Bill estimate) first."
+                "Set a billing day in the site's settings (Bill estimate) first."
             )
         if not manager.bill_available:
             raise ServiceValidationError(

@@ -4,6 +4,12 @@ This guide walks through installing and setting up the integration. If you used 
 earlier YAML kit, see the separate [migration guide](MIGRATION.md) once the integration is
 set up. For a short overview, see the [README](../README.md).
 
+> [!IMPORTANT]
+> **Already using version 2.1 or earlier?** Take a Home Assistant backup before you
+> update, then read [section 9, Upgrading from version 2.1](#9-upgrading-from-version-21).
+> Version 2.2 changes how the integration is laid out, and there is no way back to 2.1
+> without that backup.
+
 **Contents**
 1. [Before you start](#1-before-you-start)
 2. [Install through HACS](#2-install-through-hacs)
@@ -13,6 +19,7 @@ set up. For a short overview, see the [README](../README.md).
 6. [Add it to the Energy dashboard](#6-add-it-to-the-energy-dashboard)
 7. [Migrating from the YAML kit](#7-migrating-from-the-yaml-kit) (separate guide)
 8. [Troubleshooting and FAQ](#8-troubleshooting-and-faq)
+9. [Upgrading from version 2.1](#9-upgrading-from-version-21)
 
 ---
 
@@ -68,8 +75,8 @@ which provides live prices. You can keep both.
 
    HACS offers the latest release.¹
 
-¹ *Pre-releases (release candidates) are not offered by default. To try one, open **Need a
-different version?** in the download dialog and pick it from the list.*
+¹ *Pre-releases (betas and release candidates) are not offered by default. To try one,
+open **Need a different version?** in the download dialog and pick it from the list.*
 
 ## 3. Add the integration
 
@@ -90,6 +97,9 @@ different version?** in the download dialog and pick it from the list.*
 
    <img src="images/10-choose-site.png" alt="Choosing the site" width="331">
 
+   <!-- TODO(screenshot): retake images/10-choose-site.png on 2.2: its text still says
+        "Each site is set up as its own entry". -->
+
 4. **Name the site:** the integration shows the site's details (its network, the last
    four digits of its NMI, and the date it became active with Amber) and asks for a
    friendly name, for example **Home** or **Beach house**. The name becomes the site
@@ -109,8 +119,9 @@ different version?** in the download dialog and pick it from the list.*
 
 6. **Import schedule:** keep **Automatic** unless you have a reason not to. It picks a
    stable time for your installation each morning (between 06:30 and 08:30), with retries
-   3 and 6 hours later. Once the day is imported, the retries are skipped without any API
-   calls. **Fixed times** lets you choose up to 6 times yourself.
+   3 and 6 hours later. If Amber still hasn't published the day by then, it keeps trying
+   every 3 hours until 22:00. Once the day is imported, the remaining attempts are skipped
+   without any API calls. **Fixed times** lets you choose up to 6 times yourself.
 
    If the Energy dashboard has no grid connection yet, this step also offers **Add to the
    Energy dashboard** (on by default). It adds a grid connection with this site's
@@ -120,10 +131,16 @@ different version?** in the download dialog and pick it from the list.*
 
    <img src="images/12-import-schedule.png" alt="Import schedule" width="332">
 
-7. **Name and assign:** optionally rename the device or assign it to an area, then click
-   **Finish**.
+   <!-- TODO(screenshot): retake images/12-import-schedule.png on 2.2 with an empty Energy
+        dashboard, so it shows "Add to the Energy dashboard" and the evening retries. -->
+
+7. **Name and assign:** optionally assign the site's device to an area, then click
+   **Finish**. The device already has the site's name.
 
    <img src="images/13-name-and-assign.png" alt="Name and assign" width="333">
+
+   <!-- TODO(screenshot): retake images/13-name-and-assign.png on 2.2: the device is now
+        named after the site (for example "Home"). -->
 
 The integration then imports your available history straight away (Amber keeps about 90
 days). That takes a minute or two and about 15 API calls.
@@ -135,6 +152,9 @@ Its model line shows the network and the NMI's last four digits, for example
 "Endeavour Energy · NMI …1234":
 
 <img src="images/device-page.png" alt="The device page after setup" width="716">
+
+<!-- TODO(screenshot): retake images/device-page.png on 2.2: the device is named after the
+     site, with the model line "<network> · NMI …1234". -->
 
 - **Import status** reads **Up to date** when everything is imported.
 - **Last imported date** is normally yesterday, because Amber publishes each day's usage
@@ -151,16 +171,17 @@ Its model line shows the network and the NMI's last four digits, for example
   sensors appear here too:
 
   <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="291">
-- **Download diagnostics** produces a file for bug reports. Your API key and NMI are
-  redacted from it.
 
-The integration's own page (Settings > Devices & services > Amber Energy Dashboard)
-shows the entry for each site:
-
-<img src="images/15-integration-page.png" alt="The integration page" width="758">
+  <!-- TODO(screenshot): retake images/new-sensors.png on 2.2: it lacks Previous bill
+       estimate (and, with a grid meter and a live price, the two Today so far sensors). -->
+- With a **grid meter** and a **live price**, **Today's cost so far (estimated)** and
+  **Today's feed-in so far (estimated)** appear here too ([Today so far](#today-so-far)).
+- **Download diagnostics** produces a file for bug reports. Your API key, your NMI and
+  the names you gave (the site, grid meters and appliances) are redacted from it.
 
 ### How the integration page is laid out
 
+The integration's own page is **Settings > Devices & services > Amber Energy Dashboard**.
 The entry is your **Amber account** (its API key), titled **Amber Energy Dashboard**. If
 you set up a second account (a second API key), each title gets its first site's name,
 for example **Amber Energy Dashboard (Beach house)**. Rename an entry (its **⋮** menu) and
@@ -168,23 +189,21 @@ the integration leaves your name alone.
 
 Under the entry, Home Assistant groups the sub-entries by kind:
 
-- **Site:** each site, titled by its name (for example **Home**; a site set up before
-  version 2.2 is titled **Site …1234** until you rename it). Its device holds the status
-  sensors, the Yesterday sensors and the buttons described above. The site's device is
-  named after the site; installs from before version 2.2 keep **Amber Energy Dashboard
-  (site)** until you rename it.
+- **Site:** each site, titled by its name (for example **Home**). Its device, named after
+  the site, holds the status sensors, the Yesterday sensors and the buttons described
+  above. The pencil on the site's row opens its settings (section 5).
 - **Grid meter** and **Appliance:** each one you add (section 5), listed by its title, for
   example **Whole house meter · grid meter** or **Pool heat pump · appliance (general
   E1)**. Each has its own device, named as you named it, which holds its sensors and links
   back to its site's device.
-- **Own energy sensor (2.1):** own energy sensors added before version 2.2, each with a
-  device **<sensor name> (own sensor)**, until you convert them (section 5).
 
-Every device belongs to one of these, so there is no longer a heading "Devices that don't
-belong to a sub-entry".
+The buttons at the top add a **site**, a **grid meter** or an **appliance**. An install
+upgraded from version 2.1 may also show **Own energy sensor (2.1)** rows until they are
+converted (see [section 9](#9-upgrading-from-version-21)).
 
 <!-- TODO(screenshot): the integration page with a site, a grid meter and an appliance.
-     The maintainer to supply as images/integration-layout.png. -->
+     The maintainer to supply as images/integration-layout.png. (It replaces
+     images/15-integration-page.png, which showed 2.0's "Add own energy sensor".) -->
 *(Screenshot to follow.)*
 
 ### More than one site
@@ -212,8 +231,7 @@ kept). If the key sees none of the sites, Home Assistant asks you to re-authenti
 
 To rename a site, open its settings (below) and choose **Rename site**. It renames both
 the site's row on the integration page and its device. Entity IDs never change with the
-name. Installs from before version 2.2 show **Site …1234** and **Amber Energy Dashboard
-(site)** until you rename them this way.
+name.
 
 Areas and labels are set on Home Assistant's own device page (the site's device, then the
 **pencil** icon). A name you give the device there is also used as the site's name (for
@@ -225,30 +243,35 @@ yourself); **Rename site** replaces it.
 A site's settings open from the **cog** next to the entry (with several sites, it asks
 which one first) or from the **pencil** on the site's row. Both show the same menu:
 
-<img src="images/options-menu.png" alt="The options menu" width="681">
-
-<!-- TODO(screenshot): the menu now also has Sources and Rename site. The maintainer to
-     retake images/options-menu.png. -->
+<!-- TODO(screenshot): the site settings menu (Import settings, Sources, Bill estimate,
+     Export allowance, Rename site, Refresh channels, Migrate from the YAML kit). The
+     maintainer to retake images/options-menu.png; the current one shows 2.1's menu. -->
+<img src="images/options-menu.png" alt="The site settings menu" width="681">
 
 The menu has **Import settings**, **Sources**, **Bill estimate**, **Export allowance**,
-**Rename site**, **Refresh channels** and **Migrate from the YAML kit**.
-
+**Rename site**, **Refresh channels** and **Migrate from the YAML kit** (and **Undo
+migration** after a migration).
 
 **Import settings** contains:
 
 <img src="images/17-import-settings.png" alt="Import settings" width="333">
+
+<!-- TODO(screenshot): retake images/17-import-settings.png on 2.2: the step is now titled
+     "Import settings", and the fallback is "Hourly fallback for grid meters and
+     appliances". -->
 
 - **Schedule:** Automatic or Fixed times, as during setup.
 - **Usage mode:**
   - **Full** (default): imports usage and cost every day.
   - **Recovery-only:** imports nothing on a schedule. Use the `backfill` service to fill a
     date range on demand.
-  - **Pricing-only:** writes no usage statistics, only prices and own-sensor cost.
+  - **Pricing-only:** writes no usage statistics, only prices and the cost of grid meters
+    and appliances.
 
   Switching mode never deletes statistics; ones no longer updated simply stop.
 - **Price series:** optionally write an hourly price series per channel. Turning it on
   fetches the full retention window once (about 13 API calls).
-- **Hourly fallback for own sensors:** for grid meters and appliances (below), Home
+- **Hourly fallback for grid meters and appliances** (below): Home
   Assistant keeps 5-minute data for only about 10 days. With this on (the default), older
   days are priced from hourly energy at the hour's average price and marked "lower
   precision"; with it off, they are skipped.
@@ -264,7 +287,7 @@ from the day imports paused.
 
 ### Bill estimate (optional)
 
-Choose **Bill estimate** in the options menu:
+Choose **Bill estimate** in the site's settings:
 
 <img src="images/bill-estimate-step.png" alt="The bill estimate step" width="294">
 
@@ -310,7 +333,7 @@ Some networks charge for exports in a midday window beyond a free allowance appl
 bill (Endeavour Energy's N61: 8 kWh a day, over the billing period). Amber's usage data
 charges every kWh in that window, so feed-in earnings look lower than on your bill. For N61
 with a billing day set, the integration turns this on by itself; otherwise choose **Export
-allowance** in the options menu and enter the allowance per day:
+allowance** in the site's settings and enter the allowance per day:
 
 <img src="images/export-allowance-step.png" alt="The export allowance step, with N61 detected" width="416">
 
@@ -531,20 +554,6 @@ during daylight saving, 01:00 to 01:00 local time).
   seen afterwards (or dropped if the downtime spans midnight). A meter reset drops that
   interval.
 
-### Converting own energy sensors (from version 2.1)
-
-Own energy sensors added before version 2.2 keep working unchanged: the same statistics,
-entity IDs and reconciliation sensors. A Repairs item **"Convert own energy sensors to grid
-meters and appliances"** offers to convert them:
-
-- an import mapping (general or controlled load) and a feed-in mapping become one grid
-  meter, named as you choose;
-- every other mapping becomes an appliance, keeping its name.
-
-The cost statistics and their history are kept, and the grid meter's reconciliation
-sensors keep the old sensors' entity IDs. Appliances get Yesterday sensors in place of
-reconciliation. You can also ignore the Repairs item and keep the old mappings.
-
 ## 6. Add it to the Energy dashboard
 
 If you kept **Add to the Energy dashboard** on during setup (section 3), this is already
@@ -594,6 +603,95 @@ Amber's usage data covers usage only. The daily supply charge (network and meter
 Amber's subscription are separate charges on your bill. The **Bill estimate** option
 (section 5) adds them.
 
+**Today so far is missing.**
+It needs a grid meter whose import is on the general channel, and a general live price.
+Open the site's settings, **Sources**: it shows the live price it found (Amber Express or
+Amber Electric for the same site) and the grid meter it uses. A price integration set up
+later is picked up within a few minutes.
+
 **Something else.**
 Download diagnostics from the integration's device page, and open an issue on GitHub with
-the file attached. Your API key and NMI are redacted automatically.
+the file attached. Your API key, your NMI and the names you gave are redacted
+automatically; your usage figures are not, so check the file first.
+
+## 9. Upgrading from version 2.1
+
+This section is for an install of version 2.1 (or 2.0) that you update to 2.2. Updating
+from a 2.2 beta needs none of it.
+
+> [!WARNING]
+> **Take a Home Assistant backup before you update** (Settings > System > Backups). At its
+> first start, version 2.2 moves the integration to a new layout that 2.1 can't read.
+> **There is no downgrade:** to go back to 2.1, restore the backup. Installing 2.1 over 2.2
+> leaves the integration unable to load ("Migration error").
+
+### Updating
+
+1. Take the backup.
+2. In HACS, open **Amber Energy Dashboard (unofficial)** and click **Update** (or
+   **Redownload** and pick the version).
+3. Restart Home Assistant.
+
+At the first start the integration moves itself to the new layout. Your statistics and
+their history, every entity ID, your settings, the Energy dashboard and any YAML-kit
+migration (including its undo) are kept. If Home Assistant stops in the middle of it, the
+next start finishes it.
+
+### What changes on the integration page
+
+- **The entry is now your Amber account** (its API key), and your site is a **Site** row
+  under it, which owns the site's device and its sensors and buttons. Entries titled
+  "Amber <NMI>" become **Amber Energy Dashboard**.
+- **The site's row is titled "Site …1234"** (the NMI's last four digits) and its device
+  keeps the name **Amber Energy Dashboard (site)** until you give the site a name: open its
+  settings and choose **Rename site** (section 4). Entity IDs don't change.
+- **Settings belong to the site:** the cog next to the entry (it asks which site when there
+  are several) and the pencil on the site's row open the same menu (section 5). New items:
+  **Sources** and **Rename site**. **Refresh channels** replaces the entry's Reconfigure.
+- **Add own energy sensor** is replaced by **Add grid meter** and **Add appliance**, and
+  **Add site** sets up another site of the same account.
+- The heading **"Devices that don't belong to a sub-entry"** is gone: every device belongs
+  to a site, a grid meter or an appliance.
+- **Repairs items you ignored in 2.1 come back** if they still apply (they are now kept
+  per site); ignore them again if you wish.
+- Services and actions take an optional **site**; `config_entry_id` still works with one
+  site.
+
+### Converting your own energy sensors
+
+Own energy sensors added in 2.1 **keep working unchanged** after the update: the same
+statistics, entity IDs and reconciliation sensors. They are listed as **Own energy sensor
+(2.1)**. A Repairs item, **"Convert own energy sensors to grid meters and appliances"**
+(Settings > System > Repairs), converts them when you are ready:
+
+1. Open the Repairs item. It lists your own energy sensors and proposes a **grid meter**:
+   your import (general or controlled load) sensor as its import, and your feed-in sensor
+   as its export. Change the choice if needed (or choose **None** if none of them is on the
+   main supply), and give the grid meter a name, for example **Whole house meter**.
+2. Every other own energy sensor becomes an **appliance**, keeping its name.
+3. Check the plan on the next screen, and submit. The integration reloads.
+
+The cost statistics and their history are kept, and the grid meter's **Import
+reconciliation** and **Export reconciliation** keep the old reconciliation sensors' entity
+IDs, so your dashboards keep working. The grid meter also gets a **Calibration offset**
+(when it has both sides). Appliances get **Yesterday energy** and **Yesterday cost** in
+place of reconciliation. You can also ignore the Repairs item and keep the old sensors;
+they just don't get the new features (solar-aware cost, Today so far).
+
+<!-- TODO(screenshot): the conversion's plan step in Repairs. The maintainer to supply as
+     images/convert-own-sensors.png. -->
+*(Screenshot to follow.)*
+
+### New things to set up
+
+- **Name your site** with **Rename site** (above).
+- **Today so far:** with a grid meter and Amber Express or Amber Electric set up for the
+  same site, the site's device gets **Today's cost so far (estimated)** and **Today's
+  feed-in so far (estimated)** by itself. Check **Sources** in the site's settings to see
+  what was found ([Sources](#sources), [Today so far](#today-so-far)).
+- **Previous bill estimate** appears by itself when the bill estimate is on; an example
+  [bill card](cards/README.md) shows it with the current cycle.
+- **Solar-aware cost:** add your solar sensor in **Sources**, then turn it on for an
+  appliance with its **Reconfigure** ([Solar-aware cost](#solar-aware-cost)).
+- **Evening retries** need nothing: when Amber publishes a day late, the integration
+  retries every 3 hours until 22:00.

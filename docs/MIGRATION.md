@@ -6,10 +6,14 @@ continuous series. **Take a full backup first.**
 
 1. **Install and set up the integration** first, following the
    [installation guide](INSTALL.md), and wait until Import status reads **Up to date**.
-2. Open the **options** (the cog) and choose **Migrate from the YAML kit**. The first screen
+2. Open the site's settings (the **cog** next to the entry on the integration page, or the
+   **pencil** on the site's row) and choose **Migrate from the YAML kit**. The first screen
    is a **dry run**: it changes nothing, and reports what it found and what it would do.
 
    <img src="images/18-migration-dry-run.png" alt="The migration dry run" width="335">
+
+   <!-- TODO(screenshot): check images/18-, 19- and 20- against 2.2; the menu they come
+        from is now the site's settings. -->
 
    Check that:
    - **Source** shows your kit's layout (v1 or advanced);
@@ -44,7 +48,7 @@ continuous series. **Take a full backup first.**
 4. **Check the Energy dashboard:** recent days should show the same energy as before, with
    the cost now correctly reduced by your feed-in earnings, and the history should run back
    continuously.
-5. **If anything looks wrong,** choose **Undo migration** from the same options menu. It
+5. **If anything looks wrong,** choose **Undo migration** from the same settings menu. It
    restores your previous Energy dashboard settings and turns the old automation back on.
 
    <img src="images/20-undo-migration.png" alt="Undo migration" width="333">
@@ -80,4 +84,12 @@ possible.
 ## If something goes wrong
 
 Download diagnostics from the integration's device page, and open an issue on GitHub with
-the file attached. Your API key and NMI are redacted automatically.
+the file attached. Your API key, your NMI and the names you gave are redacted
+automatically; your usage figures are not, so check the file first.
+
+## Already migrated, and now updating to 2.2
+
+Nothing to do: a migration done with 2.0 or 2.1 is kept when you update, with its undo,
+and the **Finish removing the YAML kit** notice carries over. See the
+[installation guide's section on upgrading](INSTALL.md#9-upgrading-from-version-21) (take a
+backup first).

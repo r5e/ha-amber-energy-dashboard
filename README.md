@@ -7,10 +7,15 @@ The Energy dashboard then shows what Amber really billed, hour by hour.
 This is an unofficial community project. It is not affiliated with or endorsed by
 Amber Electric.
 
-> **Version 2.1.1.** Version 2 replaces the earlier YAML kit (v1) with a proper
+> **Version 2.2.** Version 2 replaces the earlier YAML kit (v1) with a proper
 > integration: set up in the UI, with no YAML at all. If you use the v1 kit, see the
 > **[migration guide](docs/MIGRATION.md)**. The v1 kit itself is kept in
 > [`legacy/v1/`](legacy/v1/).
+
+> [!IMPORTANT]
+> **Updating from version 2.1 or earlier?** Take a Home Assistant backup first, and read
+> [Upgrading from version 2.1](#upgrading-from-version-21): 2.2 changes the integration's
+> layout, and there is no downgrade without the backup.
 
 ## Why
 
@@ -31,11 +36,16 @@ What you get:
 - **Revision handling:** estimated days are re-checked, and history is corrected when
   Amber revises them.
 - **Controlled load** support, detected from your site's channels.
+- **More than one site** on an Amber account, sharing Amber's rate limit.
 - **Grid meters and appliances (optional):** your own meters priced at Amber's billed
   rate for every 5-minute interval. A grid meter (a CT clamp on the mains, or an
   inverter's grid meter) is also reconciled with Amber's billed totals and gets a
   calibration offset; an appliance (a smart plug, a circuit, a heat pump) gets
-  yesterday's energy and cost.
+  yesterday's energy and cost, and optionally a solar-aware cost.
+- **Today so far (optional):** today's cost and feed-in estimated from your grid meter
+  and a live price, until Amber's billed figures arrive.
+- **Bill estimate (optional):** bill to date, projected bill and the previous bill,
+  with your daily charges.
 - **Price series (optional):** an hourly price series.
 - **Migration** from the v1 YAML kit, with a dry run and undo.
 
@@ -58,13 +68,37 @@ the settings, and the Energy dashboard, step by step with screenshots.
 In short: add `https://github.com/r5e/ha-amber-energy-dashboard` to HACS as a custom
 repository of type **Integration**, download **Amber Energy Dashboard (unofficial)**,
 restart, then add it under **Settings > Devices & services**. Setup asks for the API key,
-the site, the metering channels (always taken from Amber; for example `E1` general, `E2`
-controlled load, `B1` feed-in) and the schedule (**Automatic** is recommended). The first
-run then imports everything Amber still holds, about three months; after that, each day
-costs a few API calls.
+the site and a name for it, the metering channels (always taken from Amber; for example
+`E1` general, `E2` controlled load, `B1` feed-in) and the schedule (**Automatic** is
+recommended). The first run then imports everything Amber still holds, about three months;
+after that, each day costs a few API calls.
+
+The integration's entry is your Amber **account**; each **site** is a row under it, with
+its own device and settings (the cog next to the entry, or the pencil on the site). Grid
+meters and appliances are added with the buttons on the integration's page.
 
 **Manual install:** copy `custom_components/amber_energy_dashboard` into your
 `/config/custom_components/`, then restart.
+
+## Upgrading from version 2.1
+
+**Take a Home Assistant backup before you update.** At its first start, 2.2 moves the
+integration to a new layout (the entry becomes your Amber account, with the site as a
+**Site** under it). Version 2.1 can't read that layout, so the only way back is restoring
+the backup. Statistics, entity IDs, settings, the Energy dashboard and a YAML-kit migration
+(with its undo) are all kept.
+
+After the update:
+- the site is titled **Site …1234** and its device **Amber Energy Dashboard (site)** until
+  you use **Rename site** in its settings;
+- settings open from the cog (which asks for the site when there are several) or the
+  pencil on the site; **Refresh channels** replaces Reconfigure;
+- own energy sensors from 2.1 keep working, and a **Repairs** item converts them to a grid
+  meter and appliances, keeping their statistics and the reconciliation sensors' entity IDs;
+- Repairs items you ignored in 2.1 come back if they still apply.
+
+The [installation guide, section 9](docs/INSTALL.md#9-upgrading-from-version-21) has the
+details and the new features to set up.
 
 ## What it creates
 
@@ -78,7 +112,7 @@ costs a few API calls.
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
 | `amber_energy_dashboard:<site>_<ch>_cost_incl_fixed` | AUD | Optional (see [Bill estimate](#bill-estimate-optional)): the import cost plus your daily fixed charges |
 | `amber_energy_dashboard:<site>_<ch>_compensation_adjusted` | AUD | With the [export allowance](#export-allowance-two-way-network-tariffs): feed-in earnings with the export charge refunded within the free allowance, as on the bill |
-| `amber_energy_dashboard:<site>_own_<sensor>_cost` | AUD | Each [grid meter or appliance](#grid-meters-and-appliances-own-sensor-cost) sensor priced at Amber's billed rate |
+| `amber_energy_dashboard:<site>_own_<sensor>_cost` | AUD | Each [grid meter or appliance](#grid-meters-and-appliances) sensor priced at Amber's billed rate |
 | `amber_energy_dashboard:<site>_own_<sensor>_cost_solar_aware` | AUD | Optional, per appliance: its [solar-aware cost](#solar-aware-appliance-cost) |
 
 **Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
@@ -118,8 +152,8 @@ approximate figures this integration exists to replace.
 - `amber_energy_dashboard.run_now`: run the import now;
 - `bill_estimate`: the bill estimate for any billing cycle, with the line breakdown (see
   [Bill estimate](#bill-estimate-optional));
-- `probe_retention`: find Amber's retention boundary again from scratch (at most 8 API
-  calls). Normally not needed, because the daily check follows the boundary;
+- `probe_retention` (Re-check retention): find Amber's retention boundary again from
+  scratch (at most 8 API calls). Normally not needed, because the daily check follows the boundary;
 - `import_day`: import one day;
 - `backfill`: import a date range; see Recovery-only below;
 - `migrate_v1`, `undo_migration` and `delete_legacy_statistics`: see the migration guide.
@@ -157,8 +191,7 @@ account with one site.
 
 ## Usage modes
 
-You choose the mode in the integration's options (**Configure > Import settings**). The
-default is **Full**.
+You choose the mode in the site's settings (**Import settings**). The default is **Full**.
 
 - **Full:** imports your Amber usage and cost every day, as described above.
 - **Recovery-only:** imports nothing on a schedule. Instead, call
@@ -169,15 +202,16 @@ default is **Full**.
     re-derived.
   - A range after the existing history is appended.
 - **Pricing-only:** writes no usage statistics. Usage is still fetched for its prices, to
-  drive own-sensor cost and the price series.
+  drive the cost of grid meters and appliances, and the price series.
 
 **Switching modes never deletes statistics.** Statistics that a mode does not update simply
 stop, and resume where they left off when you switch back.
 
-## Grid meters and appliances (own-sensor cost)
+## Grid meters and appliances
 
 If you measure energy yourself, you can price it at the rate Amber actually billed you.
-Add each meter under the integration's entry ([guide, section 5](docs/INSTALL.md#adding-a-grid-meter)):
+Add each one with **Add grid meter** or **Add appliance** on the integration's page
+([guide, section 5](docs/INSTALL.md#adding-a-grid-meter)):
 
 - **Grid meter:** a meter on your main supply, for example a CT clamp or energy monitor
   on the mains feed, or an inverter or battery system's own grid meter (such as a
@@ -227,7 +261,8 @@ with the whole house's billed total means nothing.
 
 **Own energy sensors from version 2.1** keep working unchanged (same statistics, entity
 IDs and reconciliation). A Repairs item offers to convert them: an import and a feed-in
-mapping become one grid meter, every other one an appliance, keeping every statistic.
+mapping become one grid meter, every other one an appliance, keeping every statistic (see
+[Upgrading from version 2.1](#upgrading-from-version-21)).
 
 ## Solar-aware appliance cost
 
@@ -271,7 +306,7 @@ grid meter's calibration offset applied, for comparison. See the
 
 ## Bill estimate (optional)
 
-Under **Configure > Bill estimate**, enter your **billing day** (1 to 28, the first day of
+In the site's settings, under **Bill estimate**, enter your **billing day** (1 to 28, the first day of
 the period your bill covers) and, from your Amber bill's charges summary, excluding GST: the
 **daily supply charge** (the "Network Daily Supply Charges" rate, which already includes
 metering), the **Amber subscription** per day (0 if it is currently free), any **other
@@ -322,8 +357,8 @@ usage data charges every exported kWh in that window, so the feed-in earnings it
 be lower than the bill's (in September 2026, $2.12 against the bill's $5.38).
 
 The integration detects the network and tariff from Amber at setup. For N61 with a billing
-day set (see Bill estimate), it is on by default; for other tariffs, turn it on under
-**Configure > Export allowance** and enter the allowance. It then:
+day set (see Bill estimate), it is on by default; for other tariffs, turn it on in the
+site's settings under **Export allowance** and enter the allowance. It then:
 - measures the export charge and the peak reward from your data each day (Amber's rates,
   which can differ from the network's price list), using the tariff period Amber gives for
   each interval;
@@ -370,7 +405,7 @@ The rest of this section explains what the migration checks and does, in more de
 
 ### What the dry run checks
 
-The migration is under **Configure > Migrate from the YAML kit**, or the
+The migration is in the site's settings, **Migrate from the YAML kit**, or the
 `amber_energy_dashboard.migrate_v1` action, which is always a dry run unless you set
 `dry_run: false` (and `confirm_backup: true`). The dry run changes nothing. It shows:
 
@@ -444,8 +479,7 @@ statistics start with the integration's own data.
   they do not keep the Repairs item open. When you are happy, you can remove them with
   `amber_energy_dashboard.delete_legacy_statistics` (`confirm: true`). After that, undo is
   no longer possible.
-- **Undo migration** (in the integration's Configure menu, or the `undo_migration`
-  action):
+- **Undo migration** (in the site's settings, or the `undo_migration` action):
   - restores your saved Energy dashboard settings;
   - turns back on only the automations the migration turned off.
   - The copied older history stays in the new statistics; it is harmless.
@@ -460,7 +494,7 @@ is outstanding):
 |---|---|
 | Up to date | All complete days are imported |
 | Waiting for next run | The last run was up to date, but days have become due since, for example after Home Assistant was off for a while. The next scheduled attempt imports them; "Days behind" shows how many |
-| Waiting for Amber data | Yesterday is not published yet. This is normal early in the morning; later attempts retry |
+| Waiting for Amber data | Yesterday is not published yet. This is normal early in the morning; later attempts retry (in the evening every 3 hours until 22:00) |
 | Paused (rate limit budget) / Paused (rate limited) | The shared Amber rate limit was low. The next attempt continues |
 | Amber unavailable | Network error or an Amber server error. The next attempt retries |
 | Authentication failed | Home Assistant asks you to re-enter the API key (reauthentication) |
@@ -470,13 +504,15 @@ is outstanding):
 
 | Item | Meaning and what to do |
 |---|---|
-| Amber import is behind | The day's last attempt still left days missing. It clears itself once caught up |
+| Amber import is behind | The day's last attempt (including the evening retries) still left days missing. It clears itself once caught up |
 | Amber usage data is incomplete | A day failed the completeness check on the day's last attempt. Nothing was written; the next attempt fetches it again, and the item clears once the day is complete |
 | Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the site's settings and choose **Refresh channels** to add it |
 | Amber import stopped: marker and statistics disagree | The stored progress and the statistics disagree, for example after restoring an old database backup. Nothing is written until this is resolved; download diagnostics and open an issue |
 | Amber site no longer visible | The account's API key no longer sees this site (for example it was closed). That site is skipped; the account's other sites keep running. Delete a closed site from its ⋮ menu (its statistics are kept), or re-authenticate with a key that sees it. It clears itself when the key sees the site again |
 | Amber import could not be verified | A day was written but did not read back as expected. Progress was not advanced; the next attempt rewrites the day |
 | The Energy dashboard isn't using Amber Energy Dashboard | A day after the first import, nothing in the Energy dashboard uses this integration's statistics. **Fix** adds them if there is no grid connection yet, points to the migration if the YAML kit is in use, or explains how to choose them (and lets you dismiss the item). It clears itself once the statistics are in use |
+| Convert own energy sensors to grid meters and appliances | After updating from 2.1: converts your own energy sensors, keeping their statistics (see [Upgrading from version 2.1](#upgrading-from-version-21)). You can ignore it and keep them |
+| Solar-aware cost for … is waiting | An appliance's solar-aware cost has waited more than 2 days for the site's solar sensor (Sources) or a grid meter with import and export. Add what it names, or turn solar-aware cost off; it clears once the cost is written again |
 | Finish removing the YAML kit | After a migration: the old kit items still present, to remove by hand. It is re-checked when Home Assistant starts and after each scheduled import, and clears itself once they are gone. The old statistics do not count; delete them later if you wish |
 
 **Diagnostics.** Open the integration, then the three-dot menu, then **Download
@@ -486,8 +522,9 @@ diagnostics**. The file contains:
 - the schedule;
 - the API call counts and the last rate-limit reading.
 
-Your **API key and NMI are redacted**. Your usage figures are personal data, so check
-the file before you attach it to an issue.
+Your **API key, your NMI and the names you gave** (the site, grid meters and
+appliances) **are redacted**. Your usage figures are personal data, so check the file
+before you attach it to an issue.
 
 **HACS shows "icon not available"** for this integration in its own list. That is a
 known HACS limitation for custom integrations that ship their brand icon locally (since

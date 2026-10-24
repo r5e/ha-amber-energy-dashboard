@@ -253,8 +253,9 @@ class AmberManager:
         self.entry = entry
         self.site_key = site_key or entry.entry_id
         """The site's key (section 23): its Store and its Repairs issues."""
-        self._site_title = site_title
-        """The site sub-entry's title when the entry has several sites."""
+        self.site_title = site_title
+        """The site sub-entry's title when the entry has several sites (kept current on a
+        rename)."""
         self.ctx = ctx
         self.store = store
         self.schedule = schedule
@@ -2020,7 +2021,7 @@ class AmberManager:
         """How the site is named in Repairs issues: the entry's title, with the site's
         when the entry has several sites."""
         title = self.entry.title
-        return f"{title} ({self._site_title})" if self._site_title else title
+        return f"{title} ({self.site_title})" if self.site_title else title
 
     @property
     def issue_data(self) -> dict[str, str]:

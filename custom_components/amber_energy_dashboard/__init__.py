@@ -800,6 +800,7 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
         return
     for sub_id, site in runtime.sites.items():
         sub, manager = subs[sub_id], site.manager
+        manager.site_title = sub.title if len(subs) > 1 else None  # "Rename site"
         options = site_options(sub)
         current = {s.subentry_id for s in manager.own_sensors}
         wanted = {

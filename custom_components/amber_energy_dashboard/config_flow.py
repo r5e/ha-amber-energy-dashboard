@@ -17,7 +17,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_API_KEY, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -36,6 +36,7 @@ from homeassistant.helpers.selector import (
 )
 import voluptuous as vol
 
+from . import async_update_titles
 from .api import (
     AmberAuthError,
     AmberClient,
@@ -96,7 +97,7 @@ from .const import (
     SUPPORTED_CHANNEL_TYPES,
     USAGE_MODES,
 )
-from .devices import entry_title
+from .devices import displayed_site_name, entry_title
 from .energy import async_preferences, has_grid
 from .export import DEFAULT_PENALTY_PERIOD, TOTALLING_PERIOD, TOTALLINGS
 from .meters import (
@@ -551,8 +552,8 @@ class _SiteSettings:
         site = runtime.sites.get(self._sub_id) if runtime is not None else None
         return site.manager if site is not None else None
 
-    def _save_site(self, data_updates: dict[str, Any]) -> Any:
-        """Update the site sub-entry and close the flow."""
+    def _save_site(self, data_updates: dict[str, Any], title: str | None = None) -> Any:
+        """Update the site sub-entry (and its title, if given) and close the flow."""
         raise NotImplementedError  # pragma: no cover - each flow defines it
 
     def _close(self) -> Any:
@@ -563,14 +564,42 @@ class _SiteSettings:
         return self._save_site({CONF_OPTIONS: options})
 
     def _settings_menu(self, step_id: str) -> Any:
-        """Settings, bill estimate, allowance, channels, migration, and undo once a
-        migration has started."""
-        options = ["settings", "bill", "allowance", "channels", "migrate"]
+        """Settings, bill estimate, allowance, renaming, channels, migration, and undo
+        once a migration has started."""
+        options = ["settings", "bill", "allowance", "rename", "channels", "migrate"]
         manager = self._manager()
         record = manager.store.migration if manager is not None else None
         if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
             options.append("undo_migration")
         return self.async_show_menu(step_id=step_id, menu_options=options)  # type: ignore[attr-defined]
+
+    async def async_step_rename(self, user_input: dict[str, Any] | None = None) -> Any:
+        """Rename the site (2.2.0-dev3): its sub-entry's title and its device's name. A
+        name given to the device on Home Assistant's device page is replaced, so the new
+        name shows everywhere. Entity IDs don't change."""
+        entry, sub = self._settings_entry(), self._site()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get(CONF_SITE_NAME) or "").strip()
+            if name:
+                previous = displayed_site_name(self.hass, entry)
+                devices = dr.async_get(self.hass)
+                device = devices.async_get_device_by_identifier(
+                    (DOMAIN, sub.data[CONF_SITE_ID]), entry.entry_id
+                )
+                if device is not None:
+                    devices.async_update_device(device.id, name=name, name_by_user=None)
+                result = self._save_site({CONF_SITE_NAME: name}, title=name)
+                async_update_titles(self.hass, previous={entry.entry_id: previous})
+                return result
+            errors[CONF_SITE_NAME] = "name_required"
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="rename",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                _SITE_NAME_SCHEMA, user_input or {CONF_SITE_NAME: sub.title}
+            ),
+            errors=errors,
+        )
 
     async def async_step_channels(self, user_input: dict[str, Any] | None = None) -> Any:
         """Refresh the site's channels from Amber (for example a new controlled load).
@@ -936,10 +965,12 @@ class AmberOptionsFlow(_SiteSettings, OptionsFlow):
     def _settings_entry(self) -> ConfigEntry:
         return self.config_entry
 
-    def _save_site(self, data_updates: dict[str, Any]) -> ConfigFlowResult:
+    def _save_site(
+        self, data_updates: dict[str, Any], title: str | None = None
+    ) -> ConfigFlowResult:
         sub = self._site()
         self.hass.config_entries.async_update_subentry(
-            self.config_entry, sub, data={**sub.data, **data_updates}
+            self.config_entry, sub, data={**sub.data, **data_updates}, title=title or sub.title
         )
         return self.async_create_entry(data=dict(self.config_entry.options))
 
@@ -984,9 +1015,12 @@ class SiteSubentryFlow(_SiteSettings, ConfigSubentryFlow):
     def _settings_entry(self) -> ConfigEntry:
         return self._get_entry()
 
-    def _save_site(self, data_updates: dict[str, Any]) -> SubentryFlowResult:
+    def _save_site(
+        self, data_updates: dict[str, Any], title: str | None = None
+    ) -> SubentryFlowResult:
+        sub = self._site()
         return self.async_update_and_abort(
-            self._get_entry(), self._site(), data_updates=data_updates
+            self._get_entry(), sub, data_updates=data_updates, title=title or sub.title
         )
 
     def _close(self) -> SubentryFlowResult:

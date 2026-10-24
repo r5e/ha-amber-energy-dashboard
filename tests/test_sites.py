@@ -652,7 +652,14 @@ async def test_site_settings_from_the_cog_and_the_pencil(
     home_id = _sub_id(entry, SITE_ID)
     flow = await entry.start_subentry_reconfigure_flow(hass, home_id)
     assert flow["step_id"] == "reconfigure"
-    assert flow["menu_options"] == ["settings", "bill", "allowance", "channels", "migrate"]
+    assert flow["menu_options"] == [
+        "settings",
+        "bill",
+        "allowance",
+        "rename",
+        "channels",
+        "migrate",
+    ]
     flow = await hass.config_entries.subentries.async_configure(
         flow["flow_id"], {"next_step_id": "settings"}
     )
@@ -669,6 +676,69 @@ async def test_site_settings_from_the_cog_and_the_pencil(
     handler._sub_id = home_id
     result = await handler.async_step_migrate_result({})
     assert (result["type"], result["reason"]) == (FlowResultType.ABORT, "settings_closed")
+
+
+async def test_rename_site(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """ "Rename site" (2.2.0-dev3) sets the sub-entry's title and the device's name,
+    replacing a name given on the device page; entity IDs don't change. A default entry
+    title that names the first site follows."""
+    other = MockConfigEntry(
+        domain=DOMAIN, unique_id="01OTHERSITE", title="Amber Energy Dashboard (…9999)"
+    )
+    other.add_to_hass(hass)
+    entry, _, _ = await _account(hass, aioclient_mock, hass_storage)
+    assert entry.title == "Amber Energy Dashboard (Home)"
+    devices, entities = dr.async_get(hass), er.async_get(hass)
+    beach_id = _sub_id(entry, SITE_2)
+    beach = entry.runtime_data.sites[beach_id]
+    devices.async_update_device(beach.device_id, name_by_user="Shack")
+    await hass.async_block_till_done()
+    before = sorted(
+        e.entity_id for e in er.async_entries_for_config_entry(entities, entry.entry_id)
+    )
+
+    flow = await entry.start_subentry_reconfigure_flow(hass, beach_id)
+    flow = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {"next_step_id": "rename"}
+    )
+    assert flow["step_id"] == "rename"
+    flow = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {"site_name": "  "}
+    )
+    assert flow["errors"] == {"site_name": "name_required"}
+    flow = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {"site_name": "Holiday house"}
+    )
+    assert (flow["type"], flow["reason"]) == (FlowResultType.ABORT, "reconfigure_successful")
+    await hass.async_block_till_done()
+    sub = entry.subentries[beach_id]
+    assert (sub.title, sub.data["site_name"]) == ("Holiday house", "Holiday house")
+    device = devices.async_get(beach.device_id)
+    assert (device.name, device.name_by_user) == ("Holiday house", None)
+    assert beach.manager.site_label == "Amber Energy Dashboard (Home) (Holiday house)"
+    assert entry.title == "Amber Energy Dashboard (Home)"  # names the first site
+
+    # The first site, from the cog: the entry's default title follows.
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"site": _sub_id(entry, SITE_ID)}
+    )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"next_step_id": "rename"}
+    )
+    flow = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {"site_name": "Town house"}
+    )
+    assert flow["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.subentries[_sub_id(entry, SITE_ID)].title == "Town house"
+    assert devices.async_get(entry.runtime_data.device_id).name == "Town house"
+    assert entry.title == "Amber Energy Dashboard (Town house)"
+    after = sorted(e.entity_id for e in er.async_entries_for_config_entry(entities, entry.entry_id))
+    assert after == before
+    assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_options_need_a_site(

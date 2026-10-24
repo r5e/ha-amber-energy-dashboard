@@ -79,6 +79,7 @@
           "settings": "Import settings",
           "bill": "Bill estimate",
           "allowance": "Export allowance",
+          "rename": "Rename site",
           "channels": "Refresh channels",
           "migrate": "Migrate from the YAML kit",
           "undo_migration": "Undo migration"
@@ -196,6 +197,16 @@
       "channels": {
         "title": "Refresh channels",
         "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
+      },
+      "rename": {
+        "title": "Rename site",
+        "description": "The site's name is its device's name and its title on the integration page. A name given to the device on its device page is replaced. Entity IDs don't change.",
+        "data": {
+          "site_name": "Name"
+        },
+        "data_description": {
+          "site_name": "For example Home or Beach house."
+        }
       }
     },
     "error": {
@@ -206,7 +217,8 @@
       "not_acknowledged": "Tick the acknowledgement: the old history can't be checked against Amber's data.",
       "needs_billing_day": "Totalling over the billing period needs the billing day (Bill estimate). Set it first, or total daily.",
       "allowance_required": "Enter the free allowance per day.",
-      "charge_required": "Enter this charge (0 is fine if it is currently free)."
+      "charge_required": "Enter this charge (0 is fine if it is currently free).",
+      "name_required": "Enter a name."
     },
     "abort": {
       "not_loaded": "The integration is not loaded; migration and undo need it running.",
@@ -617,6 +629,7 @@
             "settings": "Import settings",
             "bill": "Bill estimate",
             "allowance": "Export allowance",
+            "rename": "Rename site",
             "channels": "Refresh channels",
             "migrate": "Migrate from the YAML kit",
             "undo_migration": "Undo migration"
@@ -727,6 +740,16 @@
         "channels": {
           "title": "Refresh channels",
           "description": "Amber now reports different metering channels for this site.\n\nNew: {added}\nNo longer reported: {removed}\n\nNew channels get statistics from the next day to be imported. Statistics of channels that are no longer reported are kept, but no longer updated."
+        },
+        "rename": {
+          "title": "Rename site",
+          "description": "The site's name is its device's name and its title on the integration page. A name given to the device on its device page is replaced. Entity IDs don't change.",
+          "data": {
+            "site_name": "Name"
+          },
+          "data_description": {
+            "site_name": "For example Home or Beach house."
+          }
         }
       },
       "error": {

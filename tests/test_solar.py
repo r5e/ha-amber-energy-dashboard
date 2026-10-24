@@ -395,8 +395,9 @@ async def test_solar_aware_statistic_and_sensor(
 
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     site = next(iter(diagnostics["sites"].values()))
+    assert "Whole house meter" not in repr(diagnostics)  # a user-given name: redacted
     assert site["flows"] == {
-        "meter": "Whole house meter",
+        "meter": "**REDACTED**",
         "import": IMPORT,
         "export": EXPORT,
         "solar_energy": SOLAR,

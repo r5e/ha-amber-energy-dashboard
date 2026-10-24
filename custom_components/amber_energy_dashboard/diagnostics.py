@@ -12,6 +12,9 @@ from .const import CONF_NMI, CONF_SITE_NAME
 # The title is redacted too, because it may contain the NMI or the site's name; the site's
 # name and the mappings' names because a user may have typed an address into them (2.2).
 TO_REDACT = {CONF_API_KEY, CONF_NMI, CONF_SITE_NAME, CONF_NAME, "title"}
+# Each site's part as well: a grid meter's name appears there as "meter" (sources, flows and
+# Today so far), and the Store may record names (2.2.0).
+SITE_REDACT = TO_REDACT | {"meter"}
 
 
 async def async_get_config_entry_diagnostics(
@@ -34,7 +37,10 @@ async def async_get_config_entry_diagnostics(
                 "policy": rate_limit.policy,
             },
         },
-        "sites": {sub_id: _site(site) for sub_id, site in runtime.sites.items()},
+        "sites": {
+            sub_id: async_redact_data(_site(site), SITE_REDACT)
+            for sub_id, site in runtime.sites.items()
+        },
     }
 
 

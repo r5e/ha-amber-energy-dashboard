@@ -561,6 +561,8 @@ async def test_today_so_far_sensors(
         "origin": "amber_express",
     }
     assert site["today"]["import"]["kwh"] == pytest.approx(0.5)
+    assert site["today"]["meter"] == "**REDACTED**"
+    assert "Whole house meter" not in repr(diagnostics)
 
     # Never in long-term statistics: no state class, and the tracker stops on unload.
     await hass.config_entries.async_unload(entry.entry_id)

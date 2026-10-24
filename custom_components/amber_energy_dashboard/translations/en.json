@@ -44,7 +44,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate with Amber",
-        "description": "Amber rejected the API key for {entry}. Enter a new key for the same account; it must still see every site set up here.",
+        "description": "Amber rejected the API key for {entry}. Enter a new key for the same account; it must see at least one of the sites set up here (a site it doesn't see is skipped, with a repair).",
         "data": {
           "api_key": "API key"
         }
@@ -53,7 +53,7 @@
     "error": {
       "invalid_auth": "The API key was rejected.",
       "cannot_connect": "Could not reach the Amber API. Try again later.",
-      "site_not_found": "This key does not have access to every site set up here.",
+      "site_not_found": "This key sees none of the sites set up here.",
       "invalid_times": "Enter one to six times as HH:MM, separated by commas.",
       "unknown": "Unexpected response from the Amber API.",
       "name_required": "Enter a name."
@@ -343,6 +343,10 @@
     "import_failed": {
       "title": "Amber import could not be verified",
       "description": "{day} was written for {entry} but reading it back did not match: {details}.\n\nThe import position was not advanced. The next attempt will rewrite the day."
+    },
+    "site_not_found": {
+      "title": "Amber site no longer visible: {site}",
+      "description": "The API key of {entry} no longer sees the site {site}, for example because the site was closed or moved to another Amber account. Its import is paused; the account's other sites keep running.\n\n- If the site is closed, delete it: on the integration page, open the site's ⋮ menu and choose Delete. Its statistics are kept.\n- If the key should still see it, re-authenticate with a key that does, or reload the integration once Amber shows the site again.\n\nThis clears by itself when the key sees the site at the next start or reload."
     },
     "behind": {
       "title": "Amber import is behind",

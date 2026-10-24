@@ -413,7 +413,8 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for a new key; it must still see every site of this entry."""
+        """Ask for a new key; it must see at least one of this entry's sites (a site it
+        doesn't see is skipped, with a Repairs issue, 2.2.0-dev3)."""
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -421,9 +422,9 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
             sites, error = await self._async_fetch_sites(api_key)
             if error:
                 errors["base"] = error
-            elif not {s.data[CONF_SITE_ID] for s in site_subentries(entry)} <= {
-                s.id for s in sites or []
-            }:
+            elif (configured := {s.data[CONF_SITE_ID] for s in site_subentries(entry)}) and not (
+                configured & {s.id for s in sites or []}
+            ):
                 errors["base"] = "site_not_found"
             else:
                 return self.async_update_reload_and_abort(

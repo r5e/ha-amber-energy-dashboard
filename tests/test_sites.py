@@ -79,6 +79,10 @@ def _site_data(site_id: str, name: str | None, **options: Any) -> dict[str, Any]
     }
 
 
+def _site_options_data(entry: MockConfigEntry, site_id: str) -> dict[str, Any]:
+    return dict(entry.subentries[_sub_id(entry, site_id)].data)
+
+
 def _copy_store(hass_storage: dict, key: str) -> None:
     """A second site's preloaded store, like the first's."""
     store = dict(hass_storage[_store_key()])
@@ -442,11 +446,76 @@ async def test_removing_a_site_removes_its_store(
     assert _store_key() not in hass_storage
 
 
-async def test_a_site_the_key_no_longer_sees_starts_reauth(
+async def test_a_site_the_key_no_longer_sees_is_skipped(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
-    """Every configured site must still be visible to the key."""
+    """A configured site the key no longer sees (a closed site) is skipped with a Repairs
+    issue for that site; the account's other sites keep running (2.2.0-dev3)."""
     entry, _, _ = await _account(hass, aioclient_mock, hass_storage, sites=[site_json()])
+    assert entry.state is ConfigEntryState.LOADED
+    runtime = entry.runtime_data
+    assert list(runtime.sites) == [_sub_id(entry, SITE_ID)]
+    assert runtime.skipped == {_sub_id(entry, SITE_2): SITE_2}
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, f"site_not_found_{SITE_2_KEY}")
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.ERROR
+    assert issue.translation_placeholders == {
+        "entry": "Amber Energy Dashboard",
+        "site": "Beach house",
+    }
+    assert issue.data == {"entry_id": ENTRY_ID, "site_id": SITE_2}
+    assert not any(
+        flow["context"]["source"] == "reauth" for flow in hass.config_entries.flow.async_progress()
+    )
+    # The remaining site runs, and services find it without naming it.
+    result = await _run(hass)
+    assert result["status"] == "caught_up"
+    # A settings change on the running site doesn't reload for the skipped one.
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        hass.config_entries.async_update_subentry(
+            entry,
+            entry.subentries[_sub_id(entry, SITE_ID)],
+            data={
+                **_site_options_data(entry, SITE_ID),
+                "options": {"schedule_mode": "automatic", "patience_days": 5},
+            },
+        )
+        await hass.async_block_till_done()
+    reload.assert_not_called()
+    # Once the key sees the site again, the next setup clears the issue.
+    aioclient_mock.clear_requests()
+    FakeAmber(TODAY - timedelta(days=30), YESTERDAY).install(aioclient_mock, SITES)
+    FakeAmber(TODAY - timedelta(days=30), YESTERDAY).install_usage(aioclient_mock, SITE_2)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.skipped == {}
+    assert len(entry.runtime_data.sites) == 2
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"site_not_found_{SITE_2_KEY}") is None
+
+
+async def test_deleting_a_skipped_site(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Deleting a skipped site removes its Store and its issue; the entry reloads with
+    the remaining site."""
+    entry, _, _ = await _account(hass, aioclient_mock, hass_storage, sites=[site_json()])
+    assert f"{DOMAIN}.{SITE_2_KEY}" in hass_storage
+    assert hass.config_entries.async_remove_subentry(entry, _sub_id(entry, SITE_2))
+    await hass.async_block_till_done()
+    assert f"{DOMAIN}.{SITE_2_KEY}" not in hass_storage
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"site_not_found_{SITE_2_KEY}") is None
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.skipped == {}
+    assert len(entry.runtime_data.sites) == 1
+
+
+async def test_a_key_that_sees_none_of_the_sites_starts_reauth(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """With none of the configured sites visible, setup starts reauth; the new key must
+    see at least one of them, and a skipped site's issue is removed with the entry."""
+    other = site_json(id="01FAKESITE0000000000000009")
+    entry, _, _ = await _account(hass, aioclient_mock, hass_storage, sites=[other])
     assert entry.state is ConfigEntryState.SETUP_ERROR
     assert any(
         flow["context"]["source"] == "reauth" for flow in hass.config_entries.flow.async_progress()
@@ -454,6 +523,16 @@ async def test_a_site_the_key_no_longer_sees_starts_reauth(
     flow = await entry.start_reauth_flow(hass)
     flow = await hass.config_entries.flow.async_configure(flow["flow_id"], {CONF_API_KEY: "k"})
     assert flow["errors"] == {"base": "site_not_found"}
+    aioclient_mock.clear_requests()
+    aioclient_mock.get("https://api.amber.com.au/v1/sites", json=[site_json()])
+    flow = await hass.config_entries.flow.async_configure(flow["flow_id"], {CONF_API_KEY: "k2"})
+    assert flow["reason"] == "reauth_successful"
+    assert entry.data[CONF_API_KEY] == "k2"
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"site_not_found_{SITE_2_KEY}") is not None
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"site_not_found_{SITE_2_KEY}") is None
 
 
 # --- flows -------------------------------------------------------------------------------

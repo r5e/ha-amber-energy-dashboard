@@ -27,7 +27,11 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
-from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    issue_registry as ir,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_device_registry_updated_event
 from homeassistant.helpers.start import async_at_started
@@ -132,6 +136,9 @@ from .storage import AmberStore, async_forget_chain
 
 _LOGGER = logging.getLogger(__name__)
 
+ISSUE_SITE_NOT_FOUND = "site_not_found"
+"""A configured site the account's key no longer sees: skipped, the others keep running."""
+
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -200,6 +207,8 @@ class AmberRuntimeData:
     """By site sub-entry ID, the entry's first site first."""
     converting: bool = False
     """Sub-entries are being converted (section 21): one reload follows, at the end."""
+    skipped: dict[str, str] = field(default_factory=dict)
+    """Sites the key no longer sees (sub-entry ID -> Amber site ID), not set up (2.2.0-dev3)."""
 
     @property
     def site(self) -> SiteRuntime:
@@ -564,8 +573,10 @@ async def _async_detect_tariff(store: AmberStore, site: Site) -> TwoWayTariff | 
 async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
     """Set up an Amber account and its sites, validating the key with one GET /sites.
 
-    A rejected key, or a key that no longer sees one of the sites, starts reauth.
-    Network errors, 5xx, 429 and unexpected responses retry setup later.
+    A rejected key, or a key that sees none of the configured sites, starts reauth. A
+    site the key no longer sees (for example a closed site) is skipped, with a Repairs
+    issue, and the account's other sites keep running (2.2.0-dev3). Network errors, 5xx,
+    429 and unexpected responses retry setup later.
     """
     client = AmberClient(async_get_clientsession(hass), entry.data[CONF_API_KEY])
     try:
@@ -577,14 +588,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     except AmberError as err:
         raise ConfigEntryNotReady(f"Unexpected response from Amber: {err}") from err
     subentries = site_subentries(entry)
-    if any(sub.data[CONF_SITE_ID] not in sites for sub in subentries):
-        raise ConfigEntryAuthFailed("The API key no longer has access to one of the sites")
+    missing = [sub for sub in subentries if sub.data[CONF_SITE_ID] not in sites]
+    if missing and len(missing) == len(subentries):
+        raise ConfigEntryAuthFailed("The API key no longer has access to any of the sites")
 
     # Before any platform is set up: each site's device and entities in its sub-entry.
     async_ensure_site_ownership(hass, entry)
     runtime = AmberRuntimeData(client=client, lock=asyncio.Lock())
     entry.runtime_data = runtime
     for sub in subentries:
+        _update_site_not_found_issue(hass, entry, sub, missing=sub in missing)
+        if sub in missing:
+            _LOGGER.warning(
+                "The API key no longer sees site %s; it is skipped until it does", sub.title
+            )
+            runtime.skipped[sub.subentry_id] = sub.data[CONF_SITE_ID]
+            continue
         runtime.sites[sub.subentry_id] = await _async_setup_site(
             hass, entry, runtime, sub, sites[sub.data[CONF_SITE_ID]], several=len(subentries) > 1
         )
@@ -682,6 +701,27 @@ async def _async_setup_site(
     return SiteRuntime(sub.subentry_id, ctx, manager, device.id, options=options)
 
 
+@callback
+def _update_site_not_found_issue(
+    hass: HomeAssistant, entry: AmberConfigEntry, sub: ConfigSubentry, *, missing: bool
+) -> None:
+    """Raise (or clear) the Repairs issue for a site the account's key no longer sees."""
+    issue_id = f"{ISSUE_SITE_NOT_FOUND}_{site_key(entry.entry_id, sub.data[CONF_SITE_ID])}"
+    if not missing:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_SITE_NOT_FOUND,
+        translation_placeholders={"entry": entry.title, "site": sub.title},
+        data={"entry_id": entry.entry_id, "site_id": sub.data[CONF_SITE_ID]},
+    )
+
+
 def _schedule_startup_work(
     hass: HomeAssistant, entry: AmberConfigEntry, manager: AmberManager
 ) -> None:
@@ -751,9 +791,11 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
     if runtime.converting:
         return
     subs = {s.subentry_id: s for s in site_subentries(entry)}
-    if set(subs) != set(runtime.sites):
+    if set(subs) != set(runtime.sites) | set(runtime.skipped):
         for sub_id in set(runtime.sites) - set(subs):
             await runtime.sites[sub_id].manager.store.async_remove()  # the site was removed
+        for sub_id in set(runtime.skipped) - set(subs):
+            await _async_forget_site(hass, entry.entry_id, runtime.skipped[sub_id])
         hass.config_entries.async_schedule_reload(entry.entry_id)
         return
     for sub_id, site in runtime.sites.items():
@@ -778,6 +820,13 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
             hass.config_entries.async_schedule_reload(entry.entry_id)
             return
         manager.async_update_settings(*args, **kwargs)
+
+
+async def _async_forget_site(hass: HomeAssistant, entry_id: str, site_id: str) -> None:
+    """A removed site: its Store and its "no longer seen" issue (statistics are kept)."""
+    key = site_key(entry_id, site_id)
+    await AmberStore(hass, key).async_remove()
+    ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_SITE_NOT_FOUND}_{key}")
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bool:
@@ -809,6 +858,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> bo
 async def async_remove_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> None:
     """Delete the sites' Stores when the entry is removed (statistics are kept)."""
     for sub in site_subentries(entry):
-        await AmberStore(hass, site_key(entry.entry_id, sub.data[CONF_SITE_ID])).async_remove()
+        await _async_forget_site(hass, entry.entry_id, sub.data[CONF_SITE_ID])
     await AmberStore(hass, entry.entry_id).async_remove()  # an entry never migrated
     async_update_titles(hass, removed=entry.entry_id)

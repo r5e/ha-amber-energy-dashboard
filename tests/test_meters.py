@@ -384,7 +384,9 @@ async def test_grid_meter_reconciliation_and_calibration_offset(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
 ) -> None:
     """Both sides are priced and reconciled on the meter's device, and the calibration
-    offset is the median of the hourly differences: one wild hour doesn't move it."""
+    offset is the mean of the hourly differences (2.2.0-dev3), so it brings the meter's
+    totals to the bill's even when one hour disagrees strongly; the median is an
+    attribute."""
     entry, _ = await _grid_meter_entry(hass, aioclient_mock, hass_storage, outlier=True)
     result = await _run(hass)
     await hass.async_block_till_done()
@@ -410,7 +412,9 @@ async def test_grid_meter_reconciliation_and_calibration_offset(
     )
 
     offset = states["calibration_offset"]
-    assert float(offset.state) == pytest.approx(14.0, abs=0.05)
+    # 47 hours of 14 W and one of 1000 W (the outlier hour).
+    assert float(offset.state) == pytest.approx((47 * 14.0 + 1000) / 48, abs=0.05)
+    assert offset.attributes["median_w"] == pytest.approx(14.0, abs=0.05)
     assert offset.attributes["unit_of_measurement"] == "W"
     assert offset.attributes["device_class"] == "power"
     assert "state_class" not in offset.attributes
@@ -482,8 +486,14 @@ def test_billed_days_and_summary() -> None:
     short = calibration.summarise([10.0] * 23, [last], now)
     assert short["offset_w"] is None and short["hours_used"] == 23
     full = calibration.summarise([float(h) for h in range(25)], [last], now)
-    assert full["offset_w"] == 12.0
+    assert full["offset_w"] == full["median_w"] == 12.0
     assert (full["p25_w"], full["p75_w"], full["iqr_w"]) == (6.0, 18.0, 12.0)
+    # Typical hours of 14 W and a few rapid-switching hours far off: the mean (the state)
+    # makes the totals match; the median stays with the typical hours.
+    switching = calibration.summarise([14.0] * 44 + [-40.0] * 4, [last], now)
+    assert switching["offset_w"] == 9.5
+    assert switching["median_w"] == 14.0
+    assert switching["iqr_w"] == 0.0
 
 
 # --- appliances ---------------------------------------------------------------------------

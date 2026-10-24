@@ -3,8 +3,11 @@
 For each hour of the complete billed days in a rolling window, Amber's net energy
 (import - export, from the integration's own hourly statistics) minus the meter's net
 energy (import - export, from the mapped sensors' hourly statistics), in watts (kWh per
-hour x 1000). The published value is the median over the window, so a few odd hours
-(a sensor restart, a missed reading) don't move it.
+hour x 1000). The published value is the mean over the window (2.2.0-dev3; until then
+the median): the correction is meant to make the meter's energy totals match the bill, and
+only the mean does that when some hours disagree strongly (for example rapid switching
+between import and export on a CT meter). Only hours with a reading gap are left out. The
+median and the spread are attributes.
 
 Only the mapped sensors are used, so they must be the raw, uncorrected ones: a sensor
 already corrected by this offset would feed the correction back into itself.
@@ -99,10 +102,12 @@ def _change(sums: Mapping[int, float | None], hour: datetime) -> float | None:
 
 
 def summarise(hourly: Sequence[float], days: Sequence[date], now: datetime) -> dict[str, Any]:
-    """The median offset (W) with its spread; no value below ``MIN_HOURS`` hours.
+    """The mean offset (W), with the median and the spread; no value below ``MIN_HOURS``
+    hours.
     ``days`` are the days that gave at least one hour."""
     result: dict[str, Any] = {
         "offset_w": None,
+        "median_w": None,
         "hours_used": len(hourly),
         "days_used": len(days),
         "first_day": days[0].isoformat() if days else None,
@@ -116,7 +121,8 @@ def summarise(hourly: Sequence[float], days: Sequence[date], now: datetime) -> d
         return result
     p25, _, p75 = statistics.quantiles(hourly, n=4, method="inclusive")
     result.update(
-        offset_w=round(statistics.median(hourly), 1),
+        offset_w=round(statistics.fmean(hourly), 1),
+        median_w=round(statistics.median(hourly), 1),
         p25_w=round(p25, 1),
         p75_w=round(p75, 1),
         iqr_w=round(p75 - p25, 1),

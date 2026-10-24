@@ -3,6 +3,7 @@ reconfigure and Store migration. All data is synthetic."""
 
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+import logging
 from typing import Any
 from unittest.mock import patch
 
@@ -347,7 +348,8 @@ async def test_probe_retention_record_keeps_previous_boundary(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """After a probe, the stored retention record (and so diagnostics) keeps the
-    boundary from before the probe, and a move is logged as a warning."""
+    boundary from before the probe, and a move is logged (as info: on an account with a
+    rolling window the boundary moves every day)."""
     _preload_store(hass_storage, retention_days=20, retention=VERIFIED_YESTERDAY)
     fake = FakeAmber(TODAY - timedelta(days=89), YESTERDAY)
     entry = await _setup_entry(hass, aioclient_mock, fake)
@@ -357,10 +359,10 @@ async def test_probe_retention_record_keeps_previous_boundary(
 
     assert store.retention["boundary"] == (TODAY - timedelta(days=89)).isoformat()
     assert store.retention["previous_boundary"] == (TODAY - timedelta(days=20)).isoformat()
-    assert (
-        f"Usage retention boundary moved from {TODAY - timedelta(days=20)} to "
-        f"{TODAY - timedelta(days=89)} (bisection)" in caplog.text
-    )
+    moved = f"Usage retention boundary moved from {TODAY - timedelta(days=20)} to "
+    [record] = [r for r in caplog.records if r.getMessage().startswith(moved)]
+    assert record.getMessage().endswith(f"{TODAY - timedelta(days=89)} (bisection)")
+    assert record.levelno == logging.INFO
     # Read back from the saved store file, not just the in-memory copy.
     await hass.async_block_till_done()
     saved = hass_storage[_store_key()]["data"]["retention"]

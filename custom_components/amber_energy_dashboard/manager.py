@@ -1357,7 +1357,8 @@ class AmberManager:
             "self_heal": self_heal,
         }
         if previous is not None and previous != boundary:
-            _LOGGER.warning(
+            # Info, not a warning: on an account with a rolling window it moves every day.
+            _LOGGER.info(
                 "Usage retention boundary moved from %s to %s (%s)", previous, boundary, method
             )
         _LOGGER.info(

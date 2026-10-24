@@ -146,7 +146,7 @@ from .sites import (
     site_options,
     site_subentries,
 )
-from .solar import site_flows
+from .solar import flows_missing, site_flows
 from .sources import (
     AMBER_ELECTRIC,
     AMBER_EXPRESS,
@@ -737,6 +737,7 @@ async def _async_setup_site(
     manager.after_run = _check_energy
     manager.sources = resolve_sources(hass, site_id, options, {c.type for c in channels})
     manager.flows = site_flows(entry, sub.data, options, manager.sources)
+    manager.flows_missing = flows_missing(entry, sub.data, options, manager.sources)
     manager.today = _today_tracker(hass, entry, sub, manager)
     if manager.today is not None:
         await manager.today.async_load()

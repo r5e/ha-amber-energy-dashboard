@@ -466,6 +466,10 @@
           "convert_failed": "The conversion did not complete: {reason}"
         }
       }
+    },
+    "solar_aware_waiting": {
+      "title": "Solar-aware cost for {name} is waiting",
+      "description": "The solar-aware cost of {name} ({entry}) hasn't been worked out for {days} days, from {first_day}: the site needs {missing}.\n\nAdd it (the site's settings, Sources; or Add grid meter), or turn solar-aware cost off with the appliance's Reconfigure. Days older than Amber's usage retention can no longer be worked out. This clears by itself once the cost is written again."
     }
   },
   "services": {

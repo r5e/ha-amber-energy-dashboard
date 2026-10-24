@@ -123,6 +123,9 @@ ISSUE_UNEXPECTED_CHANNEL = "unexpected_channel"
 ISSUE_INCOMPLETE_DATA = "incomplete_data"
 ISSUE_IMPORT_FAILED = "import_failed"
 ISSUE_BEHIND = "behind"
+ISSUE_SOLAR_AWARE_WAITING = "solar_aware_waiting"
+SOLAR_AWARE_WAIT_DAYS = 2
+"""A solar-aware chain waiting for its site's flows longer than this raises an issue."""
 _DATA_ISSUES = (ISSUE_UNEXPECTED_CHANNEL, ISSUE_INCOMPLETE_DATA, ISSUE_IMPORT_FAILED)
 _SKIPPED = SKIPPED_STATUSES
 
@@ -299,6 +302,8 @@ class AmberManager:
         """Today so far (section 22), when a grid meter and a live price are set up."""
         self.flows: solar.SiteFlows | None = None
         """The site's flows for solar-aware appliance cost (section 22), set at setup."""
+        self.flows_missing: list[str] = []
+        """What the site lacks for its flows (the solar sensor, a grid meter), when None."""
 
     @property
     def _ids(self) -> list[str]:
@@ -1722,13 +1727,28 @@ class AmberManager:
                 "status": STATUS_WAITING,
                 "reason": "the sensor has no statistics yet",
             }
-        if chain.sensor is not None and chain.sensor.role == ROLE_SOLAR_AWARE and not self.flows:
-            return {
-                **report,
-                "status": STATUS_WAITING,
-                "reason": "solar-aware cost needs the site's solar sensor and a grid meter "
-                "with import and export",
-            }
+        if chain.sensor is not None and chain.sensor.role == ROLE_SOLAR_AWARE:
+            suffix = chain.key.replace(":", "_")
+            if not self.flows:
+                waiting = (yesterday - start).days + 1
+                if waiting > SOLAR_AWARE_WAIT_DAYS:
+                    self._create_issue(
+                        ISSUE_SOLAR_AWARE_WAITING,
+                        {
+                            "name": chain.sensor.name,
+                            "missing": " and ".join(self.flows_missing),
+                            "days": str(waiting),
+                            "first_day": start.isoformat(),
+                        },
+                        suffix,
+                    )
+                return {
+                    **report,
+                    "status": STATUS_WAITING,
+                    "reason": "solar-aware cost needs the site's solar sensor and a grid meter "
+                    "with import and export",
+                }
+            self._delete_issue(ISSUE_SOLAR_AWARE_WAITING, suffix)
         for day in _days(start, yesterday):
             records = await self._async_records_for(day, yesterday)
             if not records:
@@ -2144,7 +2164,9 @@ class AmberManager:
             DOMAIN,
             self._issue_id(kind, suffix),
             is_fixable=False,
-            severity=ir.IssueSeverity.WARNING if kind == ISSUE_BEHIND else ir.IssueSeverity.ERROR,
+            severity=ir.IssueSeverity.WARNING
+            if kind in (ISSUE_BEHIND, ISSUE_SOLAR_AWARE_WAITING)
+            else ir.IssueSeverity.ERROR,
             translation_key=kind,
             translation_placeholders={"entry": self.site_label, **placeholders},
             data=self.issue_data,

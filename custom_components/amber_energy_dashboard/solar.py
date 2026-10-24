@@ -151,6 +151,18 @@ def solar_aware_problem(
     return None
 
 
+def flows_missing(
+    entry: ConfigEntry, site: Mapping[str, Any], options: Mapping[str, Any], sources: Sources
+) -> list[str]:
+    """What the site lacks for its flows, in words (for the Repairs issue)."""
+    missing = []
+    if not (sources.solar_energy or sources.solar_power):
+        missing.append("a solar sensor in the site's Sources")
+    if flows_meter(entry, site, options) is None:
+        missing.append("a grid meter with import and export")
+    return missing
+
+
 async def async_power_energy(hass: HomeAssistant, entity_id: str, day: date) -> Series:
     """A power sensor's energy per 5 minutes and per hour (kWh) for NEM day ``day``, from
     its mean statistics (each None when a bucket has no mean)."""

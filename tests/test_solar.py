@@ -6,25 +6,32 @@ from datetime import date, timedelta
 import math
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.db_schema import Statistics, StatisticsShortTerm
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 import pytest
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.amber_energy_dashboard import export, importer, solar
+from custom_components.amber_energy_dashboard import (
+    export,
+    importer,
+    manager as solar_mod_manager,
+    solar,
+)
 from custom_components.amber_energy_dashboard.api import _parse_usage
 from custom_components.amber_energy_dashboard.chains import (
     PreciseDataUnavailable,
     SensorDataUnavailable,
 )
+from custom_components.amber_energy_dashboard.const import DOMAIN
 from custom_components.amber_energy_dashboard.diagnostics import (
     async_get_config_entry_diagnostics,
 )
@@ -445,6 +452,47 @@ async def test_solar_aware_waits_without_flows_and_skips_missing_data(
     assert chain["status"] == "waiting_for_data"
     assert "solar" in chain["reason"]
     assert chain["skipped"] == []
+
+
+async def test_solar_aware_waiting_raises_an_issue(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, clock: Clock, hass_storage: dict
+) -> None:
+    """Waiting more than 2 days for the site's flows raises a Repairs issue naming what is
+    missing; 2 days don't; it clears once the cost is written again."""
+    days = [TODAY - timedelta(days=d) for d in (3, 2, 1)]
+    entry, _ = await _site(hass, aioclient_mock, hass_storage, days, grid=False)
+    manager = entry.runtime_data.manager
+    issue_id = f"solar_aware_waiting_{manager.site_key}_own_sub_pump_solar_aware"
+    registry = ir.async_get(hass)
+    assert manager.flows_missing == ["a grid meter with import and export"]
+    with patch.object(solar_mod_manager, "SOLAR_AWARE_WAIT_DAYS", 3):
+        await _run(hass)
+    assert registry.async_get_issue(DOMAIN, issue_id) is None  # 3 days: not yet
+    await _run(hass)
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.translation_placeholders["name"] == "Pool pump"
+    assert issue.translation_placeholders["missing"] == "a grid meter with import and export"
+    assert issue.translation_placeholders["days"] == "3"
+    assert issue.translation_placeholders["first_day"] == days[0].isoformat()
+
+    hass.config_entries.async_add_subentry(entry, _subentry(_grid_meter()))
+    await hass.async_block_till_done()
+    result = await _run(hass)
+    assert result["chains"]["own:sub_pump:solar_aware"]["written"] == [d.isoformat() for d in days]
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
+def test_flows_missing() -> None:
+    """Both missing pieces are named."""
+    entry = SimpleNamespace(unique_id="S", subentries={})
+    site = {"site_id": "S", "channels": [{"identifier": "E1", "type": "general"}]}
+    sources = solar.Sources()
+    assert solar.flows_missing(entry, site, {}, sources) == [
+        "a solar sensor in the site's Sources",
+        "a grid meter with import and export",
+    ]
 
 
 async def test_solar_aware_day_without_feed_in_records(

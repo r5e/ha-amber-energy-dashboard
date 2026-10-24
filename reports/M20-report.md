@@ -43,7 +43,8 @@ Pushed; nothing is merged or tagged. **Stopped for review.**
 | `3944762` | Docs: INSTALL.md, README, DESIGN (16, 19, 22), CHANGELOG, bill card; manifest `2.2.0-dev4` |
 | `b51dbb7` | Today so far: save the state on unload, so a reload keeps the last interval |
 | `b102dc1` | This report, and the CHANGELOG line for `b51dbb7` |
-| (this) | Strings: no "<name>" in the solar-aware help text (hassfest); CI results here |
+| `dfb2266` | Strings: no "<name>" in the solar-aware help text (hassfest) |
+| (this) | M20 report: CI results |
 
 **Point 1: live prices found after setup** (`__init__.py`):
 - `undetected_prices`: the site's price channels left to auto-detection that have no
@@ -147,8 +148,9 @@ Pushed; nothing is merged or tagged. **Stopped for review.**
   - On `b102dc1`: Tests (40076773921) and HACS validation (40076773994) succeeded.
     **hassfest (40076773929) failed**: the appliance's `solar_aware` help text contained
     "<name>", which hassfest reads as HTML.
-  - Fixed in the commit that adds this section (reworded, with no `<` left in the
-    strings). CI results for it are in the next section.
+  - Fixed in `dfb2266` (reworded, with no `<` left in the strings). On `dfb2266`, Tests
+    (40077322180), hassfest (40077322125) and HACS validation (40077322237) all
+    succeeded.
 - **New tests** (26):
   - `tests/test_solar.py` (16):
     - `split` (exporting, no load, disagreeing sensors, battery discharge, charging from

@@ -35,6 +35,8 @@ Assistant and HACS compare versions that way.
   this integration started, or the price integration was installed later. A missing price
   is now looked for again once Home Assistant has started, whenever their sensors are
   registered, and every minute for 15 minutes; Today so far then starts without a reload.
+- **Today so far** lost its last 5-minute interval when the integration reloaded less
+  than 30 seconds after it (for example when a setting was saved).
 
 ## [2.2.0b2] - 2026-10-24
 

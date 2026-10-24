@@ -4,37 +4,11 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.2.0-dev2] - Unreleased
+## [2.2.0b1] - 2026-10-24
 
-The integration entry is now your Amber account, with each site under it.
-
-### Changed
-
-- **Account and sites:** the entry is the Amber account (its API key), and each site is
-  a **Site** under it, owning the site's device and entities. Existing installs are
-  migrated automatically on update: the entry keeps its ID, and no entity ID, unique ID or
-  statistic changes. Home Assistant no longer shows "Devices that don't belong to a
-  sub-entry".
-- **Site settings** (import settings, bill estimate, export allowance, refreshing the
-  channels, the YAML-kit migration) belong to the site: the cog asks which site when there
-  are several, and the pencil on a site opens the same menu. **Refresh channels** replaces
-  the entry's Reconfigure.
-- **Services** take an optional **site** (the site's device). `config_entry_id` still
-  works for an account with one site.
-
-### Added
-
-- **More than one site:** **Add site** sets up another site of the same account. The
-  account's sites take turns, sharing Amber's rate limit. Grid meters and appliances ask
-  which site they belong to.
-- **Evening retries:** when yesterday's usage still isn't published after the day's last
-  attempt, the integration retries every 3 hours until 22:00 (for example 16:22 and
-  19:22), and stops as soon as the day is imported. Days that import normally get no
-  extra attempts.
-
-## [2.2.0-dev1] - Unreleased
-
-Grid meters, appliances and site identity.
+Beta for 2.2. Everything since 2.1.1. **Take a Home Assistant backup before updating:** the
+entry is migrated to a new layout that earlier versions can't read, so the only way back is
+restoring the backup.
 
 ### Added
 
@@ -50,18 +24,37 @@ Grid meters, appliances and site identity.
   and **Yesterday cost**. Appliances are not reconciled.
 - **Site name:** setup shows the site's details (network, NMI ending, active from) and
   asks for a friendly name, which names the site's device. A name given later on Home
-  Assistant's device page is used as the site's name (for example in a multi-site entry
-  title). Entity IDs don't change with it.
-- The site device's model line shows the network and the NMI's last four digits, for
+  Assistant's device page is used as the site's name. Entity IDs don't change with it.
+  The site device's model line shows the network and the NMI's last four digits, for
   example "Endeavour Energy · NMI …1234".
+- **More than one site:** **Add site** sets up another site of the same account. The
+  account's sites take turns, sharing Amber's rate limit. Grid meters and appliances ask
+  which site they belong to.
+- **Evening retries:** when yesterday's usage still isn't published after the day's last
+  attempt, the integration retries every 3 hours until 22:00 (for example 16:22 and
+  19:22), and stops as soon as the day is imported. Days that import normally get no
+  extra attempts.
 
 ### Changed
 
+- **Account and sites:** the entry is the Amber account (its API key), and each site is
+  a **Site** under it, owning the site's device and entities. Existing installs are
+  migrated automatically on update: the entry keeps its ID, and no entity ID, unique ID or
+  statistic changes. Home Assistant no longer shows "Devices that don't belong to a
+  sub-entry".
+- **Site settings** (import settings, bill estimate, export allowance, refreshing the
+  channels, the YAML-kit migration) belong to the site: the cog asks which site when there
+  are several, and the pencil on a site opens the same menu. **Refresh channels** replaces
+  the entry's Reconfigure.
 - **Own energy sensors** are replaced by grid meters and appliances. Existing ones keep
   working unchanged; a Repairs item converts them, keeping every statistic and the
   reconciliation sensors' entity IDs.
+- **Services** take an optional **site** (the site's device). `config_entry_id` still
+  works for an account with one site.
 - With several sites, a new entry's title shows the site's name instead of the NMI's last
   four digits.
+- **Repairs items** are now kept per site. A Repairs item you ignored in 2.1 is not
+  carried over: if it still applies, it appears again and can be ignored again.
 
 ## [2.1.1] - 2026-10-23
 

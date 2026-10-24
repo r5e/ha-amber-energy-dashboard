@@ -735,6 +735,11 @@ Each milestone ends with a written report and the maintainer's sign-off before t
     the previous bill estimate (section 19), Today so far's offset-corrected value and
     live prices found after setup (section 22).
 21. **2.2.0b3:** the Repairs issue for a waiting solar-aware chain (section 22); beta 3.
+    Then **2.2.0 release preparation:** upgrade paths verified on clones (2.1.1 with
+    own-sensor mappings, 2.0.1 with a migrated YAML kit, 2.2.0b2, fresh installs on
+    2026.9.0 and 2026.10.3), one doc set for new users with the upgrade in its own
+    section, a consolidated CHANGELOG entry, a review pass (strings, diagnostics
+    redaction, log levels) and HACS default-list readiness.
 
 The battery cost basis for solar-aware appliance cost moves to 2.3, after the 2.2 release
 (decided at the M20 review).
@@ -1320,7 +1325,9 @@ Amber site ID or its sub-entry ID); `config_entry_id` alone works while the entr
 site, and either may be left out while only one site is loaded. Repairs issues carry
 `{entry_id, site_id}` and name the site ("<entry title> (<site>)" with several sites); the
 fix flows find their site from it (the entry's first site without `site_id`). Diagnostics
-list each site under `sites`, by sub-entry; site names, NMIs and titles are redacted.
+list each site under `sites`, by sub-entry; site names, NMIs and titles are redacted, and
+so are the names of grid meters and appliances, also in each site's part (`meter` in
+sources, flows and Today so far; 2.2.0).
 
 **Migration** (`sites.async_migrate_to_sites`, from `async_migrate_entry`, 1.x to 2.1,
 before any platform is set up):

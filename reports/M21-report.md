@@ -86,7 +86,9 @@ b3). **Stopped for review.**
     `test_retention_reverify_self_corrects[stable]` and `test_repairs_find_their_site`
     (2).
 - `ruff check`, `ruff format --check` and `uv lock --check` are clean.
-- **CI on GitHub:** see the addendum at the end. It was filled in after the push.
+- **CI on GitHub** (`e905d5a`, the head with this report's first version): Tests
+  (40094493681), hassfest (40094493663) and HACS validation (40094493666) all succeeded.
+  The HACS action ran with `hacs.json`'s new `country` key.
 
 ## 3. Lab verification
 
@@ -430,4 +432,5 @@ About **67**, all with the test key, between 22:37 and 23:31 Sydney time (outsid
 
 ## Addendum: CI
 
-(Filled in after the push.)
+On `e905d5a`: Tests 40094493681, hassfest 40094493663 and HACS validation 40094493666,
+all **success**.

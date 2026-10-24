@@ -5,15 +5,16 @@ The config entry is the Amber account (its API key); each site is a sub-entry (s
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
 from homeassistant.core import (
+    CALLBACK_TYPE,
     Event,
     HomeAssistant,
     ServiceCall,
@@ -30,10 +31,15 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
+    entity_registry as er,
     issue_registry as ir,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_device_registry_updated_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_device_registry_updated_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -140,7 +146,14 @@ from .sites import (
     site_options,
     site_subentries,
 )
-from .sources import SOURCE_KEYS, resolve as resolve_sources, today_meter
+from .sources import (
+    AMBER_ELECTRIC,
+    AMBER_EXPRESS,
+    PRICE_KEYS,
+    SOURCE_KEYS,
+    resolve as resolve_sources,
+    today_meter,
+)
 from .statistics import ChannelConfig, build_specs
 from .storage import AmberStore, async_forget_chain
 from .today import STORE_VERSION as TODAY_STORE_VERSION, Side, TodayTracker, store_key
@@ -151,6 +164,11 @@ ISSUE_SITE_NOT_FOUND = "site_not_found"
 """A configured site the account's key no longer sees: skipped, the others keep running."""
 
 PLATFORMS = [Platform.BUTTON, Platform.SENSOR]
+
+PRICE_RETRY: Final = timedelta(minutes=1)
+PRICE_RETRY_FOR: Final = timedelta(minutes=15)
+"""How often, and for how long after Home Assistant has started, a live price left to
+auto-detection that wasn't found at setup is looked for again (2.2.0-dev4)."""
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -205,6 +223,9 @@ class SiteRuntime:
     last_error: dict[str, str] | None = None
     options: dict[str, Any] = field(default_factory=dict)
     """The settings the manager runs with (a sub-entry update may change only a title)."""
+    add_today_sensors: Callable[[], None] | None = None
+    """Adds Today so far's sensors the site doesn't have yet (set by the sensor platform),
+    for a live price found after setup."""
 
 
 @dataclass(slots=True)
@@ -642,6 +663,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
             today.async_start()
             entry.async_on_unload(today.async_stop)
         _schedule_startup_work(hass, entry, site.manager)
+        _watch_for_prices(hass, entry, site)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
 
@@ -748,6 +770,101 @@ def _today_tracker(
             )
         )
     return TodayTracker(hass, manager.site_key, sides, data[CONF_NAME], manager.publish)
+
+
+def undetected_prices(entry: AmberConfigEntry, site: SiteRuntime) -> set[str]:
+    """The site's price channels left to auto-detection that have no price yet; empty
+    when Today so far couldn't use one anyway (the site has no suitable grid meter)."""
+    sub = entry.subentries[site.subentry_id]
+    if today_meter(entry, sub.data, site.options) is None:
+        return set()
+    types = {c.type for c in site.context.channels}
+    return {
+        channel
+        for channel, key in PRICE_KEYS.items()
+        if channel in types
+        and key not in site.options
+        and channel not in site.manager.sources.prices
+    }
+
+
+@callback
+def _watch_for_prices(hass: HomeAssistant, entry: AmberConfigEntry, site: SiteRuntime) -> None:
+    """Look again for a live price left to auto-detection that wasn't found at setup
+    (2.2.0-dev4): the other integration's entities may be registered after this one is
+    set up, or that integration installed later. Checked once Home Assistant has
+    started, whenever an Amber Express or Amber Electric entity is registered or
+    changed, and every minute for 15 minutes after the start. A price found starts (or
+    extends) Today so far in place, sensors included; no reload."""
+    if not undetected_prices(entry, site):
+        return
+    unsubs: list[CALLBACK_TYPE] = []
+    lock = asyncio.Lock()
+
+    def _stop() -> None:
+        while unsubs:
+            unsubs.pop()()
+
+    async def _async_check(*_: Any) -> None:
+        async with lock:
+            await _async_redetect_prices(hass, entry, site)
+            if not undetected_prices(entry, site):
+                _stop()
+
+    @callback
+    def _registry_updated(event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+        if event.data["action"] == "remove":
+            return
+        entity = er.async_get(hass).async_get(event.data["entity_id"])
+        if entity is not None and entity.platform in (AMBER_EXPRESS, AMBER_ELECTRIC):
+            entry.async_create_background_task(hass, _async_check(), f"{DOMAIN} price detection")
+
+    @callback
+    def _end_retries(_now: datetime) -> None:
+        unsubs.remove(retry_unsub)  # the registry listener stays until found or unloaded
+        retry_unsub()
+
+    async def _started(_hass: HomeAssistant) -> None:
+        nonlocal retry_unsub
+        retry_unsub = async_track_time_interval(hass, _async_check, PRICE_RETRY)
+        unsubs.extend((retry_unsub, async_call_later(hass, PRICE_RETRY_FOR, _end_retries)))
+        await _async_check()
+
+    retry_unsub: CALLBACK_TYPE = lambda: None  # noqa: E731 - replaced once started
+    unsubs.append(hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _registry_updated))
+    unsubs.append(async_at_started(hass, _started))
+    entry.async_on_unload(_stop)
+
+
+async def _async_redetect_prices(
+    hass: HomeAssistant, entry: AmberConfigEntry, site: SiteRuntime
+) -> None:
+    """Resolve the site's live prices again; when they changed, rebuild Today so far
+    (its saved day carries over) and add any sensors it now has."""
+    manager = site.manager
+    sub = entry.subentries[site.subentry_id]
+    channels = {c.type for c in site.context.channels}
+    sources = resolve_sources(hass, site.context.site_id, site.options, channels)
+    if sources.prices == manager.sources.prices:
+        return
+    _LOGGER.info(
+        "Live price found for %s: %s",
+        manager.site_label,
+        ", ".join(f"{c} {p.entity_id}" for c, p in sources.prices.items()),
+    )
+    manager.sources = sources
+    old = manager.today
+    if old is not None:
+        old.async_stop()
+        await old.async_save()
+    manager.today = tracker = _today_tracker(hass, entry, sub, manager)
+    if tracker is not None:
+        await tracker.async_load()
+        tracker.async_start()
+        entry.async_on_unload(tracker.async_stop)
+    assert site.add_today_sensors is not None  # set by the sensor platform
+    site.add_today_sensors()
+    manager.publish()
 
 
 @callback

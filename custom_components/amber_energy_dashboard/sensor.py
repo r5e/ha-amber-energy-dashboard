@@ -16,14 +16,14 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
 )
 from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 from homeassistant.util import slugify
 
-from . import AmberConfigEntry, SiteRuntime
+from . import AmberConfigEntry, SiteRuntime, undetected_prices
 from .const import (
     CHANNEL_FEED_IN,
     CONF_ENTITY_IDS,
@@ -398,7 +398,9 @@ async def _async_add_site_sensors(
             _remove(hass, site, group)
     today_roles = set(manager.today.sides) if manager.today is not None else set()
     descriptions.extend(d for role, d in TODAY_SENSORS.items() if role in today_roles)
-    _remove(hass, site, tuple(d for role, d in TODAY_SENSORS.items() if role not in today_roles))
+    if not undetected_prices(entry, site_runtime):  # else kept for a price found later
+        _remove(hass, site, tuple(d for r, d in TODAY_SENSORS.items() if r not in today_roles))
+    added_today = set(today_roles)
     for spec in manager.ctx.specs:
         if spec.channel is None:
             continue
@@ -446,6 +448,22 @@ async def _async_add_site_sensors(
         ),
         config_subentry_id=site_runtime.subentry_id,
     )
+
+    @callback
+    def _add_today_sensors() -> None:
+        """Today so far's sensors for a live price found after setup (2.2.0-dev4)."""
+        roles = set(manager.today.sides) if manager.today is not None else set()
+        new = [TODAY_SENSORS[role] for role in sorted(roles - added_today)]
+        added_today.update(roles)
+        async_add_entities(
+            [
+                AmberSensor(manager.coordinator, site, d, entity_id=entity_ids.get(d.key))
+                for d in new
+            ],
+            config_subentry_id=site_runtime.subentry_id,
+        )
+
+    site_runtime.add_today_sensors = _add_today_sensors
     by_subentry: dict[str, list[OwnSensor]] = defaultdict(list)
     for sensor in manager.own_sensors:
         by_subentry[sensor.subentry_id].append(sensor)

@@ -844,3 +844,150 @@ async def test_removing_the_site_removes_today_store(
     await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
     assert TODAY_STORE not in hass_storage
+
+
+# --- a live price found after setup (2.2.0-dev4) -----------------------------------------
+
+
+def _unregistered_states(hass: HomeAssistant) -> None:
+    """Remove the price states set without a registry entry (a state takes its entity
+    ID, so a later registration would get another)."""
+    hass.states.async_remove(GENERAL)
+    hass.states.async_remove(FEED_IN)
+
+
+async def test_price_registered_after_setup_starts_today(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Amber Express's entities registered after this integration was set up (the
+    start-up race, or Amber Express installed later): Today so far starts in place, with
+    its sensors, without a reload."""
+    freezer.move_to(NOW)
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    manager = entry.runtime_data.manager
+    assert manager.today is None and hass.states.get(COST) is None
+
+    # Other integrations' entities, and removals, are ignored.
+    _register(hass, "template", "other", "sensor.other_price")
+    er.async_get(hass).async_remove("sensor.other_price")
+    await hass.async_block_till_done()
+    assert manager.today is None
+
+    _unregistered_states(hass)
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        _amber_express(hass)
+        await hass.async_block_till_done()
+    reload.assert_not_called()
+    _price(hass, GENERAL, 0.30)
+    _price(hass, FEED_IN, 0.05)
+    tracker = manager.today
+    assert set(tracker.sides) == {"import", "export"}
+    assert manager.sources.prices["general"].origin == "amber_express"
+    assert hass.states.get(COST) is not None and hass.states.get(CREDIT) is not None
+    registry = er.async_get(hass)
+    assert registry.async_get(COST).device_id == entry.runtime_data.device_id
+
+    await _tick(hass, freezer, tracker, NOW)
+    _energy(hass, IMPORT, 101.0)
+    await _tick(hass, freezer, tracker, NOW + FIVE)
+    assert float(hass.states.get(COST).state) == pytest.approx(0.30)
+
+    # Everything found: no more checks (a later registration changes nothing).
+    _register(hass, "amber_express", f"{SITE_ID}_general_forecast", "sensor.forecast")
+    await hass.async_block_till_done()
+    assert manager.today is tracker
+    await hass.config_entries.async_unload(entry.entry_id)
+    assert tracker._unsubs == []
+
+
+async def test_price_found_by_the_retries(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A price not found at setup is looked for every minute for 15 minutes after Home
+    Assistant has started; after that only a registry change triggers a check."""
+    freezer.move_to(NOW)
+    _amber_express(hass)
+    with patch.object(sources, "detect_prices", return_value={}):
+        entry = await _entry(hass, aioclient_mock, hass_storage)
+        manager = entry.runtime_data.manager
+        assert manager.today is None
+        freezer.tick(timedelta(minutes=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert manager.today is None
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert manager.today is not None and hass.states.get(COST) is not None
+
+    # Past the 15 minutes, the retries have ended.
+    await hass.config_entries.async_unload(entry.entry_id)
+    with patch.object(sources, "detect_prices", return_value={}):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        manager = entry.runtime_data.manager
+        freezer.tick(timedelta(minutes=16))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert manager.today is None
+
+
+async def test_feed_in_price_found_later_extends_today(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A feed-in price found after the general one adds the export side and its sensor;
+    the day so far carries over. A feed-in price alone starts nothing."""
+    freezer.move_to(NOW)
+    _register(hass, "amber_express", f"{SITE_ID}_feed_in_price", FEED_IN)
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    manager = entry.runtime_data.manager
+    assert manager.today is None
+    assert set(manager.sources.prices) == {"feedIn"}
+
+    with patch.object(sources, "detect_prices", return_value={}):
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+    manager = entry.runtime_data.manager
+    hass.states.async_remove(GENERAL)  # a state would take the entity ID
+    _register(hass, "amber_express", f"{SITE_ID}_general_price", GENERAL)
+    await hass.async_block_till_done()
+    assert manager.today is not None  # both found together
+    assert manager.sources.prices["general"].entity_id == GENERAL
+    _price(hass, GENERAL, 0.30)
+
+    # General first (feed-in left undetected), then the feed-in.
+    er.async_get(hass).async_update_entity(FEED_IN, disabled_by=er.RegistryEntryDisabler.USER)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    manager = entry.runtime_data.manager
+    tracker = manager.today
+    assert set(tracker.sides) == {"import"}
+    # Kept in the registry while the feed-in price may still turn up (not provided).
+    assert hass.states.get(CREDIT).state == "unavailable"
+    await _tick(hass, freezer, tracker, NOW)
+    _energy(hass, IMPORT, 101.0)
+    await _tick(hass, freezer, tracker, NOW + FIVE)
+
+    er.async_get(hass).async_update_entity(FEED_IN, disabled_by=None)
+    await hass.async_block_till_done()
+    assert manager.today is not tracker
+    assert set(manager.today.sides) == {"import", "export"}
+    assert tracker._unsubs == []
+    assert manager.today.summary(NOW + FIVE)["import"]["amount"] == pytest.approx(0.30)
+    assert float(hass.states.get(CREDIT).state) == 0.0
+    assert float(hass.states.get(COST).state) == pytest.approx(0.30)

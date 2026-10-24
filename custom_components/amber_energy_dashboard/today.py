@@ -168,6 +168,10 @@ class TodayTracker:
         while self._unsubs:
             self._unsubs.pop()()
 
+    async def async_save(self) -> None:
+        """Save the state now (before another tracker takes over the Store)."""
+        await self._store.async_save(self._data)
+
     async def async_remove(self) -> None:
         """Delete the saved state (the site was removed)."""
         await self._store.async_remove()

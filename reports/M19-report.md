@@ -105,6 +105,8 @@ Pushed; nothing is merged or tagged. **Stopped for review.**
   - 1 warning: the harness's known `ResourceWarning: unclosed database` (an SQLite
     connection found by garbage collection), this time on `test_mapping_flows_ask_which_site`.
 - `ruff check`, `ruff format --check` and `uv lock --check` are clean.
+- **CI on GitHub** (`ef54841`, the branch head with this report's first version): Tests
+  40067627265, hassfest 40067627270 and HACS validation 40067627271 all succeeded.
 - **New tests** (`tests/test_sources.py`, 21):
   - **Units and detection:**
     - price units, and price states (unknown, unavailable, not a number, wrong unit);

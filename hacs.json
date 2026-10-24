@@ -1,5 +1,6 @@
 {
   "name": "Amber Energy Dashboard (unofficial)",
   "homeassistant": "2026.9.0",
+  "country": "AU",
   "render_readme": true
 }

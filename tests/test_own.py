@@ -684,6 +684,7 @@ async def test_subentry_flow_validation_and_removal(
         "entity_id": SENSOR,
         "channel": "E1",
         "name": "House meter",
+        "solar_aware": False,
     }
     await hass.async_block_till_done()
     assert entry.runtime_data.manager.own_sensors[0].name == "House meter"

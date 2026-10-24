@@ -209,6 +209,30 @@ def refunds(
     return by_hour, periods
 
 
+def refund_fractions(
+    settings: AllowanceSettings, days: Mapping[str, Mapping[str, Any]]
+) -> dict[int, float]:
+    """For each hour of each day with aggregates (UTC timestamp), the share of a further
+    kWh exported in the penalty window that would still have been within the allowance:
+    1 while the period's window export so far, that hour's included, is within it; the
+    part within it in the hour that passes it; 0 after (2.2.0-dev4, for the solar-aware
+    feed-in value). Days without aggregates count nothing, as in ``refunds``."""
+    fractions: dict[int, float] = {}
+    used: dict[str, float] = {}
+    for key in sorted(days):
+        day = date.fromisoformat(key)
+        first, last = settings.period_for(day)
+        allowance = settings.allowance_kwh_per_day * ((last - first).days + 1)
+        day_start = nem_day_start(day)
+        for hour, kwh in enumerate(days[key]["window_kwh_hours"]):
+            before = used.get(first.isoformat(), 0.0)
+            remaining = max(allowance - before, 0.0)
+            used[first.isoformat()] = before + kwh
+            share = 1.0 if kwh <= remaining else remaining / kwh
+            fractions[round((day_start + hour * HOUR).timestamp())] = share if remaining else 0.0
+    return fractions
+
+
 def period_summary(
     settings: AllowanceSettings,
     days: Mapping[str, Mapping[str, Any]],

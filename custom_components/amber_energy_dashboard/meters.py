@@ -27,6 +27,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from .const import (
     CHANNEL_FEED_IN,
+    CHANNEL_GENERAL,
     CONF_CHANNEL,
     CONF_ENTITY_IDS,
     CONF_EXPORT_CHANNEL,
@@ -35,9 +36,11 @@ from .const import (
     CONF_IMPORT_SENSOR,
     CONF_SENSOR,
     CONF_SITE_ID,
+    CONF_SOLAR_AWARE,
     DOMAIN,
     ROLE_EXPORT,
     ROLE_IMPORT,
+    ROLE_SOLAR_AWARE,
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
     SUBENTRY_OWN_SENSOR,
@@ -45,7 +48,7 @@ from .const import (
 from .devices import MANUFACTURER
 from .manager import AmberManager, OwnSensor
 from .sites import mapping_site_id
-from .statistics import CHANNEL_LABELS, ChannelConfig, own_cost_spec
+from .statistics import CHANNEL_LABELS, ChannelConfig, own_cost_spec, solar_aware_spec
 from .storage import async_rename_chains
 
 MAPPING_TYPES = (SUBENTRY_OWN_SENSOR, SUBENTRY_GRID_METER, SUBENTRY_APPLIANCE)
@@ -84,7 +87,8 @@ def _sides(subentry: ConfigSubentry) -> list[tuple[str, str, str | None, str | N
 def own_sensors_from_entry(
     entry: ConfigEntry, channels: tuple[ChannelConfig, ...], site: str
 ) -> list[OwnSensor]:
-    """Every priced sensor of the site's mappings whose channel still exists."""
+    """Every priced sensor of the site's mappings whose channel still exists, and the
+    solar-aware cost of each appliance on a general channel that has it on (2.2.0-dev4)."""
     by_ident = {c.identifier: c for c in channels}
     sensors = []
     for subentry in _site_mappings(entry, site):
@@ -92,17 +96,34 @@ def own_sensors_from_entry(
             channel = by_ident.get(ident)
             if channel is None:
                 continue
+            name = subentry.data.get(CONF_NAME, entity_id)
             sensors.append(
                 OwnSensor(
                     subentry.subentry_id,
                     entity_id,
                     channel,
                     own_cost_spec(site, entity_id, channel, label),
-                    subentry.data.get(CONF_NAME, entity_id),
+                    name,
                     kind=subentry.subentry_type,
                     role=role,
                 )
             )
+            if (
+                subentry.subentry_type == SUBENTRY_APPLIANCE
+                and subentry.data.get(CONF_SOLAR_AWARE)
+                and channel.type == CHANNEL_GENERAL
+            ):
+                sensors.append(
+                    OwnSensor(
+                        subentry.subentry_id,
+                        entity_id,
+                        channel,
+                        solar_aware_spec(site, entity_id, channel, name),
+                        name,
+                        kind=SUBENTRY_APPLIANCE,
+                        role=ROLE_SOLAR_AWARE,
+                    )
+                )
     return sensors
 
 

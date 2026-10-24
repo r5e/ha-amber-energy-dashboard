@@ -38,7 +38,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from . import calibration, chains, importer, today as today_mod
+from . import calibration, chains, importer, solar, today as today_mod
 from .api import (
     AmberAuthError,
     AmberBudgetExhaustedError,
@@ -68,6 +68,7 @@ from .const import (
     RETENTION_REVERIFY_BRACKET_DAYS,
     ROLE_EXPORT,
     ROLE_IMPORT,
+    ROLE_SOLAR_AWARE,
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
     SUBENTRY_OWN_SENSOR,
@@ -79,6 +80,7 @@ from .export import (
     day_aggregates as export_day_aggregates,
     day_refunds as export_day_refunds,
     period_summary as export_period_summary,
+    refund_fractions as export_refund_fractions,
     refunds as export_refunds,
 )
 from .importer import (
@@ -295,6 +297,8 @@ class AmberManager:
         """The site's live prices, solar and battery sensors (section 22), set at setup."""
         self.today: today_mod.TodayTracker | None = None
         """Today so far (section 22), when a grid meter and a live price are set up."""
+        self.flows: solar.SiteFlows | None = None
+        """The site's flows for solar-aware appliance cost (section 22), set at setup."""
 
     @property
     def _ids(self) -> list[str]:
@@ -558,9 +562,9 @@ class AmberManager:
             outcome = await self._async_walk(recovery, imported, info)
         else:
             outcome = {"status": STATUS_CAUGHT_UP, "reason": None}
-        chain_results = await self._async_secondary(info)
-        if self.allowance_active:
+        if self.allowance_active:  # before the chains: the solar-aware feed-in value
             info["export"] = await self._async_export_days()
+        chain_results = await self._async_secondary(info)
         if derived := await self._async_sync_derived_locked():
             info["derived"] = derived
         if chain_results:
@@ -1718,6 +1722,13 @@ class AmberManager:
                 "status": STATUS_WAITING,
                 "reason": "the sensor has no statistics yet",
             }
+        if chain.sensor is not None and chain.sensor.role == ROLE_SOLAR_AWARE and not self.flows:
+            return {
+                **report,
+                "status": STATUS_WAITING,
+                "reason": "solar-aware cost needs the site's solar sensor and a grid meter "
+                "with import and export",
+            }
         for day in _days(start, yesterday):
             records = await self._async_records_for(day, yesterday)
             if not records:
@@ -1814,6 +1825,13 @@ class AmberManager:
             )
             return STATUS_SKIPPED_SENSOR
         first_day = state.marker is None and state.last_written is None
+        if sensor.role == ROLE_SOLAR_AWARE:
+            result = await self._async_solar_write(
+                chain, day, channel_records, by_channel, tail=tail, first_day=first_day
+            )
+            if result in ("written", "lower_precision"):
+                await self._async_track_revision(day, records, estimated)
+            return result
         five, hourly = await chains.async_sensor_energy(
             self.hass, sensor.entity_id, day, first_day=first_day
         )
@@ -1842,6 +1860,86 @@ class AmberManager:
         )
         await self._async_track_revision(day, records, estimated)
         return "lower_precision" if priced.lower_precision else "written"
+
+    async def _async_solar_write(
+        self,
+        chain: _Chain,
+        day: date,
+        records: list[UsageRecord],
+        by_channel: dict[str, list[UsageRecord]],
+        *,
+        tail: bool,
+        first_day: bool,
+    ) -> str:
+        """Write one day of an appliance's solar-aware cost (section 22). Returns
+        ``written``, ``lower_precision`` or the skip status it recorded."""
+        state, sensor, flows = chain.state, chain.sensor, self.flows
+        assert sensor is not None and flows is not None
+        feed_in = next((c for c in self.ctx.channels if c.type == CHANNEL_FEED_IN), None)
+        feed_records = by_channel.get(feed_in.identifier) if feed_in is not None else None
+        if not feed_records:
+            await state.async_mark_skipped(day, day, STATUS_SKIPPED_SENSOR, "no feed-in records")
+            return STATUS_SKIPPED_SENSOR
+        extra, adjusted = self._allowance_extra(day)
+        series = await solar.async_series(
+            self.hass, flows, sensor.entity_id, day, first_day=first_day
+        )
+        names = {
+            solar.APPLIANCE: sensor.entity_id,
+            solar.IMPORT: flows.import_entity,
+            solar.EXPORT: flows.export_entity,
+            solar.SOLAR: flows.solar_energy or flows.solar_power or "",
+            solar.CHARGE: flows.battery_charge or "",
+            solar.DISCHARGE: flows.battery_discharge or "",
+        }
+        try:
+            priced = solar.solar_aware_day(
+                records,
+                feed_records,
+                day,
+                series,
+                allow_fallback=self.own_fallback,
+                extra_feed_in=extra,
+                names=names,
+            )
+        except chains.SensorDataUnavailable as err:
+            await state.async_mark_skipped(day, day, STATUS_SKIPPED_SENSOR, str(err))
+            return STATUS_SKIPPED_SENSOR
+        except chains.PreciseDataUnavailable as err:
+            await state.async_mark_skipped(day, day, STATUS_SKIPPED_PRECISION, str(err))
+            return STATUS_SKIPPED_PRECISION
+        await self._async_write_sum_chain(
+            chain,
+            day,
+            sensor.spec,
+            priced.amounts,
+            tail=tail,
+            details={
+                "energy_kwh": round(priced.energy_kwh, 6),
+                "solar_kwh": round(priced.solar_kwh, 6),
+                "battery_kwh": round(priced.battery_kwh, 6),
+                "grid_kwh": round(priced.grid_kwh, 6),
+                "lower_precision": priced.lower_precision,
+                "allowance_adjusted": adjusted,
+            },
+        )
+        return "lower_precision" if priced.lower_precision else "written"
+
+    def _allowance_extra(self, day: date) -> tuple[Callable[[UsageRecord], float], bool | None]:
+        """The export allowance's extra feed-in value for the solar-aware cost, and
+        whether the day was adjusted (None without the allowance; False when the day has
+        no measured export aggregates yet)."""
+        if not self.allowance_active:
+            return (lambda _: 0.0), None
+        assert self.allowance is not None
+        record = self.store.export_days.get(day.isoformat())
+        if record is None:
+            return (lambda _: 0.0), False
+        fractions = export_refund_fractions(self.allowance, self.store.export_days)
+        extra = solar.allowance_extra(
+            self.allowance.penalty_period, record.get("penalty_rate"), fractions
+        )
+        return extra, True
 
     async def _async_write_sum_chain(
         self,
@@ -2182,23 +2280,29 @@ class AmberManager:
         )
 
     def _appliances(self) -> dict[str, dict[str, Any] | None]:
-        """Each appliance's energy and cost for yesterday (NEM day), once it is priced."""
+        """Each appliance's energy and cost for yesterday (NEM day), once it is priced,
+        and its solar-aware cost with the split by source (by chain key)."""
         yesterday = nem_today() - timedelta(days=1)
         result: dict[str, dict[str, Any] | None] = {}
         for sensor in self.own_sensors:
             if sensor.kind != SUBENTRY_APPLIANCE:
                 continue
             record = chain_state(self.store, sensor.key).day(yesterday) or {}
-            result[sensor.key] = (
-                {
-                    "date": yesterday.isoformat(),
-                    "energy_kwh": record.get("energy_kwh"),
-                    "cost": record.get("amount"),
-                    "lower_precision": record.get("lower_precision", False),
-                }
-                if record.get("status") == STATUS_IMPORTED
-                else None
-            )
+            if record.get("status") != STATUS_IMPORTED:
+                result[sensor.key] = None
+                continue
+            energy = record.get("energy_kwh")
+            info = {
+                "date": yesterday.isoformat(),
+                "energy_kwh": energy,
+                "cost": record.get("amount"),
+                "lower_precision": record.get("lower_precision", False),
+            }
+            if sensor.role == ROLE_SOLAR_AWARE:
+                info |= {k: record.get(k) for k in ("solar_kwh", "battery_kwh", "grid_kwh")}
+                info["solar_share"] = round(record["solar_kwh"] / energy, 4) if energy else None
+                info["allowance_adjusted"] = record.get("allowance_adjusted")
+            result[sensor.key] = info
         return result
 
     def _reconciliation(self) -> dict[str, dict[str, Any] | None]:

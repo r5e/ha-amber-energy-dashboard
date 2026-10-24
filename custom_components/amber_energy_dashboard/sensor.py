@@ -30,6 +30,7 @@ from .const import (
     DOMAIN,
     ROLE_EXPORT,
     ROLE_IMPORT,
+    ROLE_SOLAR_AWARE,
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
 )
@@ -287,6 +288,18 @@ def _remove(hass: HomeAssistant, site: str, descriptions: tuple[Any, ...]) -> No
             registry.async_remove(entity_id)
 
 
+def _remove_solar_aware_off(
+    hass: HomeAssistant, site: str, subentry_id: str, sensors: list[OwnSensor]
+) -> None:
+    """Remove an appliance's solar-aware cost sensor once that cost is turned off."""
+    if any(s.role == ROLE_SOLAR_AWARE for s in sensors):
+        return
+    registry = er.async_get(hass)
+    unique_id = f"{site}_yesterday_solar_aware_cost_{subentry_id}"
+    if entity_id := registry.async_get_entity_id("sensor", DOMAIN, unique_id):
+        registry.async_remove(entity_id)
+
+
 def _yesterday_value(statistic_id: str) -> Callable[[dict[str, Any]], float | None]:
     def value(data: dict[str, Any]) -> float | None:
         totals = data.get("yesterday_totals")
@@ -339,6 +352,18 @@ def _mapping_attrs(
 def _mapping_descriptions(sensor: OwnSensor) -> list[AmberSensorDescription]:
     """A mapping's sensors: reconciliation (grid meters and 2.1 mappings, section 11), or
     yesterday's energy and cost (appliances, section 21)."""
+    if sensor.role == ROLE_SOLAR_AWARE:
+        return [
+            AmberSensorDescription(
+                key=f"yesterday_solar_aware_cost_{sensor.subentry_id}",
+                translation_key="appliance_yesterday_solar_aware_cost",
+                device_class=SensorDeviceClass.MONETARY,
+                native_unit_of_measurement=CURRENCY,
+                suggested_display_precision=2,
+                value_fn=_mapping_value("appliances", sensor.key, "cost"),
+                attrs_fn=_mapping_attrs("appliances", sensor.key, "cost"),
+            )
+        ]
     if sensor.kind == SUBENTRY_APPLIANCE:
         feed_in = sensor.channel.type == CHANNEL_FEED_IN
         return [
@@ -502,6 +527,8 @@ async def _async_add_site_sensors(
         by_subentry[sensor.subentry_id].append(sensor)
     for subentry_id, sensors in by_subentry.items():
         descriptions = [d for sensor in sensors for d in _mapping_descriptions(sensor)]
+        if sensors[0].kind == SUBENTRY_APPLIANCE:
+            _remove_solar_aware_off(hass, site, subentry_id, sensors)
         if {s.role for s in sensors} == {ROLE_IMPORT, ROLE_EXPORT}:
             descriptions.append(_calibration_description(subentry_id))
         # A converted mapping's entities ask for the entity IDs of the ones they replace.

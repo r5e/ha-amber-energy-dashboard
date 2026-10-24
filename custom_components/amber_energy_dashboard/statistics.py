@@ -212,6 +212,21 @@ def own_cost_spec(
     )
 
 
+def solar_aware_spec(
+    site_id: str, entity_id: str, channel: ChannelConfig, label: str
+) -> StatisticSpec:
+    """An appliance's solar-aware cost statistic (2.2.0-dev4, section 22), next to its
+    normal cost statistic."""
+    return StatisticSpec(
+        statistic_id(site_id, f"own_{sensor_slug(entity_id)}_cost_solar_aware"),
+        Metric.COST,
+        channel.identifier,
+        f"{label} cost (solar-aware)",
+        CURRENCY,
+        None,
+    )
+
+
 def fixed_cost_spec(site_id: str, channels: Iterable[ChannelConfig]) -> StatisticSpec | None:
     """The optional "import cost including fixed charges" statistic (section 19): the
     import cost (general and controlled load) plus the fixed charges. Named after the

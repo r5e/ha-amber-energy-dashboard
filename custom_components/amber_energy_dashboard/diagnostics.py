@@ -63,5 +63,6 @@ def _site(site: SiteRuntime) -> dict[str, Any]:
         "display_status": manager.display_status,
         "export_measurement": manager.last_export_measurement,
         "sources": manager.sources.as_dict(),
+        "flows": manager.flows.as_dict() if manager.flows is not None else None,
         "today": manager.today_snapshot(),
     }

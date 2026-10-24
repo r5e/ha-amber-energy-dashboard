@@ -81,6 +81,7 @@ from .const import (
     CONF_SITE,
     CONF_SITE_ID,
     CONF_SITE_NAME,
+    CONF_SOLAR_AWARE,
     CONF_USAGE_MODE,
     DEFAULT_PATIENCE_DAYS,
     DEFAULT_REVISION_DAYS,
@@ -118,7 +119,8 @@ from .migration import (
     format_result,
 )
 from .schedule import format_times, parse_times
-from .sites import site_key, site_options, site_subentries, site_title
+from .sites import mapping_site_id, site_key, site_options, site_subentries, site_title
+from .solar import solar_aware_problem
 from .sources import (
     CONF_BATTERY_CHARGE,
     CONF_BATTERY_DISCHARGE,
@@ -1429,9 +1431,12 @@ class ApplianceSubentryFlow(_MappingFlow):
             errors = _check_sensors(self.hass, entry, {CONF_SENSOR: entity_id})
             if not name:
                 errors[CONF_NAME] = "name_required"
+            ident = user_input.get(CONF_CHANNEL) or imports[0].identifier
+            channel = next(c for c in imports if c.identifier == ident)
+            solar_aware = bool(user_input.get(CONF_SOLAR_AWARE))
+            if solar_aware and (problem := solar_aware_problem(entry, site, channel.type)):
+                errors[CONF_SOLAR_AWARE] = problem
             if not errors:
-                ident = user_input.get(CONF_CHANNEL) or imports[0].identifier
-                channel = next(c for c in imports if c.identifier == ident)
                 return self.async_create_entry(
                     title=appliance_title(name, channel),
                     data={
@@ -1439,6 +1444,7 @@ class ApplianceSubentryFlow(_MappingFlow):
                         CONF_NAME: name,
                         CONF_SENSOR: entity_id,
                         CONF_CHANNEL: ident,
+                        CONF_SOLAR_AWARE: solar_aware,
                     },
                     unique_id=appliance_unique_id(entity_id),
                 )
@@ -1450,8 +1456,45 @@ class ApplianceSubentryFlow(_MappingFlow):
             fields[vol.Required(CONF_CHANNEL, default=imports[0].identifier)] = _channel_selector(
                 imports
             )
+        fields[vol.Optional(CONF_SOLAR_AWARE, default=False)] = BooleanSelector()
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(vol.Schema(fields), user_input or {}),
             errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Turn the appliance's solar-aware cost on or off (2.2.0-dev4)."""
+        entry, subentry = self._get_entry(), self._get_reconfigure_subentry()
+        site_id = mapping_site_id(entry, subentry.data)
+        site = next((s for s in site_subentries(entry) if s.data[CONF_SITE_ID] == site_id), None)
+        channel = next(
+            (
+                c
+                for c in (site.data[CONF_CHANNELS] if site is not None else [])
+                if c["identifier"] == subentry.data[CONF_CHANNEL]
+            ),
+            None,
+        )
+        if site is None or channel is None:
+            return self.async_abort(reason="appliance_site_missing")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            solar_aware = bool(user_input.get(CONF_SOLAR_AWARE))
+            if solar_aware and (problem := solar_aware_problem(entry, site.data, channel["type"])):
+                errors[CONF_SOLAR_AWARE] = problem
+            else:
+                return self.async_update_and_abort(
+                    entry, subentry, data_updates={CONF_SOLAR_AWARE: solar_aware}
+                )
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema({vol.Optional(CONF_SOLAR_AWARE): BooleanSelector()}),
+                {CONF_SOLAR_AWARE: bool(subentry.data.get(CONF_SOLAR_AWARE))},
+            ),
+            errors=errors,
+            description_placeholders={"name": subentry.data.get(CONF_NAME, "")},
         )

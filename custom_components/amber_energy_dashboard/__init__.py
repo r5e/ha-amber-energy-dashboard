@@ -146,6 +146,7 @@ from .sites import (
     site_options,
     site_subentries,
 )
+from .solar import site_flows
 from .sources import (
     AMBER_ELECTRIC,
     AMBER_EXPRESS,
@@ -735,6 +736,7 @@ async def _async_setup_site(
     manager.after_scheduled = _check_all
     manager.after_run = _check_energy
     manager.sources = resolve_sources(hass, site_id, options, {c.type for c in channels})
+    manager.flows = site_flows(entry, sub.data, options, manager.sources)
     manager.today = _today_tracker(hass, entry, sub, manager)
     if manager.today is not None:
         await manager.today.async_load()
@@ -975,9 +977,9 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
         sub, manager = subs[sub_id], site.manager
         manager.site_title = sub.title if len(subs) > 1 else None  # "Rename site"
         options = site_options(sub)
-        current = {s.subentry_id for s in manager.own_sensors}
+        current = {(s.subentry_id, s.role) for s in manager.own_sensors}
         wanted = {
-            s.subentry_id
+            (s.subentry_id, s.role)
             for s in own_sensors_from_entry(entry, manager.ctx.channels, manager.ctx.site_id)
         }
         channels = tuple(ChannelConfig.from_dict(c) for c in sub.data[CONF_CHANNELS])

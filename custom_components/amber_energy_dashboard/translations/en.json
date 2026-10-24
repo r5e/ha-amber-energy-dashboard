@@ -365,6 +365,9 @@
       "appliance_yesterday_cost": {
         "name": "Yesterday cost"
       },
+      "appliance_yesterday_solar_aware_cost": {
+        "name": "Yesterday solar-aware cost"
+      },
       "appliance_yesterday_compensation": {
         "name": "Yesterday compensation"
       },
@@ -896,12 +899,14 @@
           "data": {
             "name": "Name",
             "entity_id": "Energy sensor",
-            "channel": "Price on"
+            "channel": "Price on",
+            "solar_aware": "Solar-aware cost"
           },
           "data_description": {
             "name": "For example \"Pool heat pump\". It names the appliance's device and sensors.",
             "entity_id": "Cumulative energy used by the appliance (kWh, always rising).",
-            "channel": "The Amber channel the appliance is billed on: general, or controlled load if it is on that circuit (for example a hot water system)."
+            "channel": "The Amber channel the appliance is billed on: general, or controlled load if it is on that circuit (for example a hot water system).",
+            "solar_aware": "Also record \"<name> cost (solar-aware)\": the part of the appliance's energy covered by the site's solar is valued at the feed-in price (the income given up), the rest at the import price. Needs a solar sensor in the site's Sources and a grid meter with import and export. General channel only."
           }
         },
         "site": {
@@ -910,6 +915,16 @@
           "data": {
             "site": "Site"
           }
+        },
+        "reconfigure": {
+          "title": "Solar-aware cost",
+          "description": "{name}: also record a solar-aware cost statistic and a \"Yesterday solar-aware cost\" sensor. The part of the appliance's energy covered by the site's solar is valued at the feed-in price (the income given up), and the rest at the import price. The share is the house's for each 5-minute interval, from the grid meter and the solar sensor. The normal cost statistic doesn't change.\n\nTurning it on starts the statistic from the earliest day the sensors' statistics allow (Amber's usage retention at most).",
+          "data": {
+            "solar_aware": "Solar-aware cost"
+          },
+          "data_description": {
+            "solar_aware": "Needs a solar sensor in the site's Sources and a grid meter with import and export. General channel only."
+          }
         }
       },
       "error": {
@@ -917,11 +932,16 @@
         "not_cumulative_energy": "Choose a sensor with device class energy and state class total or total_increasing.",
         "sensor_in_use": "This sensor is already used by another grid meter, appliance or own sensor. A sensor can be priced only once.",
         "same_sensor": "Choose different sensors for import and export.",
-        "name_required": "Enter a name."
+        "name_required": "Enter a name.",
+        "solar_aware_channel": "Solar-aware cost is for appliances on the general channel only: a controlled load is metered separately.",
+        "solar_aware_no_solar": "Add the site's solar sensor first (site settings, Sources).",
+        "solar_aware_no_grid_meter": "Add a grid meter with import and export first: the solar share comes from the site's grid import and export."
       },
       "abort": {
         "no_import_channel": "This site has no general or controlled load channel to price an appliance on.",
-        "no_sites": "This account has no sites. Add one with Add site first."
+        "no_sites": "This account has no sites. Add one with Add site first.",
+        "appliance_site_missing": "The appliance's site or channel no longer exists.",
+        "reconfigure_successful": "Saved. The integration reloads."
       }
     },
     "own_sensor": {

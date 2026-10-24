@@ -78,6 +78,8 @@ costs a few API calls.
 | `amber_energy_dashboard:<site>_net_cost` | AUD | All channels together, in Amber's sign: what you owe |
 | `amber_energy_dashboard:<site>_<ch>_cost_incl_fixed` | AUD | Optional (see [Bill estimate](#bill-estimate-optional)): the import cost plus your daily fixed charges |
 | `amber_energy_dashboard:<site>_<ch>_compensation_adjusted` | AUD | With the [export allowance](#export-allowance-two-way-network-tariffs): feed-in earnings with the export charge refunded within the free allowance, as on the bill |
+| `amber_energy_dashboard:<site>_own_<sensor>_cost` | AUD | Each [grid meter or appliance](#grid-meters-and-appliances-own-sensor-cost) sensor priced at Amber's billed rate |
+| `amber_energy_dashboard:<site>_own_<sensor>_cost_solar_aware` | AUD | Optional, per appliance: its [solar-aware cost](#solar-aware-appliance-cost) |
 
 **Energy dashboard** ([guide, section 6](docs/INSTALL.md#6-add-it-to-the-energy-dashboard)):
 if the Energy dashboard has no grid connection yet, setup offers **Add to the Energy
@@ -105,7 +107,9 @@ approximate figures this integration exists to replace.
 - import status, last imported date, days behind, and next scheduled run;
 - yesterday's energy, cost and compensation per channel;
 - with a grid meter and a live price: **Today's cost so far (estimated)** and **Today's
-  feed-in so far (estimated)** (see [Today so far](#today-so-far-estimated)).
+  feed-in so far (estimated)** (see [Today so far](#today-so-far-estimated));
+- with the bill estimate: **Bill to date**, **Projected bill**, **Days into billing
+  cycle**, **Average cost per day** and **Previous bill estimate**.
 
 **Buttons** on the device: **Run now** (the same as `run_now`) and, under Diagnostic,
 **Re-check retention** (the same as `probe_retention`).
@@ -217,12 +221,32 @@ billed rates (the cost arrives a day later, when Amber publishes it).
   offset is measured from them, so a sensor already corrected by it would feed the
   correction back.
 
-**Appliance sensors.** **Yesterday energy** and **Yesterday cost**. Appliances are not
-reconciled: one circuit compared with the whole house's billed total means nothing.
+**Appliance sensors.** **Yesterday energy** and **Yesterday cost** (and **Yesterday
+solar-aware cost** with that option). Appliances are not reconciled: one circuit compared
+with the whole house's billed total means nothing.
 
 **Own energy sensors from version 2.1** keep working unchanged (same statistics, entity
 IDs and reconciliation). A Repairs item offers to convert them: an import and a feed-in
 mapping become one grid meter, every other one an appliance, keeping every statistic.
+
+## Solar-aware appliance cost
+
+With solar panels, the energy an appliance uses during the day partly comes from your
+own solar, which costs nothing to import but would otherwise have been exported. Turn on
+**Solar-aware cost** for an appliance (when adding it, or with **Reconfigure** on an
+existing one) to record a second statistic, **"<name> cost (solar-aware)"**, and a
+**Yesterday solar-aware cost** sensor:
+- for each 5-minute interval, the share of the house's load covered by solar (from your
+  grid meter's import and export and your solar sensor) is the appliance's solar share;
+- that part is valued at the interval's **feed-in price** (the income given up by not
+  exporting it; with the export allowance, the feed-in price with the network's charge
+  refunded while within the allowance), the rest at the import price, as usual.
+
+It needs a solar sensor in the site's **Sources**, a grid meter with import and export,
+and an appliance on the general channel. The normal cost statistic doesn't change. With
+battery sensors in Sources, battery discharge is reported as its own share
+(`battery_kwh`); for now it is valued at the import price. The method and its limits are
+in the [guide](docs/INSTALL.md#solar-aware-cost).
 
 ## Today so far (estimated)
 
@@ -230,7 +254,9 @@ A site's settings have a **Sources** step: a live price for the general and feed
 channels (found automatically from [Amber Express](https://github.com/hass-energy/amber-express)
 or Home Assistant's Amber Electric integration for the same site; you can choose another,
 or none), and optional solar (power and/or energy) and battery (charge and discharge)
-sensors, stored for a coming feature.
+sensors, used by [solar-aware appliance cost](#solar-aware-appliance-cost). A price
+integration set up later (or whose sensors are registered after this one starts) is
+picked up by itself within a few minutes.
 
 With a grid meter and a general live price, the site gets **Today's cost so far
 (estimated)** and, with an export and a feed-in price, **Today's feed-in so far
@@ -238,7 +264,9 @@ With a grid meter and a general live price, the site gets **Today's cost so far
 the live price. They are display estimates, never written into statistics. Once Amber
 publishes a day, the attribute `yesterday_estimate_vs_billed` shows that day's estimate
 against the bill, and the bill estimate's **Bill to date** gains
-`including_today_estimated`. See the [guide](docs/INSTALL.md#today-so-far).
+`including_today_estimated`. The attribute `offset_corrected` shows the estimate with the
+grid meter's calibration offset applied, for comparison. See the
+[guide](docs/INSTALL.md#today-so-far).
 
 ## Bill estimate (optional)
 
@@ -248,7 +276,7 @@ the period your bill covers) and, from your Amber bill's charges summary, exclud
 metering), the **Amber subscription** per day (0 if it is currently free), any **other
 daily charges**, and the **GST rate** (10 %). The installation guide shows
 [where to find these on your bill](docs/INSTALL.md#finding-these-on-your-bill).
-Four sensors then show, for the current cycle:
+Four sensors then show, for the current cycle (and a fifth the previous cycle):
 
 | Sensor | Meaning |
 |---|---|
@@ -256,6 +284,7 @@ Four sensors then show, for the current cycle:
 | Projected bill | The average daily usage so far × the days in the cycle, plus the fixed charges for the whole cycle |
 | Days into billing cycle | Today's day of the cycle |
 | Average cost per day | Bill to date ÷ the days it covers |
+| Previous bill estimate | The last cycle before the current one: its total, with each line, its dates and `complete` (every day of it imported) as attributes |
 
 - **It runs a day behind:** only complete imported days count, and the attributes say
   which day the data runs to (`data_through`). If you installed the integration part-way
@@ -278,6 +307,9 @@ Four sensors then show, for the current cycle:
 
 Export credits use Amber's billed compensation, or, with the export allowance below, the
 compensation with the allowance applied.
+
+An example [bill card](docs/cards/README.md) (button-card based) shows the current cycle
+and the previous bill.
 
 ## Export allowance (two-way network tariffs)
 

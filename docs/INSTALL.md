@@ -272,9 +272,12 @@ Enter your **billing day**, the **daily supply charge**, the **Amber subscriptio
 day, any **other daily charges** (all excluding GST), and the **GST rate** (10 %). See
 [Finding these on your bill](#finding-these-on-your-bill) below. The device then shows
 **Bill to date**, **Projected bill**, **Days into billing cycle** and **Average cost per
-day** for the current cycle. The estimate runs a day behind, because only complete
+day** for the current cycle, and **Previous bill estimate** for the cycle before it (its
+total, with each line, its dates and `complete` once every day of it is imported: normally
+the morning after it ends). The estimate runs a day behind, because only complete
 imported days count, and it leaves out one-off charges such as card fees. Leave the
-billing day empty to turn it off.
+billing day empty to turn it off. An example [bill card](cards/README.md) shows both
+cycles on a dashboard.
 
 **Cost including fixed charges** (a checkbox in the same step) adds a statistic with your
 import cost plus the fixed charges, for an Energy dashboard whose totals match the bill (see
@@ -380,6 +383,9 @@ An **appliance** is any single energy sensor. Examples:
 Click **Add appliance** (with several sites, choose the site first) and fill in a **Name** (for example **Pool heat pump**), the
 **Energy sensor**, and, if your site has a controlled load, the channel to price it on
 (general by default; controlled load for, say, a hot water system on that circuit).
+Tick **Solar-aware cost** for a second cost that values the part covered by your solar
+at the feed-in price ([below](#solar-aware-cost)); on an existing appliance, use its
+**Reconfigure** (the pencil on the appliance's row).
 
 <!-- TODO(screenshot): the "Add an appliance" form. The maintainer to supply as
      images/add-appliance.png. -->
@@ -391,6 +397,65 @@ billed totals: one circuit is only part of what the house draws, so the differen
 mean nothing.
 
 A sensor can be priced by one grid meter or appliance only.
+
+### Solar-aware cost
+
+An appliance's normal cost prices all its energy at the import price Amber billed. When
+the sun is shining, part of that energy came from your own solar: it cost nothing to
+import, but you gave up the feed-in price you would have earned by exporting it. With
+**Solar-aware cost** on, the appliance also gets:
+
+- a statistic **"<name> cost (solar-aware)"**
+  (`amber_energy_dashboard:<site>_own_<sensor>_cost_solar_aware`), which you can add to an
+  energy or statistics graph next to the normal cost;
+- a **Yesterday solar-aware cost** sensor, with yesterday's split as attributes:
+  `solar_kwh`, `battery_kwh`, `grid_kwh`, `solar_share`, and `allowance_adjusted` (with
+  the export allowance: whether that day's feed-in value includes the refund).
+
+<!-- TODO(screenshot): an appliance's device with Yesterday cost and Yesterday solar-aware
+     cost. The maintainer to supply as images/solar-aware-cost.png. -->
+*(Screenshot to follow.)*
+
+**It needs:**
+- a **solar sensor** in the site's [Sources](#sources): the solar energy produced (best),
+  or the solar power (its statistics are used);
+- a **grid meter with import and export** (the one Today so far uses, if it has an
+  export);
+- an appliance on the **general** channel (a controlled load is metered separately).
+
+**How it is worked out.** For each 5-minute interval, from the site's net flows (grid
+import, grid export and solar, plus the battery's charge and discharge if you set those
+sensors):
+
+- the house's load = import + solar + battery discharge − export − battery charge;
+- the load is covered by solar first, then the battery, then the grid;
+- the appliance's energy is split in the same proportions as the house's load;
+- the solar part is valued at the interval's **feed-in price** (from Amber's billed
+  data), the grid part at the **import price**, as for the normal cost.
+
+With the [export allowance](#export-allowance-optional) on, the feed-in price in the
+penalty window (for example 10:00 to 14:00) includes the network's export charge refunded
+while the period's exports are within the allowance: what an extra exported kilowatt-hour
+would really have earned.
+
+**Limits:**
+- Flows inside each 5-minute interval are netted. The share is the house's average for
+  the interval, not the appliance's own: two appliances running at the same time get the
+  same solar share.
+- Your sensors must agree with each other: an inverter's solar reading and a CT clamp's
+  grid readings that disagree give a wrong load. The calibration offset is not applied.
+- **Battery:** with battery sensors, battery discharge is shown as its own share
+  (`battery_kwh`) but is, for now, valued at the import price. Valuing it at the average
+  cost of the energy that charged the battery (solar at the feed-in price, grid at the
+  import price) is planned.
+- Home Assistant keeps 5-minute statistics for about 10 days. Older days (and days when
+  one of the sensors has only hourly statistics) use hourly shares and the hour's average
+  prices, and are marked "lower precision", as for the normal cost.
+- Turning it on starts the statistic from the earliest day all the sensors have
+  statistics for (at most Amber's usage retention). A day when one of the site's sensors
+  has no statistics is skipped.
+- When the feed-in price is negative (you pay to export), the solar part has a negative
+  cost: using that energy saved you the charge.
 
 ### Sources
 
@@ -408,18 +473,18 @@ Billed figures always come from Amber's usage data; nothing here changes them.
   it found. Until you save this step the sensors found are used automatically; clear a
   field to use no live price for that channel, or choose another sensor. Prices must be
   in $/kWh (c/kWh and $/MWh are converted), with the feed-in price positive when you are
-  paid, as both Amber integrations show it. If you install a price integration later,
-  reload this integration (or open and save this step) to pick it up.
+  paid, as both Amber integrations show it. A price integration installed later, or
+  whose sensors are registered after this integration starts, is picked up by itself
+  (checked when Home Assistant has started, whenever its sensors are registered, and
+  every minute for the first 15 minutes); Today so far then starts without a reload.
 - **Grid meter for Today so far:** shown when the site has more than one grid meter on the
   general channel. The first one is used otherwise.
 - **Solar power** and **Solar energy produced** (optional): your solar system's power
   sensor and/or its cumulative energy sensor, for example from your inverter's
-  integration.
+  integration. Used by [solar-aware cost](#solar-aware-cost) (the energy sensor when
+  both are set).
 - **Battery energy charged** and **Battery energy discharged** (optional): cumulative
-  energy into and out of your home battery.
-
-Solar and battery sensors are stored for a coming feature (solar- and battery-aware
-appliance cost); nothing uses them yet.
+  energy into and out of your home battery. Used by solar-aware cost (both are needed).
 
 ### Today so far
 
@@ -444,6 +509,12 @@ during daylight saving, 01:00 to 01:00 local time).
   sensors (as the calibration offset needs); Today so far doesn't apply the offset, so it
   differs from the bill by about the offset times the hours elapsed (for 10 W, about
   0.24 kWh a day).
+- **Offset-corrected value** (for comparison): `offset_corrected` and
+  `offset_corrected_kwh` show the estimate with the grid meter's calibration offset
+  (`offset_w`) applied: added to the import while the interval imports, taken from the
+  export while it exports. `yesterday_estimate_vs_billed` compares both with the bill
+  (`estimated_offset_corrected`, `error_offset_corrected`). The sensor's value is still
+  the uncorrected estimate.
 - **Attributes:** the energy (`energy_kwh`), the intervals priced so far against those
   elapsed, any energy without a usable price (`unpriced_kwh`), the sensors used, and
   **`yesterday_estimate_vs_billed`**: once Amber's data for a day arrives (normally the

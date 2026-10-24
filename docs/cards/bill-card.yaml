@@ -1,0 +1,145 @@
+# Amber Energy Dashboard: bill card (current cycle and previous bill).
+#
+# Needs button-card (HACS > Frontend > "button-card" by custom-cards) and the
+# integration's bill estimate turned on. See docs/cards/README.md.
+#
+# The entity IDs are those of an account's first site. For another site, replace
+# "amber_energy_dashboard_" with the site device's name as a slug (for example
+# "beach_house_").
+type: vertical-stack
+cards:
+  # --- the current cycle --------------------------------------------------------------
+  - type: custom:button-card
+    entity: sensor.amber_energy_dashboard_bill_to_date
+    name: This bill so far
+    icon: mdi:receipt-text-outline
+    show_state: false
+    tap_action:
+      action: more-info
+    variables:
+      projected: sensor.amber_energy_dashboard_projected_bill
+      day: sensor.amber_energy_dashboard_days_into_billing_cycle
+    custom_fields:
+      total: |
+        [[[
+          const v = parseFloat(entity.state);
+          return isNaN(v) ? '—' : `$${v.toFixed(2)}`;
+        ]]]
+      today: |
+        [[[
+          const t = entity.attributes.including_today_estimated;
+          return t == null ? '' : `incl. today (est.) $${Number(t).toFixed(2)}`;
+        ]]]
+      projected: |
+        [[[
+          const p = states[variables.projected];
+          const v = p ? parseFloat(p.state) : NaN;
+          return isNaN(v) ? '' : `Projected $${v.toFixed(2)}`;
+        ]]]
+      cycle: |
+        [[[
+          const a = entity.attributes;
+          if (!a.cycle_start) return '';
+          const d = states[variables.day];
+          const day = d && !isNaN(parseInt(d.state)) ? `day ${d.state} of ${a.days_in_cycle}` : '';
+          const through = a.data_through ? ` · data to ${a.data_through}` : '';
+          return `${a.cycle_start} → ${a.cycle_end} · ${day}${through}`;
+        ]]]
+    styles:
+      card:
+        - padding: 16px
+      grid:
+        - grid-template-areas: '"i n n" "total total projected" "today today today" "cycle cycle cycle"'
+        - grid-template-columns: 40px 1fr auto
+        - row-gap: 4px
+      name:
+        - justify-self: start
+        - font-weight: 600
+      icon:
+        - width: 28px
+      custom_fields:
+        total:
+          - justify-self: start
+          - font-size: 2em
+          - font-weight: 600
+        projected:
+          - justify-self: end
+          - align-self: end
+          - color: var(--secondary-text-color)
+        today:
+          - justify-self: start
+          - color: var(--secondary-text-color)
+        cycle:
+          - justify-self: start
+          - font-size: 0.85em
+          - color: var(--secondary-text-color)
+
+  # --- the previous bill --------------------------------------------------------------
+  - type: custom:button-card
+    entity: sensor.amber_energy_dashboard_previous_bill_estimate
+    name: Previous bill (estimate)
+    icon: mdi:receipt-text-check-outline
+    show_state: false
+    tap_action:
+      action: more-info
+    custom_fields:
+      total: |
+        [[[
+          const v = parseFloat(entity.state);
+          return isNaN(v) ? '—' : `$${v.toFixed(2)}`;
+        ]]]
+      status: |
+        [[[
+          const a = entity.attributes;
+          if (a.complete) return 'complete';
+          return a.data_from ? `partial: ${a.days_imported} of ${a.days_in_cycle} days` : 'no data';
+        ]]]
+      cycle: |
+        [[[
+          const a = entity.attributes;
+          return a.cycle_start ? `${a.cycle_start} → ${a.cycle_end}` : '';
+        ]]]
+      lines: |
+        [[[
+          const labels = {
+            usage: 'Usage',
+            export_credit: 'Export credit',
+            network_export_charge: 'Network export charge',
+            daily_supply: 'Daily supply',
+            amber_subscription: 'Amber subscription',
+            other_daily: 'Other daily charges',
+          };
+          const lines = entity.attributes.lines || {};
+          const rows = Object.entries(lines).map(([key, value]) =>
+            `<tr><td>${labels[key] || key}</td>` +
+            `<td style="text-align:right">$${Number(value).toFixed(2)}</td></tr>`);
+          return rows.length ? `<table style="width:100%">${rows.join('')}</table>` : '';
+        ]]]
+    styles:
+      card:
+        - padding: 16px
+      grid:
+        - grid-template-areas: '"i n status" "total total total" "cycle cycle cycle" "lines lines lines"'
+        - grid-template-columns: 40px 1fr auto
+        - row-gap: 4px
+      name:
+        - justify-self: start
+        - font-weight: 600
+      icon:
+        - width: 28px
+      custom_fields:
+        total:
+          - justify-self: start
+          - font-size: 1.6em
+          - font-weight: 600
+        status:
+          - justify-self: end
+          - font-size: 0.85em
+          - color: var(--secondary-text-color)
+        cycle:
+          - justify-self: start
+          - font-size: 0.85em
+          - color: var(--secondary-text-color)
+        lines:
+          - justify-self: stretch
+          - font-size: 0.9em

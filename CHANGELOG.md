@@ -6,6 +6,36 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
+## [Unreleased] (2.2.0-dev4)
+
+### Added
+
+- **Solar-aware appliance cost** (per appliance, off by default): a second statistic,
+  "<name> cost (solar-aware)", and a **Yesterday solar-aware cost** sensor. The part of
+  the appliance's energy that the site's solar covered (worked out every 5 minutes from
+  the grid meter's import and export and the solar sensor) is valued at the feed-in
+  price, the income given up, and the rest at the import price. With the export
+  allowance, the feed-in value includes the refunded network charge while within the
+  allowance. Needs a solar sensor in Sources and a grid meter with import and export.
+  Existing appliances turn it on with **Reconfigure**. With battery sensors, battery
+  discharge is shown as its own share (valued at the import price for now).
+- **Previous bill estimate** (with the bill estimate on): the last billing cycle's total,
+  with its lines, dates and a `complete` flag.
+- An example **bill card** (button-card based) in `docs/cards/`: the current cycle and
+  the previous bill.
+- **Today so far:** `offset_corrected` (and `offset_corrected_kwh`, `offset_w`) shows the
+  estimate with the grid meter's calibration offset applied, and
+  `yesterday_estimate_vs_billed` compares both with the bill. The estimate itself is
+  unchanged.
+
+### Fixed
+
+- **Today so far** didn't start, and its sensors weren't created, until the Sources step
+  was saved when Amber Express's (or Amber Electric's) price sensors were registered after
+  this integration started, or the price integration was installed later. A missing price
+  is now looked for again once Home Assistant has started, whenever their sensors are
+  registered, and every minute for 15 minutes; Today so far then starts without a reload.
+
 ## [2.2.0b2] - 2026-10-24
 
 Second beta for 2.2: everything in 2.2.0b1, plus the changes below. **Take a Home

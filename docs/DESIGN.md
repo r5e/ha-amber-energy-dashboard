@@ -731,7 +731,10 @@ Each milestone ends with a written report and the maintainer's sign-off before t
 19. **2.2.0-dev3:** site-wide sources and Today so far (section 22), the calibration
     offset as a mean (section 21), skipping a site the key no longer sees, and Rename site
     (section 23).
-20. **Solar- and battery-aware appliance cost** (section 22, planned).
+20. **2.2.0-dev4:** solar-aware appliance cost with the battery's data path (section 22),
+    the previous bill estimate (section 19), Today so far's offset-corrected value and
+    live prices found after setup (section 22).
+21. **Battery cost basis** for solar-aware appliance cost (section 22, planned).
 
 ## 17. Carried-forward lessons (do not rediscover)
 
@@ -917,6 +920,12 @@ statistics (a secondary chain, so it follows revisions and rewrites).
   from (`fixed_schedule`), so earlier rows keep the amount they had.
 - **Action** `bill_estimate(date)`: the estimate for the cycle containing `date`
   (default today), for any cycle still in the Store's day records (about 400 days).
+- **Previous bill estimate** (2.2.0-dev4): a sensor on the site with the estimate for the
+  cycle before the current one (its `bill_to_date` as the state; attributes: the lines,
+  cycle dates, `data_from`, `data_through`, `days_elapsed`, `days_imported`,
+  `missing_days`, `gst_percent` and `complete`: every day of the cycle imported). It
+  replaces users' own template packages for last cycle's total. An example bill card
+  (button-card) is in `docs/cards/`.
 - **Acceptance** (VM 9102, 2026-10-08): billing day 28, the three charges, GST 10 % →
   **$168.96** for 28 Aug to 27 Sep (usage 108.5424, export credit −2.1238, network
   23.9348, metering 13.1353, subscription 25.4761). The brief's sign is corrected: the
@@ -1109,7 +1118,8 @@ setup while 2.1 mappings with an existing channel remain):
 ## 22. Site-wide sources, Today so far, and solar-aware cost (Milestone 19; cost: M20)
 
 Sources and Today so far are built (2.2.0-dev3, `sources.py`, `today.py`); solar-aware
-appliance cost is planned (M20). The settings belong to the site sub-entry's options
+appliance cost is built without the battery's cost basis (2.2.0-dev4, `solar.py`; the
+cost basis is planned for M21). The settings belong to the site sub-entry's options
 (section 23), set in the site settings' **Sources** step; a change reloads the entry.
 
 **Site-wide sources** (`sources.resolve`, at setup):
@@ -1120,7 +1130,12 @@ appliance cost is planned (M20). The settings belong to the site sub-entry's opt
   `<site>_general_price` / `<site>_feed_in_price`) first, then the core integration
   (`amberelectric`, `<site>-current-general` / `<site>-current-feed_in`), matched by this
   site's Amber site ID (case-insensitively); disabled entities are ignored. A key set to
-  None means none. The step suggests what was found and shows it. Both integrations give
+  None means none. **Found after setup** (2.2.0-dev4): while an auto-detected price is
+  missing and the site has a suitable grid meter, detection runs again once Home Assistant
+  has started, on every entity registry create or update of an Amber Express or Amber
+  Electric entity, and every minute for 15 minutes after the start; a price found rebuilds
+  Today so far in place (its Store carries the day over) and adds its sensors, with no
+  reload. Until then Today so far's sensors are left in the entity registry. The step suggests what was found and shows it. Both integrations give
   $/kWh with the feed-in price positive when paid; accepted units are $/kWh, AUD/kWh,
   c/kWh, ¢/kWh, $/MWh and AUD/MWh (converted to $/kWh); the step rejects other units
   (`price_unit`).
@@ -1164,6 +1179,14 @@ a general-channel import and a general live price):
 - The mapped sensors are used as they are (raw, as section 21 requires); the calibration
   offset is not applied, so the estimate is expected to differ from the bill by about the
   offset × hours.
+- **Offset-corrected value** (2.2.0-dev4, for comparison while the M19 decision is
+  open): each side also accumulates its energy and amount with the grid meter's current
+  calibration offset applied (`today.offset_corrected`: offset × the time since the
+  previous boundary, added to the import when the interval's import is at least its
+  export, else taken from the export; a side driven below zero passes the rest to the
+  other, so the net changes by exactly the correction). Attributes `offset_w`,
+  `offset_corrected`, `offset_corrected_kwh`, `offset_corrected_intervals`; the
+  comparison adds `estimated_offset_corrected` and `error_offset_corrected`.
 - **Bill to date** gets `including_today_estimated`: bill to date + today's cost − today's
   feed-in + one day of fixed charges (incl. GST), when the bill's data runs through
   yesterday (or today is the cycle's first day); otherwise None.
@@ -1183,6 +1206,45 @@ billed-rate figure):
   Store per site, so it survives restarts and is rebuilt by a rewrite.
 - Delivery order: the solar-only version first (battery discharge treated as grid), then
   the battery cost basis as a follow-up, if that keeps M20 small.
+
+**As built (M20, 2.2.0-dev4):**
+- **Option:** `solar_aware` in the appliance sub-entry's data, set in the appliance flow
+  or the appliance's new reconfigure step. Checks (`solar.solar_aware_problem`): a
+  general channel (`solar_aware_channel`), a solar sensor in Sources
+  (`solar_aware_no_solar`), a grid meter with import and export
+  (`solar_aware_no_grid_meter`). Toggling it reloads the entry.
+- **Chain and statistic:** a second chain per appliance, `own:<sub>:solar_aware` (an
+  `OwnSensor` with role `solar_aware`), writing `amber_energy_dashboard:{site}_own_{slug}_cost_solar_aware`
+  ("<name> cost (solar-aware)", AUD). Its own marker, guard, adoption, revisions and
+  rewrites, as for any secondary chain; it starts like the appliance's chain (the later
+  of retention and the sensor's first statistics). Turned off, the chain's state and the
+  statistic are kept and the sensor is removed. Without the site's flows at run time the
+  chain waits (nothing is skipped).
+- **Site flows** (`solar.site_flows`, at setup): the grid meter (Today so far's when it
+  has an export, else the first general-channel meter with one), the solar energy sensor
+  (else the solar power sensor's mean statistics × the bucket's length), and the battery
+  sensors when both are set.
+- **Split per interval** from the 5-minute statistics (sum changes): load L = I + S + D −
+  E − C (at least 0); Ls = min(S, L), Lb = min(D, L − Ls), Lg = L − Ls − Lb; the
+  appliance takes the same shares; with L = 0 its energy counts as grid. Netting within
+  an interval and the house-average share are the documented limits.
+- **Valuation:** solar share × the feed-in record's −perKwh, the rest (grid and, until
+  M21, battery) × the general record's perKwh, per interval (30-minute records price each
+  of their buckets). With the allowance active, the feed-in value in the penalty period
+  gets `penalty_rate × fraction(hour)` (`export.refund_fractions`: 1 while the period's
+  window export so far, the hour included, is within the allowance, the part within it
+  in the hour that passes it, 0 after); a day without export aggregates is valued
+  unadjusted (`allowance_adjusted` false). Export aggregates are now measured before the
+  chains in a run, so the day just imported is adjusted.
+- **Lower precision:** when any series (appliance, grid, solar, battery) lacks 5-minute
+  data, hourly shares and the hour's mean prices, flagged; with the fallback off, skipped
+  (`skipped_no_short_term`). A series without hourly data skips the day
+  (`skipped_sensor_data`, naming the sensor).
+- **Per day** in the chain record: `amount`, `energy_kwh`, `solar_kwh`, `battery_kwh`,
+  `grid_kwh`, `lower_precision`, `allowance_adjusted`. Sensor **Yesterday solar-aware
+  cost** on the appliance's device, with these and `solar_share` as attributes.
+- **Battery:** the data path is built (the charge and discharge series, the battery
+  share); its cost basis (the running pool, section 22 above) is left for M21.
 
 **Compatibility kept by M17:** appliances and grid meters are separate sub-entries with
 their own chains and devices; an appliance's data can gain a cost-basis option without

@@ -9,7 +9,7 @@
   $/kWh, with the feed-in price positive when you are paid; c/kWh and $/MWh are
   converted.
 - **Solar production**: a power and/or an energy sensor (for example an inverter's).
-- **Battery**: charge and discharge energy sensors (stored only; used from M20).
+- **Battery**: charge and discharge energy sensors (solar-aware appliance cost, `solar.py`).
 - **Today so far's grid meter**, when the site has several on the general channel.
 """
 

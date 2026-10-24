@@ -212,7 +212,7 @@ def _today_attrs(role: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]
         side = today.get(role)
         if side is None:
             return None
-        common = ("date", "expected_intervals", "last_interval_end", "meter")
+        common = ("date", "expected_intervals", "last_interval_end", "meter", "offset_w")
         return {
             **{k: today[k] for k in common},
             "energy_kwh": side["kwh"],

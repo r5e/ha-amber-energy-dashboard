@@ -16,6 +16,12 @@ has one) and priced at the live price that was in effect at the end of the inter
   priced at the first interval's price. Across midnight it is dropped (which day it
   belongs to is unknown).
 
+**Offset-corrected value** (2.2.0-dev4, for comparison only): alongside the estimate,
+each side also keeps the amount with the grid meter's calibration offset applied (the
+offset, in W, times the interval's length, added to the import while the interval
+imports more than it exports, else taken from the export). The estimate itself is
+unchanged; production data will show which is closer to the bill.
+
 The state is kept in a small Store of its own (saved at most every 30 s, and when Home
 Assistant stops), with each finished day's estimate for 14 days, so it can be compared
 with the billed day once Amber's data arrives.
@@ -73,15 +79,50 @@ class Side:
     """The Amber channel it is billed on (its identifier), for the comparison."""
 
 
+_TOTALS: Final = (
+    "kwh",
+    "amount",
+    "unpriced_kwh",
+    "intervals",
+    "corrected_kwh",
+    "corrected_amount",
+    "corrected_intervals",
+)
+
+
 def _empty_side(entity_id: str | None = None) -> dict[str, Any]:
     return {
         "kwh": 0.0,
         "amount": 0.0,
         "unpriced_kwh": 0.0,
         "intervals": 0,
+        "corrected_kwh": 0.0,
+        "corrected_amount": 0.0,
+        "corrected_intervals": 0,
         "reading": None,
         "entity_id": entity_id,
     }
+
+
+def offset_corrected(deltas: Mapping[str, float], correction: float) -> dict[str, float]:
+    """Each side's energy with ``correction`` (kWh, the calibration offset over the
+    interval) applied: added to the import when it is at least the export, else taken
+    from the export. A side that would go below zero passes the rest to the other side
+    (when that side has a reading), so the net always changes by exactly the correction."""
+    imp, exp = deltas.get("import"), deltas.get("export")
+    if exp is None:
+        return {} if imp is None else {"import": max(imp + correction, 0.0)}
+    if imp is None:
+        return {"export": max(exp - correction, 0.0)}
+    if imp >= exp:
+        imp += correction
+    else:
+        exp -= correction
+    if imp < 0:
+        exp, imp = exp - imp, 0.0
+    if exp < 0:
+        imp, exp = imp - exp, 0.0
+    return {"import": imp, "export": exp}
 
 
 class TodayTracker:
@@ -94,9 +135,13 @@ class TodayTracker:
         sides: list[Side],
         meter_name: str,
         on_update: Callable[[], None],
+        *,
+        offset_w: Callable[[], float | None] = lambda: None,
     ) -> None:
-        """Create the tracker (call async_start to begin)."""
+        """Create the tracker (call async_start to begin). ``offset_w`` gives the grid
+        meter's current calibration offset (W), or None."""
         self.hass = hass
+        self._offset_w = offset_w
         self.sides = {side.role: side for side in sides}
         self.meter_name = meter_name
         self._on_update = on_update
@@ -127,9 +172,10 @@ class TodayTracker:
             if saved is None or saved.get("entity_id") != side.energy_entity:
                 fresh = _empty_side(side.energy_entity)
                 if saved is not None:  # keep the day's totals, but don't diff readings
-                    fresh.update({k: saved[k] for k in ("kwh", "amount", "unpriced_kwh")})
-                    fresh["intervals"] = saved.get("intervals", 0)
+                    fresh.update({k: v for k, v in saved.items() if k in _TOTALS})
                 self._data["sides"][role] = fresh
+            else:  # saved by 2.2.0b2 or earlier: no offset-corrected totals yet
+                self._data["sides"][role] = {**_empty_side(side.energy_entity), **saved}
 
     @callback
     def async_start(self) -> None:
@@ -208,8 +254,10 @@ class TodayTracker:
         start = end - INTERVAL
         day = nem_date(start).isoformat()
         last_tick = self._data["last_tick"]
-        if self._data["day"] != day:
+        same_day = self._data["day"] == day
+        if not same_day:
             self._roll(day, contiguous=last_tick == start.isoformat())
+        deltas: dict[str, float] = {}
         for role, side in self.sides.items():
             record = self._data["sides"][role]
             reading = self._reading(side.energy_entity)
@@ -218,7 +266,15 @@ class TodayTracker:
             previous, record["reading"] = record["reading"], reading
             if previous is None or reading < previous:
                 continue  # the first reading, or a meter reset
-            delta = reading - previous
+            deltas[role] = reading - previous
+        offset = self._offset_w()
+        corrected: dict[str, float] = {}
+        if offset is not None and deltas:
+            # Over the time since the previous boundary (longer after a restart).
+            since = datetime.fromisoformat(last_tick) if same_day and last_tick else start
+            corrected = offset_corrected(deltas, offset * (end - since) / timedelta(hours=1000))
+        for role, delta in deltas.items():
+            record = self._data["sides"][role]
             price = self._price_for(role, end)
             record["kwh"] += delta
             record["intervals"] += 1
@@ -226,6 +282,11 @@ class TodayTracker:
                 record["unpriced_kwh"] += delta
             else:
                 record["amount"] += delta * price
+            if role in corrected:
+                record["corrected_kwh"] += corrected[role]
+                record["corrected_intervals"] += 1
+                if price is not None:
+                    record["corrected_amount"] += corrected[role] * price
         self._data["last_tick"] = end.isoformat()
         self._store.async_delay_save(lambda: self._data, SAVE_DELAY)
         self._on_update()
@@ -255,14 +316,21 @@ class TodayTracker:
             "expected_intervals": min(elapsed, INTERVALS_PER_DAY),
             "last_interval_end": self._data["last_tick"],
             "meter": self.meter_name,
+            "offset_w": self._offset_w(),
         }
         for role, side in self.sides.items():
             record = self._data["sides"][role] if current else _empty_side()
+            has_corrected = record["corrected_intervals"] > 0
             result[role] = {
                 "amount": round(record["amount"], 4),
                 "kwh": round(record["kwh"], 3),
                 "unpriced_kwh": round(record["unpriced_kwh"], 3),
                 "intervals": record["intervals"],
+                "offset_corrected": round(record["corrected_amount"], 4) if has_corrected else None,
+                "offset_corrected_kwh": round(record["corrected_kwh"], 3)
+                if has_corrected
+                else None,
+                "offset_corrected_intervals": record["corrected_intervals"],
                 "energy_entity": side.energy_entity,
                 "price_entity": side.price_entity,
                 "channel": side.channel,
@@ -292,6 +360,7 @@ def compare(
             continue
         amount, kwh = totals[amount_sid], totals.get(energy_sid)
         error = estimate["amount"] - amount
+        corrected = estimate["corrected_amount"] if estimate.get("corrected_intervals") else None
         return {
             "date": day,
             "estimated": round(estimate["amount"], 4),
@@ -304,5 +373,8 @@ def compare(
             "intervals": estimate["intervals"],
             "complete": estimate["intervals"] >= INTERVALS_PER_DAY
             and math.isclose(estimate["unpriced_kwh"], 0.0),
+            "estimated_offset_corrected": None if corrected is None else round(corrected, 4),
+            "error_offset_corrected": None if corrected is None else round(corrected - amount, 4),
+            "offset_corrected_intervals": estimate.get("corrected_intervals", 0),
         }
     return None

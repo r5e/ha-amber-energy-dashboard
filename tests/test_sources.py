@@ -462,6 +462,9 @@ def test_compare() -> None:
         "unpriced_kwh": 0.0,
         "intervals": 288,
         "complete": True,
+        "estimated_offset_corrected": None,
+        "error_offset_corrected": None,
+        "offset_corrected_intervals": 0,
     }
     # Yesterday not billed yet: the day before (partly covered) is compared instead.
     earlier = {YESTERDAY - timedelta(days=1): _billed(0.0, 0.0, 0.0, 0.0)}
@@ -991,3 +994,156 @@ async def test_feed_in_price_found_later_extends_today(
     assert manager.today.summary(NOW + FIVE)["import"]["amount"] == pytest.approx(0.30)
     assert float(hass.states.get(CREDIT).state) == 0.0
     assert float(hass.states.get(COST).state) == pytest.approx(0.30)
+
+
+# --- the offset-corrected value (2.2.0-dev4) ----------------------------------------------
+
+
+def test_offset_corrected() -> None:
+    """The correction goes on the import while importing, comes off the export while
+    exporting; a side driven below zero passes the rest to the other side."""
+    corrected = today_mod.offset_corrected
+    assert corrected({"import": 0.5, "export": 0.2}, 0.01) == pytest.approx(
+        {"import": 0.51, "export": 0.2}
+    )
+    assert corrected({"import": 0.0, "export": 0.3}, 0.01) == pytest.approx(
+        {"import": 0.0, "export": 0.29}
+    )
+    assert corrected({"import": 0.01, "export": 0.0}, -0.02) == pytest.approx(
+        {"import": 0.0, "export": 0.01}
+    )
+    assert corrected({"import": 0.0, "export": 0.005}, 0.01) == pytest.approx(
+        {"import": 0.005, "export": 0.0}
+    )
+    assert corrected({"import": 0.5}, -1.0) == {"import": 0.0}
+    assert corrected({"export": 0.3}, 0.01) == pytest.approx({"export": 0.29})
+    assert corrected({"export": 0.3}, 1.0) == {"export": 0.0}
+    assert corrected({}, 0.01) == {}
+
+
+async def test_tracker_offset_corrected(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, hass_storage: dict
+) -> None:
+    """With the meter's calibration offset, each side also keeps an offset-corrected
+    amount (the estimate itself is unchanged); after a restart the correction covers the
+    time since the last boundary; a state saved before 2.2.0-dev4 loads."""
+    freezer.move_to(NOW)
+    _price(hass, GENERAL, 0.40)
+    _price(hass, FEED_IN, 0.05)
+    _energy(hass, IMPORT, 100.0)
+    _energy(hass, EXPORT, 50.0)
+    offset: list[float | None] = [None]
+    tracker = TodayTracker(
+        hass,
+        SITE_KEY,
+        [Side("import", IMPORT, GENERAL, "E1"), Side("export", EXPORT, FEED_IN, "B1")],
+        "Whole house meter",
+        lambda: None,
+        offset_w=lambda: offset[0],
+    )
+    await tracker.async_load()
+    tracker.async_start()
+    await _tick(hass, freezer, tracker, NOW)
+    _energy(hass, IMPORT, 100.5)
+    await _tick(hass, freezer, tracker, NOW + FIVE)
+    summary = tracker.summary(NOW + FIVE)
+    assert summary["offset_w"] is None
+    assert summary["import"]["offset_corrected"] is None
+    assert summary["import"]["offset_corrected_intervals"] == 0
+
+    offset[0] = 120.0  # 0.01 kWh per 5 minutes
+    _energy(hass, IMPORT, 101.0)
+    _energy(hass, EXPORT, 50.2)
+    await _tick(hass, freezer, tracker, NOW + 2 * FIVE)
+    _energy(hass, EXPORT, 50.5)
+    await _tick(hass, freezer, tracker, NOW + 3 * FIVE)
+    summary = tracker.summary(NOW + 3 * FIVE)
+    assert summary["offset_w"] == 120.0
+    assert summary["import"]["amount"] == pytest.approx(1.0 * 0.40)  # unchanged
+    assert summary["import"]["offset_corrected"] == pytest.approx(0.51 * 0.40)
+    assert summary["import"]["offset_corrected_kwh"] == pytest.approx(0.51)
+    assert summary["export"]["offset_corrected"] == pytest.approx((0.2 + 0.29) * 0.05)
+    assert summary["export"]["offset_corrected_intervals"] == 2
+    await tracker.async_save()
+    tracker.async_stop()
+
+    # A restart 15 minutes later: the correction covers the 15 minutes.
+    later = NOW + 6 * FIVE
+    freezer.move_to(later)
+    _energy(hass, IMPORT, 102.0)
+    tracker = TodayTracker(
+        hass,
+        SITE_KEY,
+        [Side("import", IMPORT, GENERAL, "E1"), Side("export", EXPORT, FEED_IN, "B1")],
+        "Whole house meter",
+        lambda: None,
+        offset_w=lambda: 120.0,
+    )
+    await tracker.async_load()
+    tracker.async_start()
+    await _tick(hass, freezer, tracker, later)
+    summary = tracker.summary(later)
+    assert summary["import"]["offset_corrected_kwh"] == pytest.approx(0.51 + 1.03)
+    tracker.async_stop()
+
+    # Saved by 2.2.0b2: no offset-corrected totals; they start at zero.
+    stored = hass_storage[TODAY_STORE]["data"]
+    for side in stored["sides"].values():
+        for key in ("corrected_kwh", "corrected_amount", "corrected_intervals"):
+            del side[key]
+    tracker = _tracker(hass)
+    await tracker.async_load()
+    assert tracker.summary(later)["import"]["offset_corrected_intervals"] == 0
+    assert tracker.summary(later)["import"]["amount"] == pytest.approx(0.40)  # as saved
+
+
+def test_compare_offset_corrected() -> None:
+    """The comparison shows the offset-corrected estimate and its error too."""
+    billed = {"status": "imported", "totals": {E1_COST: 2.0, E1_ENERGY: 10.0}}
+    day = {
+        "amount": 1.9,
+        "kwh": 9.6,
+        "unpriced_kwh": 0.0,
+        "intervals": 288,
+        "corrected_amount": 1.98,
+        "corrected_kwh": 9.84,
+        "corrected_intervals": 288,
+    }
+    result = compare(
+        {YESTERDAY.isoformat(): {"import": day}},
+        billed=lambda _: billed,
+        role="import",
+        amount_sid=E1_COST,
+        energy_sid=E1_ENERGY,
+        before=TODAY,
+    )
+    assert result["estimated_offset_corrected"] == 1.98
+    assert result["error_offset_corrected"] == pytest.approx(-0.02)
+    assert result["offset_corrected_intervals"] == 288
+    assert result["error"] == pytest.approx(-0.1)
+
+
+async def test_today_sensor_offset_attributes(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    clock: Clock,
+    hass_storage: dict,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """The sensors show the offset-corrected value next to the estimate, from the grid
+    meter's calibration offset."""
+    freezer.move_to(NOW)
+    _amber_express(hass)
+    entry = await _entry(hass, aioclient_mock, hass_storage)
+    manager = entry.runtime_data.manager
+    manager.calibration = {"sub_grid": {"offset_w": 120.0}}
+    await _tick(hass, freezer, manager.today, NOW)
+    _energy(hass, IMPORT, 100.5)
+    await _tick(hass, freezer, manager.today, NOW + FIVE)
+    cost = hass.states.get(COST)
+    assert float(cost.state) == pytest.approx(0.15)
+    assert cost.attributes["offset_w"] == 120.0
+    assert cost.attributes["offset_corrected"] == pytest.approx(0.51 * 0.30)
+    assert cost.attributes["offset_corrected_kwh"] == pytest.approx(0.51)
+    credit = hass.states.get(CREDIT)
+    assert credit.attributes["offset_corrected"] == 0.0

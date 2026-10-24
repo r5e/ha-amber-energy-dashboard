@@ -769,7 +769,14 @@ def _today_tracker(
                 data[CONF_EXPORT_CHANNEL],
             )
         )
-    return TodayTracker(hass, manager.site_key, sides, data[CONF_NAME], manager.publish)
+    return TodayTracker(
+        hass,
+        manager.site_key,
+        sides,
+        data[CONF_NAME],
+        manager.publish,
+        offset_w=lambda: (manager.calibration.get(meter.subentry_id) or {}).get("offset_w"),
+    )
 
 
 def undetected_prices(entry: AmberConfigEntry, site: SiteRuntime) -> set[str]:

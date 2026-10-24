@@ -103,7 +103,9 @@ approximate figures this integration exists to replace.
 
 **Display sensors** (these are not statistics, so they never disturb the history):
 - import status, last imported date, days behind, and next scheduled run;
-- yesterday's energy, cost and compensation per channel.
+- yesterday's energy, cost and compensation per channel;
+- with a grid meter and a live price: **Today's cost so far (estimated)** and **Today's
+  feed-in so far (estimated)** (see [Today so far](#today-so-far-estimated)).
 
 **Buttons** on the device: **Run now** (the same as `run_now`) and, under Diagnostic,
 **Re-check retention** (the same as `probe_retention`).
@@ -207,9 +209,10 @@ billed rates (the cost arrives a day later, when Amber publishes it).
 - **Import reconciliation** and **Export reconciliation:** for the most recent day both
   have, your meter's kWh minus Amber's billed kWh (the percentage and both totals are
   attributes). They catch calibration drift or a sensor that stopped reporting.
-- **Calibration offset** (with import and export): the median, over the hours of the last
-  14 complete billed days, of Amber's net energy minus the meter's, in watts. Attributes
-  give the hours used, the spread (interquartile range) and the date range. Hours where
+- **Calibration offset** (with import and export): the mean, over the hours of the last
+  14 complete billed days, of Amber's net energy minus the meter's, in watts: the
+  correction that makes the meter's totals match the bill. Attributes give the median
+  (`median_w`), the spread (`iqr_w`), the hours used and the date range. Only hours where
   the meter's statistics have gaps are left out. Map the **raw, uncorrected** sensors: the
   offset is measured from them, so a sensor already corrected by it would feed the
   correction back.
@@ -220,6 +223,22 @@ reconciled: one circuit compared with the whole house's billed total means nothi
 **Own energy sensors from version 2.1** keep working unchanged (same statistics, entity
 IDs and reconciliation). A Repairs item offers to convert them: an import and a feed-in
 mapping become one grid meter, every other one an appliance, keeping every statistic.
+
+## Today so far (estimated)
+
+A site's settings have a **Sources** step: a live price for the general and feed-in
+channels (found automatically from [Amber Express](https://github.com/hass-energy/amber-express)
+or Home Assistant's Amber Electric integration for the same site; you can choose another,
+or none), and optional solar (power and/or energy) and battery (charge and discharge)
+sensors, stored for a coming feature.
+
+With a grid meter and a general live price, the site gets **Today's cost so far
+(estimated)** and, with an export and a feed-in price, **Today's feed-in so far
+(estimated)**: the meter's energy since midnight (NEM time), priced every 5 minutes at
+the live price. They are display estimates, never written into statistics. Once Amber
+publishes a day, the attribute `yesterday_estimate_vs_billed` shows that day's estimate
+against the bill, and the bill estimate's **Bill to date** gains
+`including_today_estimated`. See the [guide](docs/INSTALL.md#today-so-far).
 
 ## Bill estimate (optional)
 
@@ -422,6 +441,7 @@ is outstanding):
 | Amber usage data is incomplete | A day failed the completeness check on the day's last attempt. Nothing was written; the next attempt fetches it again, and the item clears once the day is complete |
 | Amber reports a new metering channel | For example, a newly installed controlled load. Imports stop until you open the site's settings and choose **Refresh channels** to add it |
 | Amber import stopped: marker and statistics disagree | The stored progress and the statistics disagree, for example after restoring an old database backup. Nothing is written until this is resolved; download diagnostics and open an issue |
+| Amber site no longer visible | The account's API key no longer sees this site (for example it was closed). That site is skipped; the account's other sites keep running. Delete a closed site from its ⋮ menu (its statistics are kept), or re-authenticate with a key that sees it. It clears itself when the key sees the site again |
 | Amber import could not be verified | A day was written but did not read back as expected. Progress was not advanced; the next attempt rewrites the day |
 | The Energy dashboard isn't using Amber Energy Dashboard | A day after the first import, nothing in the Energy dashboard uses this integration's statistics. **Fix** adds them if there is no grid connection yet, points to the migration if the YAML kit is in use, or explains how to choose them (and lets you dismiss the item). It clears itself once the statistics are in use |
 | Finish removing the YAML kit | After a migration: the old kit items still present, to remove by hand. It is re-checked when Home Assistant starts and after each scheduled import, and clears itself once they are gone. The old statistics do not count; delete them later if you wish |

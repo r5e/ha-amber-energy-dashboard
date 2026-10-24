@@ -4,6 +4,31 @@ All notable changes to this project are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] (2.2.0-dev3)
+
+### Added
+
+- **Sources** (site settings): a live price for the general and feed-in channels, found
+  automatically from Amber Express or Home Assistant's Amber Electric integration for the
+  same site (you can choose another sensor, or none; $/kWh, c/kWh and $/MWh are accepted),
+  and optional solar (power and/or energy) and battery (charge and discharge) sensors,
+  stored for a coming feature.
+- **Today so far:** with a grid meter and a live price, **Today's cost so far
+  (estimated)** and **Today's feed-in so far (estimated)**: the meter's energy since
+  midnight (NEM time), priced every 5 minutes at the live price. Display only, never in
+  statistics. Once Amber publishes a day, `yesterday_estimate_vs_billed` compares that
+  day's estimate with the bill, and **Bill to date** gains `including_today_estimated`.
+- **Rename site** (site settings): renames the site's row and its device; entity IDs
+  don't change.
+
+### Changed
+
+- **Calibration offset** now shows the mean of the hourly differences (the correction
+  that makes the meter's totals match the bill); the median is the `median_w` attribute.
+- **A site the API key no longer sees** (for example a closed site) is skipped with a
+  Repairs item, and the account's other sites keep running. Re-authentication needs a key
+  that sees at least one of the sites.
+
 ## [2.2.0b1] - 2026-10-24
 
 Beta for 2.2. Everything since 2.1.1. **Take a Home Assistant backup before updating:** the

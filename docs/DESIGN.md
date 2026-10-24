@@ -728,8 +728,10 @@ Each milestone ends with a written report and the maintainer's sign-off before t
     converting 2.1 own-sensor mappings (section 21).
 18. **2.2.0-dev2:** the account entry with site sub-entries (section 23), and evening
     retries (section 10).
-19. **Site-wide sources** (design only so far, section 22): a live price source, a solar
-    production sensor and battery sensors, and solar-aware appliance cost.
+19. **2.2.0-dev3:** site-wide sources and Today so far (section 22), the calibration
+    offset as a mean (section 21), skipping a site the key no longer sees, and Rename site
+    (section 23).
+20. **Solar- and battery-aware appliance cost** (section 22, planned).
 
 ## 17. Carried-forward lessons (do not rediscover)
 
@@ -1022,10 +1024,11 @@ Agreed in the v2.2 planning chat (October 2026).
   and suggests "Home". It is stored in the entry's data (`site_name`) and is the site
   device's **name**. Installs from before 2.2 have none and keep "Amber Energy Dashboard
   (site)".
-- There is no options field for it: later renames, areas and labels use Home Assistant's
-  device page. A name the user gives the device there (`name_by_user`) is the site's name
-  wherever the integration shows one (`devices.displayed_site_name`), so far the
-  multi-site entry title; a device-registry listener updates a default title on a rename.
+- Later renames: the site settings' **Rename site** step (2.2.0-dev3, section 23). Areas
+  and labels use Home Assistant's device page. A name the user gives the device there
+  (`name_by_user`) is the site's name wherever the integration shows one
+  (`devices.displayed_site_name`), so far the multi-site entry title; a device-registry
+  listener updates a default title on a rename.
 - **Entity IDs stay pinned** (section 18's `async_site_entity_ids`). Site entities link to
   the device by identifier only (`devices.site_link`), so they never reset its name or
   model; the device is created, named and given its model at setup.
@@ -1067,9 +1070,13 @@ ID (`site_id`), for a later split into per-site sub-entries (see the M17 report)
   meter net (the change of each mapped sensor's hourly `sum`), × 1000 → watts.
 - Hours where either meter statistic lacks the row at the hour or the one before are left
   out. Below 24 usable hours there is no value.
-- The sensor (W, device class power, no state class) shows the **median**, rounded to
-  0.1 W. Attributes: `hours_used`, `days_used`, `first_day`, `last_day`, `p25_w`, `p75_w`,
-  `iqr_w`, `last_updated`.
+- The sensor (W, device class power, no state class) shows the **mean**, rounded to
+  0.1 W (2.2.0-dev3; the median until then): the correction is meant to make the meter's
+  energy totals match the bill, and only the mean does that when some hours disagree
+  strongly (on the maintainer's CT meter typical hours are 14–15 W, but hours of rapid
+  import/export switching are far off; the mean over 5–21 October was about 10 W). Only
+  hours with a reading gap are left out. Attributes: `hours_used`, `days_used`,
+  `first_day`, `last_day`, `median_w`, `p25_w`, `p75_w`, `iqr_w`, `last_updated`.
 - Recomputed after every run and once Home Assistant has started (so after a reload);
   a failure is logged and never stops a run.
 - Always from the mapped (raw) sensors; the docs say to map raw, uncorrected sensors, since
@@ -1099,20 +1106,69 @@ setup while 2.1 mappings with an existing channel remain):
 - Unconverted 2.1 mappings keep their reconciliation sensors; the user may ignore the
   issue.
 
-## 22. Site-wide sources and solar-aware cost (Milestone 19, design only)
+## 22. Site-wide sources, Today so far, and solar-aware cost (Milestone 19; cost: M20)
 
-Recorded in M17 (then planned as M18; renumbered when the account/site restructure took
-M18); nothing of it is built yet. The settings below belong to the site sub-entry
-(section 23), in its settings menu.
+Sources and Today so far are built (2.2.0-dev3, `sources.py`, `today.py`); solar-aware
+appliance cost is planned (M20). The settings belong to the site sub-entry's options
+(section 23), set in the site settings' **Sources** step; a change reloads the entry.
 
-**Site-wide settings** (options flow, a "Site sources" step, per site):
-- **Live price source:** an entity giving the current general price, for display and
-  live estimates only (billed figures always come from Amber's usage data). Auto-detected
-  from Amber Express (`amber_express`) or the core `amberelectric` integration when one is
-  set up for the same site (matched by site ID where the integration exposes it, else
-  offered as a choice); selectable by hand.
-- **Solar production sensor:** cumulative energy produced (kWh, `total_increasing`).
-- **Battery charge** and **battery discharge** energy sensors (optional, cumulative).
+**Site-wide sources** (`sources.resolve`, at setup):
+- **Live price** for the site's general and feed-in channels (`live_price_general`,
+  `live_price_feed_in`; a channel the site lacks has no field). For display and live
+  estimates only; billed figures always come from Amber's usage data. A key absent from
+  the options means auto-detect: Amber Express (`amber_express`, unique ID
+  `<site>_general_price` / `<site>_feed_in_price`) first, then the core integration
+  (`amberelectric`, `<site>-current-general` / `<site>-current-feed_in`), matched by this
+  site's Amber site ID (case-insensitively); disabled entities are ignored. A key set to
+  None means none. The step suggests what was found and shows it. Both integrations give
+  $/kWh with the feed-in price positive when paid; accepted units are $/kWh, AUD/kWh,
+  c/kWh, ¢/kWh, $/MWh and AUD/MWh (converted to $/kWh); the step rejects other units
+  (`price_unit`).
+- **Solar production:** an optional power sensor (`solar_power`, device class power)
+  and/or a cumulative energy sensor (`solar_energy`).
+- **Battery:** optional cumulative charge and discharge energy sensors
+  (`battery_charge`, `battery_discharge`). Stored only; used from M20.
+- **Today so far's grid meter** (`today_grid_meter`): asked only when the site has
+  several grid meters with the import on a general channel; else the first is used.
+- No sensor may be used twice in the step (`same_sensor`).
+
+**Today so far** (`today.TodayTracker`, one per site, when the site has a grid meter with
+a general-channel import and a general live price):
+- Sides: import (the meter's import sensor, general price) and export (the meter's export
+  sensor and the feed-in price, when both exist).
+- Every 5 minutes on the UTC 5-minute boundaries, each side's energy since the previous
+  boundary (the mapped sensor's state, converted to kWh) is priced at the price in effect
+  at the interval's end: the last price state before the boundary (price states are
+  sampled by a state listener; a price that arrives just after the boundary belongs to the
+  next interval).
+- Days are NEM days (the interval's start decides). At the first boundary of a new day
+  the previous day's totals go into a 14-day history; readings carry over only when the
+  previous interval was the last of that day.
+- No reading: nothing that interval (the energy counts at the next reading). No usable
+  price: the energy is counted as `unpriced_kwh`. A reading below the previous one (a
+  meter reset) drops the interval. After a restart the same day, the energy used while
+  down is priced at the first interval's price; across midnight the readings start
+  afresh.
+- State in its own Store (`amber_energy_dashboard.<site key>_today`, saved with a 30 s
+  delay and at shutdown), removed with the site.
+- Sensors on the site device (display only, no state class, never statistics):
+  **Today's cost so far (estimated)** (`today_cost`) and **Today's feed-in so far
+  (estimated)** (`today_feed_in`), entity IDs `sensor.<prefix>_today_cost_estimated` and
+  `…_today_feed_in_estimated` (prefix `amber_energy_dashboard` on the first site, the
+  device name's slug on others). Attributes: `date`, `energy_kwh`, `unpriced_kwh`,
+  `intervals`, `expected_intervals`, `last_interval_end`, `meter`, `energy_entity`,
+  `price_entity`, `channel`, and `yesterday_estimate_vs_billed`: the latest history day
+  before today whose billed record is imported, with estimated and billed amount and kWh,
+  the error (estimate minus billed), its percentage, and `complete` (all 288 intervals
+  priced).
+- The mapped sensors are used as they are (raw, as section 21 requires); the calibration
+  offset is not applied, so the estimate is expected to differ from the bill by about the
+  offset × hours.
+- **Bill to date** gets `including_today_estimated`: bill to date + today's cost − today's
+  feed-in + one day of fixed charges (incl. GST), when the bill's data runs through
+  yesterday (or today is the cycle's first day); otherwise None.
+  `including_today_leaves_out` lists what the estimate can't see: "controlled load" (the
+  site has one) and "feed-in" (a feed-in channel but no export side).
 
 **Solar-aware appliance cost** (opt-in per appliance; the M17 cost statistic stays the
 billed-rate figure):
@@ -1126,7 +1182,7 @@ billed-rate figure):
   Discharge takes the pool's average cost. The pool's state (kWh and AUD) is kept in the
   Store per site, so it survives restarts and is rebuilt by a rewrite.
 - Delivery order: the solar-only version first (battery discharge treated as grid), then
-  the battery cost basis as a follow-up, if that keeps M18 small.
+  the battery cost basis as a follow-up, if that keeps M20 small.
 
 **Compatibility kept by M17:** appliances and grid meters are separate sub-entries with
 their own chains and devices; an appliance's data can gain a cost-basis option without
@@ -1156,8 +1212,12 @@ account; each site is a sub-entry. Existing per-site entries are never merged.
 sub-entry ID. An account's sites share one `AmberClient` and one run lock, so their runs
 take turns; each run starts from the rate-limit state (`RateLimit-Remaining`, window end)
 the account's previous run saw, so the reserve applies before its first call (one budget
-for the account, as Amber's limit is). Setup fetches `/sites` once; a configured site the
-key no longer sees fails setup with reauth.
+for the account, as Amber's limit is). Setup fetches `/sites` once. A configured site the
+key no longer sees (for example a closed site) is skipped (`AmberRuntimeData.skipped`),
+with a Repairs issue `site_not_found_<site key>` naming it, and the account's other sites
+keep running (2.2.0-dev3); the issue clears at the next setup that sees the site, or when
+the site is deleted (its Stores go with it). Only a key that sees none of the configured
+sites fails setup with reauth.
 
 **Devices and entities.** Each site's device is created in its sub-entry
 (`config_subentry_id`), and its sensors and buttons are added in it. The first site keeps
@@ -1173,12 +1233,15 @@ sub-entry, so Home Assistant no longer shows "Devices that don't belong to a sub
   anywhere, then a name and the channels; added with automatic scheduling.
 - Site settings: the entry's options (the cog; asks which site when there are several)
   and the site's reconfigure flow (the pencil) share one set of steps
-  (`_SiteSettings`): import settings, bill estimate, export allowance, **Refresh channels**
+  (`_SiteSettings`): import settings, **Sources** (section 22), bill estimate, export
+  allowance, **Rename site** (2.2.0-dev3: the sub-entry's title, `site_name` and the
+  device's name, clearing a `name_by_user`; entity IDs unchanged), **Refresh channels**
   (replaces the entry's reconfigure), the YAML-kit migration and its undo. Saving updates
   the site sub-entry; the update listener applies it in place, or reloads when sites,
   mappings or channels change, or the bill estimate or allowance is turned on or off.
 - Grid meter and appliance flows ask which site first when there are several.
-- Reauth: the new key must see every configured site.
+- Reauth: the new key must see at least one configured site (2.2.0-dev3; any it doesn't
+  see is skipped, as above).
 
 **Services, Repairs, diagnostics.** Every service takes `site` (the site's device, its
 Amber site ID or its sub-entry ID); `config_entry_id` alone works while the entry has one

@@ -203,14 +203,22 @@ The site's entity IDs: the first site keeps `sensor.amber_energy_dashboard_…`;
 site's follow its name, for example `sensor.beach_house_import_status`. Services and
 actions take the site's device as **site** when there are several.
 
+If the account's API key no longer sees one of the sites (for example a closed site, or
+one moved to another account), that site is skipped and a Repairs item names it; the
+other sites keep running. Delete a closed site from its **⋮** menu (its statistics are
+kept). If the key sees none of the sites, Home Assistant asks you to re-authenticate.
+
 ### Renaming the site, areas and labels
 
-Use Home Assistant's own device page: open the site's device and click the **pencil**
-icon. There you can rename it, and give it an area and labels. The integration treats
-the name you set there as the site's name wherever it shows one (for example, with
-several sites, in the entry's title, unless you have renamed the entry yourself). Entity
-IDs never change with the name. Installs from before version 2.2 keep the name **Amber
-Energy Dashboard (site)** until you rename the device this way.
+To rename a site, open its settings (below) and choose **Rename site**. It renames both
+the site's row on the integration page and its device. Entity IDs never change with the
+name. Installs from before version 2.2 show **Site …1234** and **Amber Energy Dashboard
+(site)** until you rename them this way.
+
+Areas and labels are set on Home Assistant's own device page (the site's device, then the
+**pencil** icon). A name you give the device there is also used as the site's name (for
+example, with several entries, in the entry's title, unless you renamed the entry
+yourself); **Rename site** replaces it.
 
 ## 5. Settings
 
@@ -218,6 +226,12 @@ A site's settings open from the **cog** next to the entry (with several sites, i
 which one first) or from the **pencil** on the site's row. Both show the same menu:
 
 <img src="images/options-menu.png" alt="The options menu" width="681">
+
+<!-- TODO(screenshot): the menu now also has Sources and Rename site. The maintainer to
+     retake images/options-menu.png. -->
+
+The menu has **Import settings**, **Sources**, **Bill estimate**, **Export allowance**,
+**Rename site**, **Refresh channels** and **Migrate from the YAML kit**.
 
 
 **Import settings** contains:
@@ -340,9 +354,12 @@ The meter's device has:
   attributes). Because the meter measures the energy Amber bills, a difference shows
   calibration drift or readings that went missing.
 - **Calibration offset** (with import and export): for each hour of the last 14 complete
-  billed days, Amber's net energy (import minus export) minus the meter's, in watts; the
-  sensor shows the median, with the hours used, the spread (interquartile range) and the
-  date range as attributes. Hours where the meter's statistics have a gap are left out.
+  billed days, Amber's net energy (import minus export) minus the meter's, in watts. The
+  sensor shows the **mean**, because that is the correction that makes the meter's energy
+  totals match the bill (a few hours of rapid switching between import and export can
+  disagree strongly, and only the mean accounts for them). The median (`median_w`), the
+  spread (`iqr_w`, the interquartile range), the hours used and the date range are
+  attributes. Only hours where the meter's statistics have a gap are left out.
   A CT clamp typically shows a small, steady offset (tens of watts); an inverter's
   revenue-grade meter shows close to 0 W.
 
@@ -374,6 +391,71 @@ billed totals: one circuit is only part of what the house draws, so the differen
 mean nothing.
 
 A sensor can be priced by one grid meter or appliance only.
+
+### Sources
+
+**Sources** in a site's settings lists the sensors the site's live estimates can use.
+Billed figures always come from Amber's usage data; nothing here changes them.
+
+<!-- TODO(screenshot): the Sources step. The maintainer to supply as
+     images/sources-step.png. -->
+*(Screenshot to follow.)*
+
+- **General live price** and **Feed-in live price:** the current price, used by **Today
+  so far** (below). The integration looks for them itself: first
+  [Amber Express](https://github.com/hass-energy/amber-express), then Home Assistant's
+  built-in **Amber Electric** integration, set up for the same site. The step shows what
+  it found. Until you save this step the sensors found are used automatically; clear a
+  field to use no live price for that channel, or choose another sensor. Prices must be
+  in $/kWh (c/kWh and $/MWh are converted), with the feed-in price positive when you are
+  paid, as both Amber integrations show it. If you install a price integration later,
+  reload this integration (or open and save this step) to pick it up.
+- **Grid meter for Today so far:** shown when the site has more than one grid meter on the
+  general channel. The first one is used otherwise.
+- **Solar power** and **Solar energy produced** (optional): your solar system's power
+  sensor and/or its cumulative energy sensor, for example from your inverter's
+  integration.
+- **Battery energy charged** and **Battery energy discharged** (optional): cumulative
+  energy into and out of your home battery.
+
+Solar and battery sensors are stored for a coming feature (solar- and battery-aware
+appliance cost); nothing uses them yet.
+
+### Today so far
+
+When a site has a **grid meter** (with its import on the general channel) and a **general
+live price**, its device gets:
+
+- **Today's cost so far (estimated):** the meter's import since midnight, priced at the
+  live price.
+- **Today's feed-in so far (estimated)** (when the meter has an export sensor and the
+  site has a feed-in live price): the meter's export, priced at the live feed-in price.
+
+<!-- TODO(screenshot): the site device with the two Today so far sensors. The maintainer
+     to supply as images/today-so-far.png. -->
+*(Screenshot to follow.)*
+
+They are estimates, for display only, and are never written into long-term statistics.
+Every 5 minutes the energy since the last 5-minute mark is priced at the price shown at
+the end of that interval. "Today" is the NEM day Amber bills (midnight to midnight AEST;
+during daylight saving, 01:00 to 01:00 local time).
+
+- **Which sensors:** the grid meter's mapped sensors, as they are. Map the raw meter
+  sensors (as the calibration offset needs); Today so far doesn't apply the offset, so it
+  differs from the bill by about the offset times the hours elapsed (for 10 W, about
+  0.24 kWh a day).
+- **Attributes:** the energy (`energy_kwh`), the intervals priced so far against those
+  elapsed, any energy without a usable price (`unpriced_kwh`), the sensors used, and
+  **`yesterday_estimate_vs_billed`**: once Amber's data for a day arrives (normally the
+  next morning), the day's estimate against the billed amount and kWh, with the error.
+  `complete` is true when every interval of that day was priced.
+- **Bill to date** (with the bill estimate on) gets **`including_today_estimated`**: the
+  bill to date plus today's cost, minus today's feed-in, plus a day of fixed charges. It
+  is shown once yesterday has been imported. `including_today_leaves_out` lists what the
+  estimate can't see (for example the controlled load).
+- After a restart, energy used while Home Assistant was down is priced at the first price
+  seen afterwards (or dropped if the downtime spans midnight). A meter reset drops that
+  interval.
 
 ### Converting own energy sensors (from version 2.1)
 

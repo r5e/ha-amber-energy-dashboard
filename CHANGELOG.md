@@ -6,79 +6,12 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
-## [2.2.0b3] - 2026-10-24
+## [2.2.0] - Unreleased
 
-Third beta for 2.2: everything in 2.2.0b2, plus the changes below. **Take a Home
-Assistant backup before updating from 2.1.1 or earlier** (see 2.2.0b1). Updating from a
-2.2 beta needs no migration.
-
-### Added
-
-- **Solar-aware appliance cost** (per appliance, off by default): a second statistic,
-  "<name> cost (solar-aware)", and a **Yesterday solar-aware cost** sensor. The part of
-  the appliance's energy that the site's solar covered (worked out every 5 minutes from
-  the grid meter's import and export and the solar sensor) is valued at the feed-in
-  price, the income given up, and the rest at the import price. With the export
-  allowance, the feed-in value includes the refunded network charge while within the
-  allowance. Needs a solar sensor in Sources and a grid meter with import and export.
-  Existing appliances turn it on with **Reconfigure**. With battery sensors, battery
-  discharge is shown as its own share (valued at the import price for now).
-- **Previous bill estimate** (with the bill estimate on): the last billing cycle's total,
-  with its lines, dates and a `complete` flag.
-- An example **bill card** (button-card based) in `docs/cards/`: the current cycle and
-  the previous bill.
-- **Today so far:** `offset_corrected` (and `offset_corrected_kwh`, `offset_w`) shows the
-  estimate with the grid meter's calibration offset applied, and
-  `yesterday_estimate_vs_billed` compares both with the bill. The estimate itself is
-  unchanged.
-- A **Repairs item** when an appliance's solar-aware cost has been waiting for more than
-  2 days for the site's solar sensor or grid meter, naming what is missing.
-
-### Fixed
-
-- **Today so far** didn't start, and its sensors weren't created, until the Sources step
-  was saved when Amber Express's (or Amber Electric's) price sensors were registered after
-  this integration started, or the price integration was installed later. A missing price
-  is now looked for again once Home Assistant has started, whenever their sensors are
-  registered, and every minute for 15 minutes; Today so far then starts without a reload.
-- **Today so far** lost its last 5-minute interval when the integration reloaded less
-  than 30 seconds after it (for example when a setting was saved).
-
-## [2.2.0b2] - 2026-10-24
-
-Second beta for 2.2: everything in 2.2.0b1, plus the changes below. **Take a Home
-Assistant backup before updating from 2.1.1 or earlier:** the entry is migrated to a
-layout that earlier versions can't read (see 2.2.0b1). Updating from 2.2.0b1 needs no
+Everything since 2.1.1 (betas b1 to b3 merged). **Take a Home Assistant backup before
+updating from 2.1.1 or earlier:** the entry is migrated to a layout that earlier versions
+can't read, so the only way back is restoring the backup. Updating from a 2.2 beta needs no
 migration.
-
-### Added
-
-- **Sources** (site settings): a live price for the general and feed-in channels, found
-  automatically from Amber Express or Home Assistant's Amber Electric integration for the
-  same site (you can choose another sensor, or none; $/kWh, c/kWh and $/MWh are accepted),
-  and optional solar (power and/or energy) and battery (charge and discharge) sensors,
-  stored for a coming feature.
-- **Today so far:** with a grid meter and a live price, **Today's cost so far
-  (estimated)** and **Today's feed-in so far (estimated)**: the meter's energy since
-  midnight (NEM time), priced every 5 minutes at the live price. Display only, never in
-  statistics. Once Amber publishes a day, `yesterday_estimate_vs_billed` compares that
-  day's estimate with the bill, and **Bill to date** gains `including_today_estimated`.
-- **Rename site** (site settings): renames the site's row and its device; entity IDs
-  don't change.
-
-### Changed
-
-- **Calibration offset** now shows the mean of the hourly differences (the correction
-  that makes the meter's totals match the bill); the median is the `median_w` attribute.
-- **A site the API key no longer sees** (for example a closed site) is skipped with a
-  Repairs item, and the account's other sites keep running. Re-authentication needs a key
-  that sees at least one of the sites.
-
-## [2.2.0b1] - 2026-10-24
-
-Beta for 2.2. Everything since 2.1.1. **Take a Home Assistant backup before updating:** the
-entry is migrated to a new layout that earlier versions can't read, so the only way back is
-restoring the backup.
 
 ### Added
 
@@ -86,45 +19,75 @@ restoring the backup.
   or an inverter or battery system's grid meter). An import sensor priced on the general
   (or controlled load) channel, and an optional export sensor priced at the feed-in rate.
   Its device has **Import reconciliation**, **Export reconciliation** and, with both, a
-  **Calibration offset** sensor: the 14-day median of Amber's hourly net energy minus the
-  meter's, in watts, from complete billed days, leaving out hours where the meter's
-  statistics have gaps.
+  **Calibration offset**: over the last 14 complete billed days, the mean of Amber's
+  hourly net energy minus the meter's, in watts (the median and spread as attributes),
+  leaving out hours where the meter's statistics have gaps.
 - **Appliances:** any single energy sensor (a smart plug, a circuit, a heat pump, an EV
   charger), priced on the general or controlled load channel, with **Yesterday energy**
   and **Yesterday cost**. Appliances are not reconciled.
+- **Solar-aware appliance cost** (per appliance, off by default): a second statistic,
+  "<name> cost (solar-aware)", and a **Yesterday solar-aware cost** sensor. The part of
+  the appliance's energy that the site's solar covered (worked out every 5 minutes from
+  the grid meter's import and export and the solar sensor) is valued at the feed-in
+  price, and the rest at the import price; with the export allowance, the feed-in value
+  includes the refunded network charge while within the allowance. Needs a solar sensor
+  in Sources and a grid meter with import and export; existing appliances turn it on with
+  **Reconfigure**. With battery sensors, battery discharge is shown as its own share
+  (valued at the import price for now). A Repairs item appears when it has waited more
+  than 2 days for a missing sensor.
+- **Sources** (site settings): a live price for the general and feed-in channels, found
+  automatically from Amber Express or Home Assistant's Amber Electric integration for the
+  same site, also when they are set up later (you can choose another sensor, or none;
+  $/kWh, c/kWh and $/MWh are accepted), and optional solar (power and/or energy) and
+  battery (charge and discharge) sensors.
+- **Today so far:** with a grid meter and a live price, **Today's cost so far
+  (estimated)** and **Today's feed-in so far (estimated)**: the meter's energy since
+  midnight (NEM time), priced every 5 minutes at the live price. Display only, never in
+  statistics. `yesterday_estimate_vs_billed` compares each day's estimate with the bill,
+  `offset_corrected` shows the estimate with the calibration offset applied, and **Bill
+  to date** gains `including_today_estimated`.
+- **Previous bill estimate** (with the bill estimate on): the last billing cycle's total,
+  with its lines, dates and a `complete` flag. An example **bill card** (button-card) is
+  in `docs/cards/`.
 - **Site name:** setup shows the site's details (network, NMI ending, active from) and
-  asks for a friendly name, which names the site's device. A name given later on Home
-  Assistant's device page is used as the site's name. Entity IDs don't change with it.
-  The site device's model line shows the network and the NMI's last four digits, for
-  example "Endeavour Energy · NMI …1234".
+  asks for a friendly name, which names the site's device. **Rename site** (site
+  settings) renames it later. The device's model line shows the network and the NMI's
+  last four digits, for example "Endeavour Energy · NMI …1234". Entity IDs don't change
+  with the name.
 - **More than one site:** **Add site** sets up another site of the same account. The
   account's sites take turns, sharing Amber's rate limit. Grid meters and appliances ask
-  which site they belong to.
+  which site they belong to. A site the API key no longer sees (for example a closed
+  site) is skipped with a Repairs item, and the other sites keep running.
 - **Evening retries:** when yesterday's usage still isn't published after the day's last
   attempt, the integration retries every 3 hours until 22:00 (for example 16:22 and
-  19:22), and stops as soon as the day is imported. Days that import normally get no
-  extra attempts.
+  19:22), and stops as soon as the day is imported.
+- `hacs.json` declares the country (AU).
 
 ### Changed
 
 - **Account and sites:** the entry is the Amber account (its API key), and each site is
   a **Site** under it, owning the site's device and entities. Existing installs are
-  migrated automatically on update: the entry keeps its ID, and no entity ID, unique ID or
-  statistic changes. Home Assistant no longer shows "Devices that don't belong to a
-  sub-entry".
-- **Site settings** (import settings, bill estimate, export allowance, refreshing the
-  channels, the YAML-kit migration) belong to the site: the cog asks which site when there
-  are several, and the pencil on a site opens the same menu. **Refresh channels** replaces
-  the entry's Reconfigure.
+  migrated automatically on update (a start interrupted part-way finishes it at the next
+  start): the entry keeps its ID, and no entity ID, unique ID or statistic changes. Home
+  Assistant no longer shows "Devices that don't belong to a sub-entry".
+- **Site settings** (import settings, Sources, bill estimate, export allowance, Rename
+  site, Refresh channels, the YAML-kit migration) belong to the site: the cog asks which
+  site when there are several, and the pencil on a site opens the same menu. **Refresh
+  channels** replaces the entry's Reconfigure.
 - **Own energy sensors** are replaced by grid meters and appliances. Existing ones keep
   working unchanged; a Repairs item converts them, keeping every statistic and the
   reconciliation sensors' entity IDs.
 - **Services** take an optional **site** (the site's device). `config_entry_id` still
-  works for an account with one site.
+  works for an account with one site. `probe_retention` is shown as **Re-check
+  retention**, like its button.
+- **Repairs items** are kept per site. A Repairs item you ignored in 2.1 is not carried
+  over: if it still applies, it appears again and can be ignored again.
+- **Re-authentication** accepts a key that sees at least one of the account's sites.
+- **Diagnostics** also redact site names and the names of grid meters and appliances.
+- A move of Amber's retention boundary is logged as info instead of a warning (on an
+  account whose window rolls, it moves every day).
 - With several sites, a new entry's title shows the site's name instead of the NMI's last
   four digits.
-- **Repairs items** are now kept per site. A Repairs item you ignored in 2.1 is not
-  carried over: if it still applies, it appears again and can be ignored again.
 
 ## [2.1.1] - 2026-10-23
 
@@ -524,6 +487,7 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
+[2.2.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.2.0
 [2.1.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.1
 [2.1.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0
 [2.0.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.0.1

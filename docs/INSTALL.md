@@ -474,6 +474,15 @@ would really have earned.
 - Home Assistant keeps 5-minute statistics for about 10 days. Older days (and days when
   one of the sensors has only hourly statistics) use hourly shares and the hour's average
   prices, and are marked "lower precision", as for the normal cost.
+- **Solar sensors that go offline at night** (most inverters stop reporting after sunset)
+  are handled: hours with no statistics count as no production when the solar energy
+  total is the same before and after the gap, or when the gap is at night (from an hour
+  before sunset to an hour after sunrise, at your Home Assistant's home location; it may
+  end up to three hours after sunrise, for an inverter that wakes late). A solar power
+  sensor's gap also counts as no production when it reads 0 W on both sides. A gap that
+  starts in daylight while the total changes (the inverter's connection dropped while it
+  was producing) can't be placed, and that day is skipped as before. Grid meters and
+  appliances still need complete statistics.
 - If the solar sensor or the grid meter is removed later, the solar-aware cost waits;
   after more than 2 days a Repairs item names what is missing, so you can fix it before
   the days fall out of Amber's retention.

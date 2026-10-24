@@ -126,6 +126,8 @@ ISSUE_BEHIND = "behind"
 ISSUE_SOLAR_AWARE_WAITING = "solar_aware_waiting"
 SOLAR_AWARE_WAIT_DAYS = 2
 """A solar-aware chain waiting for its site's flows longer than this raises an issue."""
+RETRY_SOLAR_GAPS = "solar_gaps_2.2.0b4"
+"""The one-off retry of solar-aware days skipped before night gaps were handled."""
 _DATA_ISSUES = (ISSUE_UNEXPECTED_CHANNEL, ISSUE_INCOMPLETE_DATA, ISSUE_IMPORT_FAILED)
 _SKIPPED = SKIPPED_STATUSES
 
@@ -1711,7 +1713,8 @@ class AmberManager:
         """Extend one secondary chain from its marker to yesterday."""
         state = chain.state
         recovery = await self._async_chain_guard(chain)
-        if state.rewrite is not None:
+        solar_aware = chain.sensor is not None and chain.sensor.role == ROLE_SOLAR_AWARE
+        if state.rewrite is not None and (self.flows or not solar_aware):
             await self._async_chain_rewrite(chain, date.fromisoformat(state.rewrite["next"]))
         yesterday = nem_today() - timedelta(days=1)
         start = await self._async_chain_first_day(chain, recovery, yesterday)
@@ -1728,28 +1731,10 @@ class AmberManager:
                 "status": STATUS_WAITING,
                 "reason": "the sensor has no statistics yet",
             }
-        if chain.sensor is not None and chain.sensor.role == ROLE_SOLAR_AWARE:
-            suffix = chain.key.replace(":", "_")
-            if not self.flows:
-                waiting = (yesterday - start).days + 1
-                if waiting > SOLAR_AWARE_WAIT_DAYS:
-                    self._create_issue(
-                        ISSUE_SOLAR_AWARE_WAITING,
-                        {
-                            "name": chain.sensor.name,
-                            "missing": " and ".join(self.flows_missing),
-                            "days": str(waiting),
-                            "first_day": start.isoformat(),
-                        },
-                        suffix,
-                    )
-                return {
-                    **report,
-                    "status": STATUS_WAITING,
-                    "reason": "solar-aware cost needs the site's solar sensor and a grid meter "
-                    "with import and export",
-                }
-            self._delete_issue(ISSUE_SOLAR_AWARE_WAITING, suffix)
+        if solar_aware:
+            waiting = await self._async_solar_aware_ready(chain, start, yesterday, report)
+            if waiting is not None:
+                return waiting
         for day in _days(start, yesterday):
             records = await self._async_records_for(day, yesterday)
             if not records:
@@ -1773,6 +1758,76 @@ class AmberManager:
             else:
                 report["skipped"].append(day.isoformat())
         return report
+
+    async def _async_solar_aware_ready(
+        self, chain: _Chain, start: date, yesterday: date, report: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """For a solar-aware chain: the walk's result while it waits for the site's
+        flows (with the waiting issue after SOLAR_AWARE_WAIT_DAYS), else None, after the
+        one-off retry of skipped days (its days go into ``report``)."""
+        assert chain.sensor is not None
+        suffix = chain.key.replace(":", "_")
+        if not self.flows:
+            waiting = (yesterday - start).days + 1
+            if waiting > SOLAR_AWARE_WAIT_DAYS:
+                self._create_issue(
+                    ISSUE_SOLAR_AWARE_WAITING,
+                    {
+                        "name": chain.sensor.name,
+                        "missing": " and ".join(self.flows_missing),
+                        "days": str(waiting),
+                        "first_day": start.isoformat(),
+                    },
+                    suffix,
+                )
+            return {
+                **report,
+                "status": STATUS_WAITING,
+                "reason": "solar-aware cost needs the site's solar sensor and a grid meter "
+                "with import and export",
+            }
+        self._delete_issue(ISSUE_SOLAR_AWARE_WAITING, suffix)
+        if chain.state.retried != RETRY_SOLAR_GAPS:
+            report["recalculated"] = await self._async_retry_solar_gaps(chain)
+        return None
+
+    async def _async_retry_solar_gaps(self, chain: _Chain) -> list[str]:
+        """Once per solar-aware chain (2.2.0b4): work out again the days skipped for
+        sensor data, which until then included every day a solar sensor went offline at
+        night. A rewrite from the first such day (within retention) to the marker writes
+        them and re-derives every later sum; it resumes like any rewrite. Returns the days
+        now written."""
+        state = chain.state
+        boundary = self.store.retention_boundary
+        assert boundary is not None
+        skipped = state.days_with_status(STATUS_SKIPPED_SENSOR, boundary)
+        if not skipped or state.marker is None:
+            await state.async_start_retry(RETRY_SOLAR_GAPS, None)
+            return []
+        first = skipped[0]
+        await state.async_start_retry(
+            RETRY_SOLAR_GAPS,
+            {
+                "next": first.isoformat(),
+                "to": state.marker.isoformat(),
+                "retry": True,
+                "first_day": first.isoformat()
+                if state.last_imported_before(first) is None
+                else None,
+            },
+        )
+        await self._async_chain_rewrite(chain, first)
+        done = [
+            d.isoformat() for d in skipped if (state.day(d) or {}).get("status") == STATUS_IMPORTED
+        ]
+        _LOGGER.info(
+            "%s: %d of %d day(s) skipped for sensor data worked out again from %s",
+            chain.key,
+            len(done),
+            len(skipped),
+            first,
+        )
+        return done
 
     async def _async_chain_first_day(
         self, chain: _Chain, recovery: date | None, yesterday: date
@@ -1845,7 +1900,9 @@ class AmberManager:
                 day, day, STATUS_SKIPPED_SENSOR, f"channel {sensor.channel.identifier} not active"
             )
             return STATUS_SKIPPED_SENSOR
-        first_day = state.marker is None and state.last_written is None
+        first_day = (state.marker is None and state.last_written is None) or (
+            rewriting and (state.rewrite or {}).get("first_day") == day.isoformat()
+        )
         if sensor.role == ROLE_SOLAR_AWARE:
             result = await self._async_solar_write(
                 chain, day, channel_records, by_channel, tail=tail, first_day=first_day
@@ -2010,9 +2067,13 @@ class AmberManager:
         if last is None:
             return 0
         count = 0
+        retry = bool((state.rewrite or {}).get("retry"))
         for day in _days(first, last):
-            await state.async_set_rewrite({"next": day.isoformat(), "to": last.isoformat()})
-            if (state.day(day) or {}).get("status") != STATUS_IMPORTED:
+            await state.async_set_rewrite(
+                {**(state.rewrite or {}), "next": day.isoformat(), "to": last.isoformat()}
+            )
+            status = (state.day(day) or {}).get("status")
+            if status != STATUS_IMPORTED and not (retry and status == STATUS_SKIPPED_SENSOR):
                 continue
             records = await self._async_records_for(day, last)
             if not records:

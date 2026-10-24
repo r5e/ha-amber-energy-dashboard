@@ -588,6 +588,27 @@ class ChainState:
             self._data["marker"] = last.isoformat()
         await self._store._async_save()
 
+    def days_with_status(self, status: str, since: date) -> list[date]:
+        """The days from ``since`` on whose record has ``status``, in order."""
+        return sorted(
+            date.fromisoformat(k)
+            for k, v in self._data["days"].items()
+            if v.get("status") == status and k >= since.isoformat()
+        )
+
+    @property
+    def retried(self) -> str | None:
+        """The one-off retry of skipped days this chain has had (``RETRY_SOLAR_GAPS``)."""
+        return self._data.get("retried")
+
+    async def async_start_retry(self, name: str, progress: dict[str, Any] | None) -> None:
+        """Record that the one-off retry ``name`` has started, with its rewrite progress
+        (None when there is nothing to retry), in one save."""
+        self._data["retried"] = name
+        if progress is not None:
+            self._data["rewrite"] = progress
+        await self._store._async_save()
+
     async def async_set_rewrite(self, progress: dict[str, Any] | None) -> None:
         """Record rewrite progress, or None when done."""
         self._data["rewrite"] = progress

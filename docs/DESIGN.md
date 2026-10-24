@@ -1254,6 +1254,22 @@ billed-rate figure):
 - **Battery:** the data path is built (the charge and discharge series, the battery
   share); its cost basis (the running pool, section 22 above) moves to 2.3. Until then the
   import-price valuation of battery discharge is a documented limitation.
+- **Solar sources offline at night** (2.2.0b4, from production: a Fronius inverter is
+  unavailable overnight, so Home Assistant records no statistics for those hours, and b3
+  skipped every day). For the site's solar source only (`solar.fill_solar_sums`,
+  `fill_solar_means`), a run of missing buckets counts as zero production when the sum is
+  unchanged across it (energy sensor), when the sensor reads at most 1 W on both sides
+  (power sensor), or when it is outside daylight (`solar.daylight_test`): it doesn't
+  reach sunrise + 1 h to sunset - 1 h at HA's home location, except that it may end up to
+  3 h after sunrise (an inverter waking late), and it may not start inside that core.
+  Rows are read 24 h either side of the day to find the rows around a gap. The energy an
+  energy sensor reports on its return stays in the bucket HA recorded it in. Any other
+  gap is refused as before (no spreading). Grid meters and appliances keep the strict
+  rule. **Days skipped before** (status `skipped_sensor_data`, within retention) are
+  worked out again once per solar-aware chain (`RETRY_SOLAR_GAPS` recorded as the chain's
+  `retried`): a resumable chain rewrite from the first such day to the marker, which
+  retries those days and re-derives every later sum. A rewrite of a solar-aware chain is
+  not resumed while the site lacks its flows.
 - **Waiting chain issue** (2.2.0b3): a solar-aware chain that waits for the site's flows
   with more than 2 days unwritten (from its first unwritten day to yesterday) raises the
   Repairs issue `solar_aware_waiting_<site key>_own_<sub>_solar_aware` (warning), naming

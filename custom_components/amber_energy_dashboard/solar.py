@@ -37,19 +37,46 @@ value. With the export allowance on (section 20), the feed-in value in the penal
 also gets back the network's penalty, in proportion to the part of that hour's window
 export that was still within the allowance (the value an extra exported kWh would have
 had). A day without measured export aggregates is valued unadjusted and flagged.
+
+**Solar sensors that go offline at night** (2.2.0b4). Most inverters stop reporting
+after sunset, so Home Assistant records no statistics for those hours. For the site's
+solar source only (grid meters and appliances keep the strict rule), a run of missing
+buckets counts as zero production when:
+- energy sensor: the sum is unchanged across the gap (the first row after it has the
+  sum of the last row before it), or the gap lies outside daylight;
+- power sensor: the gap lies outside daylight, or the sensor reports nothing (at most
+  1 W) on both sides of it.
+
+"Outside daylight" means the gap doesn't reach the part of the day from an hour after
+sunrise to an hour before sunset, at Home Assistant's home location, except that it may
+end up to three hours after sunrise (an inverter that wakes late on a dull or shaded
+morning). An offline inverter produces nothing; a gap that starts in daylight is a lost
+connection while it produced, and is refused unless the sum is unchanged. Energy an
+energy sensor reports when it comes back stays in the interval Home Assistant recorded it
+in.
+Any other gap is refused as before: the day is skipped as "no complete statistics"
+(production that can't be placed is not spread over the gap).
 """
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 import math
 from typing import Any, Final
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.const import CONF_NAME, UnitOfPower
+from homeassistant.const import (
+    CONF_NAME,
+    SUN_EVENT_SUNRISE,
+    SUN_EVENT_SUNSET,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.sun import get_astral_event_date
+from homeassistant.util import dt as dt_util
 
 from .api import UsageRecord
 from .chains import (
@@ -72,6 +99,129 @@ DISCHARGE: Final = "battery_discharge"
 
 Series = tuple[list[float] | None, list[float] | None]
 """(288 five-minute, 24 hourly) energies in kWh; each None when incomplete."""
+
+NIGHT_MARGIN: Final = timedelta(hours=1)
+"""A solar gap is "outside daylight" while it stays this close to sunrise and sunset."""
+WAKE_LIMIT: Final = timedelta(hours=3)
+"""A night gap may end up to this long after sunrise (the inverter waking)."""
+SOLAR_LOOKAROUND: Final = timedelta(hours=24)
+"""How far before and after the day a solar sensor's last and next rows are looked for."""
+SAME_SUM_KWH: Final = 1e-4
+"""Sums closer than this (0.1 Wh) are unchanged across a gap."""
+NOTHING_W: Final = 1.0
+"""A power reading at most this (W) is "nothing"."""
+
+Daylight = Callable[[datetime, datetime], bool]
+"""Whether the span [start, end) reaches daylight."""
+
+
+def daylight_test(hass: HomeAssistant) -> Daylight:
+    """Whether a span reaches the daylight core (sunrise + margin to sunset - margin) on
+    any local day it touches, at Home Assistant's home location. It may end up to
+    WAKE_LIMIT after sunrise, but not start inside the core. A day without a sunrise or a
+    sunset counts as daylight throughout."""
+    tz = dt_util.get_time_zone(hass.config.time_zone) or UTC
+
+    def reaches(start: datetime, end: datetime) -> bool:
+        day = start.astimezone(tz).date()
+        last = (end - timedelta(microseconds=1)).astimezone(tz).date()
+        while day <= last:
+            sunrise = get_astral_event_date(hass, SUN_EVENT_SUNRISE, day)
+            sunset = get_astral_event_date(hass, SUN_EVENT_SUNSET, day)
+            if sunrise is None or sunset is None:
+                return True
+            if sunrise + NIGHT_MARGIN <= start < sunset - NIGHT_MARGIN:
+                return True  # it starts in daylight: a lost connection, not the night
+            wake = WAKE_LIMIT if day == last else NIGHT_MARGIN
+            if start < sunset - NIGHT_MARGIN and end > sunrise + wake:
+                return True
+            day += timedelta(days=1)
+        return False
+
+    return reaches
+
+
+def _at(seconds: float) -> datetime:
+    return datetime.fromtimestamp(seconds, UTC)
+
+
+def fill_solar_sums(
+    rows: Sequence[Mapping[str, Any]],
+    first: datetime,
+    step: timedelta,
+    count: int,
+    daylight: Daylight,
+) -> list[float] | None:
+    """A solar energy sensor's ``count`` bucket energies from the bucket starting at
+    ``first + step`` (the row at ``first`` gives the starting sum), with gaps counted as
+    zero production where the module docstring allows; None when a gap can't be
+    accounted for. ``rows`` may reach beyond the day, to find the rows around a gap."""
+    known = sorted((r["start"], float(r["sum"])) for r in rows if r.get("sum") is not None)
+    by_start = dict((round(s), v) for s, v in known)
+    times = [round((first + i * step).timestamp()) for i in range(count + 1)]
+    sums: list[float | None] = [by_start.get(t) for t in times]
+    i = 0
+    while i <= count:
+        if sums[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < count and sums[j + 1] is None:
+            j += 1
+        before = [(s, v) for s, v in known if s < times[i]]
+        if not before:
+            return None
+        last_start, last_sum = before[-1]
+        after = [(s, v) for s, v in known if s > times[j]]
+        if after:
+            gap_end, unchanged = _at(after[0][0]), abs(after[0][1] - last_sum) < SAME_SUM_KWH
+        else:  # still offline: the gap runs at least to the day's end
+            gap_end, unchanged = first + (count + 1) * step, False
+        if not unchanged and daylight(_at(last_start) + step, gap_end):
+            return None
+        for k in range(i, j + 1):
+            sums[k] = last_sum
+        i = j + 1
+    return [sums[k + 1] - sums[k] for k in range(count)]  # type: ignore[operator]
+
+
+def fill_solar_means(
+    rows: Sequence[Mapping[str, Any]],
+    first: datetime,
+    step: timedelta,
+    count: int,
+    daylight: Daylight,
+) -> list[float] | None:
+    """A solar power sensor's ``count`` bucket means (W) from ``first``, with gaps
+    counted as zero where the module docstring allows; None otherwise. ``rows`` may
+    reach beyond the day."""
+    known = sorted((r["start"], float(r["mean"])) for r in rows if r.get("mean") is not None)
+    by_start = dict((round(s), v) for s, v in known)
+    times = [round((first + i * step).timestamp()) for i in range(count)]
+    means: list[float | None] = [by_start.get(t) for t in times]
+    i = 0
+    while i < count:
+        if means[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j + 1 < count and means[j + 1] is None:
+            j += 1
+        before = [(s, v) for s, v in known if s < times[i]]
+        after = [(s, v) for s, v in known if s > times[j]]
+        nothing = (
+            bool(before and after)
+            and abs(before[-1][1]) <= NOTHING_W
+            and abs(after[0][1]) <= NOTHING_W
+        )
+        start = _at(before[-1][0]) + step if before else _at(times[i])
+        end = _at(after[0][0]) if after else _at(times[j]) + step
+        if not nothing and daylight(start, end):
+            return None
+        for k in range(i, j + 1):
+            means[k] = 0.0
+        i = j + 1
+    return means  # type: ignore[return-value]
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,23 +314,41 @@ def flows_missing(
 
 
 async def async_power_energy(hass: HomeAssistant, entity_id: str, day: date) -> Series:
-    """A power sensor's energy per 5 minutes and per hour (kWh) for NEM day ``day``, from
-    its mean statistics (each None when a bucket has no mean)."""
+    """A solar power sensor's energy per 5 minutes and per hour (kWh) for NEM day ``day``,
+    from its mean statistics, with night gaps as zero (see the module docstring)."""
+    return await _async_solar(hass, entity_id, day, power=True)
+
+
+async def async_solar_energy(hass: HomeAssistant, entity_id: str, day: date) -> Series:
+    """A solar energy sensor's energy per 5 minutes and per hour (kWh) for NEM day
+    ``day``, with night gaps as zero (see the module docstring)."""
+    return await _async_solar(hass, entity_id, day, power=False)
+
+
+async def _async_solar(hass: HomeAssistant, entity_id: str, day: date, *, power: bool) -> Series:
     start = nem_day_start(day)
     end = start + DAY_HOURS * HOUR
-    units = {"power": UnitOfPower.WATT}
+    daylight = daylight_test(hass)
     recorder = get_instance(hass)
     result: list[list[float] | None] = []
     for period, step, count in (("5minute", FIVE_MINUTES, BUCKETS_PER_DAY), ("hour", HOUR, 24)):
-        rows = await recorder.async_add_executor_job(
-            statistics_during_period, hass, start, end, {entity_id}, period, units, {"mean"}
+        found = await recorder.async_add_executor_job(
+            statistics_during_period,
+            hass,
+            start - SOLAR_LOOKAROUND,
+            end + SOLAR_LOOKAROUND,
+            {entity_id},
+            period,
+            {"power": UnitOfPower.WATT} if power else {"energy": UnitOfEnergy.KILO_WATT_HOUR},
+            {"mean"} if power else {"sum"},
         )
-        by_start = {round(r["start"]): r.get("mean") for r in rows.get(entity_id, [])}
-        means = [by_start.get(round((start + i * step).timestamp())) for i in range(count)]
-        hours = step / HOUR
-        result.append(
-            None if any(m is None for m in means) else [float(m) * hours / 1000 for m in means]  # type: ignore[arg-type]
-        )
+        rows = found.get(entity_id, [])
+        if power:
+            means = fill_solar_means(rows, start, step, count, daylight)
+            hours = step / HOUR
+            result.append(None if means is None else [m * hours / 1000 for m in means])
+        else:
+            result.append(fill_solar_sums(rows, start - step, step, count, daylight))
     return result[0], result[1]
 
 
@@ -193,7 +361,7 @@ async def async_series(
         APPLIANCE: await async_sensor_energy(hass, appliance, day, first_day=first_day),
         IMPORT: await async_sensor_energy(hass, flows.import_entity, day),
         EXPORT: await async_sensor_energy(hass, flows.export_entity, day),
-        SOLAR: await async_sensor_energy(hass, flows.solar_energy, day)
+        SOLAR: await async_solar_energy(hass, flows.solar_energy, day)
         if flows.solar_energy
         else await async_power_energy(hass, flows.solar_power or "", day),
     }

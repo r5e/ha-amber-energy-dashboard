@@ -906,7 +906,7 @@
             "name": "For example \"Pool heat pump\". It names the appliance's device and sensors.",
             "entity_id": "Cumulative energy used by the appliance (kWh, always rising).",
             "channel": "The Amber channel the appliance is billed on: general, or controlled load if it is on that circuit (for example a hot water system).",
-            "solar_aware": "Also record \"<name> cost (solar-aware)\": the part of the appliance's energy covered by the site's solar is valued at the feed-in price (the income given up), the rest at the import price. Needs a solar sensor in the site's Sources and a grid meter with import and export. General channel only."
+            "solar_aware": "Also record a solar-aware cost statistic (for example \"Pool pump cost (solar-aware)\"): the part of the appliance's energy covered by the site's solar is valued at the feed-in price (the income given up), the rest at the import price. Needs a solar sensor in the site's Sources and a grid meter with import and export. General channel only."
           }
         },
         "site": {

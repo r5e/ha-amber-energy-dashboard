@@ -42,7 +42,8 @@ Pushed; nothing is merged or tagged. **Stopped for review.**
 | `5a7ad7d` | Solar-aware appliance cost (with the battery's data path) |
 | `3944762` | Docs: INSTALL.md, README, DESIGN (16, 19, 22), CHANGELOG, bill card; manifest `2.2.0-dev4` |
 | `b51dbb7` | Today so far: save the state on unload, so a reload keeps the last interval |
-| (this) | This report, and the CHANGELOG line for `b51dbb7` |
+| `b102dc1` | This report, and the CHANGELOG line for `b51dbb7` |
+| (this) | Strings: no "<name>" in the solar-aware help text (hassfest); CI results here |
 
 **Point 1: live prices found after setup** (`__init__.py`):
 - `undetected_prices`: the site's price channels left to auto-detection that have no
@@ -142,6 +143,12 @@ Pushed; nothing is merged or tagged. **Stopped for review.**
     this milestone showed 4 of them, on different tests; they come from garbage
     collection of the recorder's SQLite connections.
 - `ruff check`, `ruff format --check` and `uv lock --check` are clean.
+- **CI on GitHub:**
+  - On `b102dc1`: Tests (40076773921) and HACS validation (40076773994) succeeded.
+    **hassfest (40076773929) failed**: the appliance's `solar_aware` help text contained
+    "<name>", which hassfest reads as HTML.
+  - Fixed in the commit that adds this section (reworded, with no `<` left in the
+    strings). CI results for it are in the next section.
 - **New tests** (26):
   - `tests/test_solar.py` (16):
     - `split` (exporting, no load, disagreeing sensors, battery discharge, charging from

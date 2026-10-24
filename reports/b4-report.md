@@ -203,7 +203,12 @@ The second Run now made none. The suite makes none.
 
 ## 7. Tag and CI
 
-See the addendum.
+- **Tag `v2.2.0b4`:** annotated, tag object `2d20aac`, on commit `27bba71` (the release
+  commit; this report's CI addendum comes after it on the branch).
+- **CI on the tag:** Tests 40132197277, hassfest 40132197279 and HACS validation
+  40132197273, all **success**.
+- **CI on the branch push of the same commit:** Tests 40132193993, hassfest 40132193916
+  and HACS validation 40132193903, all success.
 
 ## 8. Next steps
 

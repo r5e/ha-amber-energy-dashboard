@@ -1,10 +1,17 @@
 # Changelog
 
 All notable changes to this project are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Release versions follow
+[Semantic Versioning](https://semver.org/) (major.minor.patch); pre-releases are written
+the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
+Assistant and HACS compare versions that way.
 
-## [Unreleased] (2.2.0-dev3)
+## [2.2.0b2] - 2026-10-24
+
+Second beta for 2.2: everything in 2.2.0b1, plus the changes below. **Take a Home
+Assistant backup before updating from 2.1.1 or earlier:** the entry is migrated to a
+layout that earlier versions can't read (see 2.2.0b1). Updating from 2.2.0b1 needs no
+migration.
 
 ### Added
 

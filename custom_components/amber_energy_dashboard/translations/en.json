@@ -77,6 +77,7 @@
         "title": "Site settings",
         "menu_options": {
           "settings": "Import settings",
+          "sources": "Sources",
           "bill": "Bill estimate",
           "allowance": "Export allowance",
           "rename": "Rename site",
@@ -207,6 +208,28 @@
         "data_description": {
           "site_name": "For example Home or Beach house."
         }
+      },
+      "sources": {
+        "title": "Sources",
+        "description": "Sensors this site's live estimates can use. Billed figures always come from Amber's usage data.\n\n**Live price** (for Today so far). Found for this site:\n{detected}\n\nUntil you save this step, the sensors found are used automatically. Clear a field to use no live price for that channel. Prices must be in $/kWh (c/kWh and $/MWh are converted), with the feed-in price positive when you are paid, as both Amber integrations show it.\n\n**Today so far** reads the grid meter's sensors: {meter}.\n\n**Solar production** (optional): your solar system's power and/or cumulative energy sensor, for example from your inverter's integration. **Battery** (optional): the cumulative energy charged into and discharged from your home battery. Solar and battery are stored for a coming feature; nothing uses them yet.",
+        "data": {
+          "live_price_general": "General live price",
+          "live_price_feed_in": "Feed-in live price",
+          "today_grid_meter": "Grid meter for Today so far",
+          "solar_power": "Solar power",
+          "solar_energy": "Solar energy produced",
+          "battery_charge": "Battery energy charged",
+          "battery_discharge": "Battery energy discharged"
+        },
+        "data_description": {
+          "live_price_general": "The current general (import) price, for example from Amber Express or the Amber Electric integration.",
+          "live_price_feed_in": "The current feed-in price, positive when you are paid.",
+          "today_grid_meter": "Today so far needs a grid meter whose import is on the general channel.",
+          "solar_power": "Optional: a power sensor (W or kW).",
+          "solar_energy": "Optional: a cumulative energy sensor (kWh).",
+          "battery_charge": "Optional: cumulative energy into the battery.",
+          "battery_discharge": "Optional: cumulative energy out of the battery."
+        }
       }
     },
     "error": {
@@ -218,7 +241,12 @@
       "needs_billing_day": "Totalling over the billing period needs the billing day (Bill estimate). Set it first, or total daily.",
       "allowance_required": "Enter the free allowance per day.",
       "charge_required": "Enter this charge (0 is fine if it is currently free).",
-      "name_required": "Enter a name."
+      "name_required": "Enter a name.",
+      "same_sensor": "Each sensor can be used once only.",
+      "sensor_not_found": "This sensor has no state yet. Choose another, or try again once it reports.",
+      "price_unit": "This sensor isn't a price per energy in $/kWh, c/kWh or $/MWh.",
+      "not_power": "Choose a power sensor (device class power).",
+      "not_cumulative_energy": "Choose a cumulative energy sensor (device class energy, state class total or total_increasing)."
     },
     "abort": {
       "not_loaded": "The integration is not loaded; migration and undo need it running.",
@@ -336,6 +364,12 @@
       },
       "appliance_yesterday_compensation": {
         "name": "Yesterday compensation"
+      },
+      "today_cost": {
+        "name": "Today's cost so far (estimated)"
+      },
+      "today_feed_in": {
+        "name": "Today's feed-in so far (estimated)"
       }
     }
   },
@@ -627,6 +661,7 @@
           "title": "Site settings",
           "menu_options": {
             "settings": "Import settings",
+            "sources": "Sources",
             "bill": "Bill estimate",
             "allowance": "Export allowance",
             "rename": "Rename site",
@@ -750,6 +785,28 @@
           "data_description": {
             "site_name": "For example Home or Beach house."
           }
+        },
+        "sources": {
+          "title": "Sources",
+          "description": "Sensors this site's live estimates can use. Billed figures always come from Amber's usage data.\n\n**Live price** (for Today so far). Found for this site:\n{detected}\n\nUntil you save this step, the sensors found are used automatically. Clear a field to use no live price for that channel. Prices must be in $/kWh (c/kWh and $/MWh are converted), with the feed-in price positive when you are paid, as both Amber integrations show it.\n\n**Today so far** reads the grid meter's sensors: {meter}.\n\n**Solar production** (optional): your solar system's power and/or cumulative energy sensor, for example from your inverter's integration. **Battery** (optional): the cumulative energy charged into and discharged from your home battery. Solar and battery are stored for a coming feature; nothing uses them yet.",
+          "data": {
+            "live_price_general": "General live price",
+            "live_price_feed_in": "Feed-in live price",
+            "today_grid_meter": "Grid meter for Today so far",
+            "solar_power": "Solar power",
+            "solar_energy": "Solar energy produced",
+            "battery_charge": "Battery energy charged",
+            "battery_discharge": "Battery energy discharged"
+          },
+          "data_description": {
+            "live_price_general": "The current general (import) price, for example from Amber Express or the Amber Electric integration.",
+            "live_price_feed_in": "The current feed-in price, positive when you are paid.",
+            "today_grid_meter": "Today so far needs a grid meter whose import is on the general channel.",
+            "solar_power": "Optional: a power sensor (W or kW).",
+            "solar_energy": "Optional: a cumulative energy sensor (kWh).",
+            "battery_charge": "Optional: cumulative energy into the battery.",
+            "battery_discharge": "Optional: cumulative energy out of the battery."
+          }
         }
       },
       "error": {
@@ -761,7 +818,12 @@
         "needs_billing_day": "Totalling over the billing period needs the billing day (Bill estimate). Set it first, or total daily.",
         "allowance_required": "Enter the free allowance per day.",
         "charge_required": "Enter this charge (0 is fine if it is currently free).",
-        "name_required": "Enter a name."
+        "name_required": "Enter a name.",
+        "same_sensor": "Each sensor can be used once only.",
+        "sensor_not_found": "This sensor has no state yet. Choose another, or try again once it reports.",
+        "price_unit": "This sensor isn't a price per energy in $/kWh, c/kWh or $/MWh.",
+        "not_power": "Choose a power sensor (device class power).",
+        "not_cumulative_energy": "Choose a cumulative energy sensor (device class energy, state class total or total_increasing)."
       },
       "abort": {
         "not_loaded": "The integration is not loaded; migration and undo need it running.",

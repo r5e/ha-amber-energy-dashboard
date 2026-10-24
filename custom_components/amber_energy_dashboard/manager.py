@@ -38,7 +38,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from . import calibration, chains, importer
+from . import calibration, chains, importer, today as today_mod
 from .api import (
     AmberAuthError,
     AmberBudgetExhaustedError,
@@ -51,6 +51,7 @@ from .api import (
 )
 from .bill import BillSettings, cycle_for, estimate
 from .const import (
+    CHANNEL_CONTROLLED_LOAD,
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
     DEFAULT_PATIENCE_DAYS,
@@ -90,6 +91,7 @@ from .importer import (
     nem_day_start,
 )
 from .schedule import ScheduleConfig, evening_retry_after, is_final_attempt, next_attempt
+from .sources import Sources
 from .statistics import (
     ChannelConfig,
     MeanSpec,
@@ -289,6 +291,10 @@ class AmberManager:
         """The last measurement of export aggregates outside a run (diagnostics)."""
         self.calibration: dict[str, dict[str, Any]] = {}
         """Each grid meter's calibration offset (by sub-entry), from the last refresh."""
+        self.sources = Sources()
+        """The site's live prices, solar and battery sensors (section 22), set at setup."""
+        self.today: today_mod.TodayTracker | None = None
+        """Today so far (section 22), when a grid meter and a live price are set up."""
 
     @property
     def _ids(self) -> list[str]:
@@ -2111,6 +2117,63 @@ class AmberManager:
         if publish:
             self._publish()
 
+    def _sid(self, identifier: str, metric: Metric) -> str | None:
+        return next(
+            (
+                s.statistic_id
+                for s in self.ctx.specs
+                if s.channel == identifier and s.metric is metric
+            ),
+            None,
+        )
+
+    def today_snapshot(self) -> dict[str, Any] | None:
+        """Today so far, with each side's latest estimated day against the bill."""
+        if self.today is None:
+            return None
+        now = _utcnow()
+        result = self.today.summary(now)
+        for role, side in self.today.sides.items():
+            metric = Metric.COST if role == ROLE_IMPORT else Metric.COMPENSATION
+            result[role]["yesterday_estimate_vs_billed"] = today_mod.compare(
+                self.today.history,
+                billed=self.store.day,
+                role=role,
+                amount_sid=self._sid(side.channel, metric),
+                energy_sid=self._sid(side.channel, Metric.ENERGY),
+                before=nem_today(now),
+            )
+        return result
+
+    def _bill_including_today(
+        self, bill: dict[str, Any], today: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """The bill to date with today's estimate (cost, minus feed-in, plus a day of fixed
+        charges) once yesterday is imported; None while a day in between is missing.
+        What the estimate can't see (controlled load; feed-in without an export) is
+        listed."""
+        if today is None or self.bill is None:
+            return {"including_today_estimated": None, "including_today_leaves_out": []}
+        types = {c.type for c in self.ctx.channels}
+        leaves_out = []
+        if CHANNEL_CONTROLLED_LOAD in types:
+            leaves_out.append("controlled load")
+        if CHANNEL_FEED_IN in types and ROLE_EXPORT not in today:
+            leaves_out.append("feed-in")
+        day = date.fromisoformat(today["date"])
+        net = (
+            today[ROLE_IMPORT]["amount"]
+            - (today[ROLE_EXPORT]["amount"] if ROLE_EXPORT in today else 0.0)
+            + self.bill.daily_fixed_incl_gst
+        )
+        start, _ = cycle_for(day, self.bill.billing_day)
+        value = None
+        if bill["data_through"] == (day - timedelta(days=1)).isoformat():
+            value = round(bill["bill_to_date"] + net, 2)
+        elif bill["data_through"] is None and day == start:
+            value = round(net, 2)
+        return {"including_today_estimated": value, "including_today_leaves_out": leaves_out}
+
     def _energy_sid(self, channel: ChannelConfig) -> str:
         return next(
             s.statistic_id
@@ -2183,12 +2246,22 @@ class AmberManager:
     def _publish(self) -> None:
         self.coordinator.async_set_updated_data(self.snapshot())
 
+    @callback
+    def publish(self) -> None:
+        """Publish a fresh snapshot (Today so far, after each interval)."""
+        self._publish()
+
     def snapshot(self) -> dict[str, Any]:
         """State for the display sensors."""
         marker = self.store.marker
         yesterday = nem_today() - timedelta(days=1)
         record = self.store.day(yesterday) or {}
         totals = record.get("totals") if record.get("status") == "imported" else None
+        today = self.today_snapshot()
+        bill = None
+        if self.bill_available:
+            bill = self.bill_estimate(nem_today())
+            bill.update(self._bill_including_today(bill, today))
         return {
             "reconciliation": self._reconciliation(),
             "appliances": self._appliances(),
@@ -2205,7 +2278,8 @@ class AmberManager:
             "next_run": self.next_run,
             "yesterday": yesterday,
             "yesterday_totals": totals,
-            "bill": self.bill_estimate(nem_today()) if self.bill_available else None,
+            "bill": bill,
+            "today": today,
             "allowance": self.allowance_summary(nem_today() - timedelta(days=1))
             if self.allowance_active
             else None,

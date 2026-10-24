@@ -654,6 +654,7 @@ async def test_site_settings_from_the_cog_and_the_pencil(
     assert flow["step_id"] == "reconfigure"
     assert flow["menu_options"] == [
         "settings",
+        "sources",
         "bill",
         "allowance",
         "rename",

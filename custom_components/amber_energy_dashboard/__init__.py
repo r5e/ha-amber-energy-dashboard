@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState, ConfigSubentry
-from homeassistant.const import CONF_API_KEY, Platform
+from homeassistant.const import CONF_API_KEY, CONF_NAME, Platform
 from homeassistant.core import (
     Event,
     HomeAssistant,
@@ -35,6 +35,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_device_registry_updated_event
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 import voluptuous as vol
 
@@ -59,15 +60,21 @@ from .const import (
     ATTR_END_DATE,
     ATTR_EXCLUDE_FLAGGED,
     ATTR_START_DATE,
+    CHANNEL_FEED_IN,
+    CHANNEL_GENERAL,
     CONF_ADD_TO_ENERGY,
     CONF_ALLOWANCE,
     CONF_ALLOWANCE_KWH,
     CONF_ALLOWANCE_TOTALLING,
     CONF_BILLING_DAY,
     CONF_CHANNELS,
+    CONF_EXPORT_CHANNEL,
+    CONF_EXPORT_SENSOR,
     CONF_FIXED_STATISTIC,
     CONF_FIXED_TIMES,
     CONF_GST_PERCENT,
+    CONF_IMPORT_CHANNEL,
+    CONF_IMPORT_SENSOR,
     CONF_NMI,
     CONF_OWN_FALLBACK,
     CONF_PATIENCE_DAYS,
@@ -84,6 +91,8 @@ from .const import (
     DOMAIN,
     MODE_FULL,
     MODE_PRICING,
+    ROLE_EXPORT,
+    ROLE_IMPORT,
     ROLES,
     SCHEDULE_AUTOMATIC,
     SCHEDULE_FIXED,
@@ -131,8 +140,10 @@ from .sites import (
     site_options,
     site_subentries,
 )
+from .sources import SOURCE_KEYS, resolve as resolve_sources, today_meter
 from .statistics import ChannelConfig, build_specs
 from .storage import AmberStore, async_forget_chain
+from .today import STORE_VERSION as TODAY_STORE_VERSION, Side, TodayTracker, store_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -627,6 +638,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: AmberConfigEntry) -> boo
     for site in runtime.sites.values():
         site.manager.async_start()
         entry.async_on_unload(site.manager.async_stop)
+        if (today := site.manager.today) is not None:
+            today.async_start()
+            entry.async_on_unload(today.async_stop)
         _schedule_startup_work(hass, entry, site.manager)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
@@ -698,7 +712,42 @@ async def _async_setup_site(
 
     manager.after_scheduled = _check_all
     manager.after_run = _check_energy
+    manager.sources = resolve_sources(hass, site_id, options, {c.type for c in channels})
+    manager.today = _today_tracker(hass, entry, sub, manager)
+    if manager.today is not None:
+        await manager.today.async_load()
     return SiteRuntime(sub.subentry_id, ctx, manager, device.id, options=options)
+
+
+def _today_tracker(
+    hass: HomeAssistant, entry: AmberConfigEntry, sub: ConfigSubentry, manager: AmberManager
+) -> TodayTracker | None:
+    """Today so far (section 22): the site's grid meter (import on a general channel)
+    priced at the general live price, and its export at the feed-in price when both are
+    there."""
+    meter = today_meter(entry, sub.data, site_options(sub))
+    prices = manager.sources.prices
+    if meter is None or CHANNEL_GENERAL not in prices:
+        return None
+    data = meter.data
+    sides = [
+        Side(
+            ROLE_IMPORT,
+            data[CONF_IMPORT_SENSOR],
+            prices[CHANNEL_GENERAL].entity_id,
+            data[CONF_IMPORT_CHANNEL],
+        )
+    ]
+    if data.get(CONF_EXPORT_SENSOR) and CHANNEL_FEED_IN in prices:
+        sides.append(
+            Side(
+                ROLE_EXPORT,
+                data[CONF_EXPORT_SENSOR],
+                prices[CHANNEL_FEED_IN].entity_id,
+                data[CONF_EXPORT_CHANNEL],
+            )
+        )
+    return TodayTracker(hass, manager.site_key, sides, data[CONF_NAME], manager.publish)
 
 
 @callback
@@ -792,8 +841,8 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
         return
     subs = {s.subentry_id: s for s in site_subentries(entry)}
     if set(subs) != set(runtime.sites) | set(runtime.skipped):
-        for sub_id in set(runtime.sites) - set(subs):
-            await runtime.sites[sub_id].manager.store.async_remove()  # the site was removed
+        for sub_id in set(runtime.sites) - set(subs):  # the site was removed
+            await _async_forget_site(hass, entry.entry_id, runtime.sites[sub_id].context.site_id)
         for sub_id in set(runtime.skipped) - set(subs):
             await _async_forget_site(hass, entry.entry_id, runtime.skipped[sub_id])
         hass.config_entries.async_schedule_reload(entry.entry_id)
@@ -813,6 +862,11 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
             return
         if options == site.options:
             continue  # a title (or nothing the manager uses) changed
+        if _sources(options) != _sources(site.options):
+            # Live prices, the Today so far meter, solar or battery: they add or remove
+            # entities and listeners.
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
         site.options = options
         args, kwargs = settings_from_options(options, manager.tariff)
         if (manager.bill is None) != (kwargs["bill"] is None) or (manager.allowance is None) != (
@@ -823,10 +877,17 @@ async def _async_entry_updated(hass: HomeAssistant, entry: AmberConfigEntry) -> 
         manager.async_update_settings(*args, **kwargs)
 
 
+def _sources(options: Mapping[str, Any]) -> dict[str, Any]:
+    """The site's source settings (a key set to None differs from an absent one: none
+    rather than auto-detected)."""
+    return {k: v for k, v in options.items() if k in SOURCE_KEYS}
+
+
 async def _async_forget_site(hass: HomeAssistant, entry_id: str, site_id: str) -> None:
-    """A removed site: its Store and its "no longer seen" issue (statistics are kept)."""
+    """A removed site: its Stores and its "no longer seen" issue (statistics are kept)."""
     key = site_key(entry_id, site_id)
     await AmberStore(hass, key).async_remove()
+    await Store(hass, TODAY_STORE_VERSION, store_key(key)).async_remove()
     ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_SITE_NOT_FOUND}_{key}")
 
 

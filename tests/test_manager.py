@@ -25,7 +25,11 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
-from custom_components.amber_energy_dashboard import importer, manager as manager_mod
+from custom_components.amber_energy_dashboard import (
+    importer,
+    manager as manager_mod,
+    today as today_mod,
+)
 from custom_components.amber_energy_dashboard.api import RunBudget
 from custom_components.amber_energy_dashboard.const import (
     CONF_CHANNELS,
@@ -89,8 +93,12 @@ def clock():
 @pytest.fixture(autouse=True)
 def _no_real_timers():
     """The manager's clock is fake but the event loop's is real, so real timers would
-    fire at the wrong moment. Tests call ``_on_timer`` directly instead."""
-    with patch.object(manager_mod, "async_track_point_in_utc_time", return_value=lambda: None):
+    fire at the wrong moment. Tests call ``_on_timer`` (and Today so far's ``async_tick``)
+    directly instead."""
+    with (
+        patch.object(manager_mod, "async_track_point_in_utc_time", return_value=lambda: None),
+        patch.object(today_mod, "async_track_utc_time_change", return_value=lambda: None),
+    ):
         yield
 
 

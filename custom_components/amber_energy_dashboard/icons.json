@@ -70,6 +70,12 @@
       },
       "export_charge": {
         "default": "mdi:cash-minus"
+      },
+      "today_cost": {
+        "default": "mdi:cash-clock"
+      },
+      "today_feed_in": {
+        "default": "mdi:solar-power-variant"
       }
     }
   }

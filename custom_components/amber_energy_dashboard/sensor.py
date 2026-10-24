@@ -17,10 +17,11 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
+from homeassistant.util import slugify
 
 from . import AmberConfigEntry, SiteRuntime
 from .const import (
@@ -32,7 +33,7 @@ from .const import (
     SUBENTRY_APPLIANCE,
     SUBENTRY_GRID_METER,
 )
-from .devices import async_site_entity_ids, site_link
+from .devices import ENTITY_ID_PREFIX, async_site_entity_ids, site_link
 from .manager import STATUSES, OwnSensor
 from .meters import mapping_device_info
 from .statistics import CURRENCY, Metric
@@ -109,7 +110,17 @@ BILL_SENSORS = (
         native_unit_of_measurement=CURRENCY,
         suggested_display_precision=2,
         value_fn=_bill("bill_to_date"),
-        attrs_fn=_bill_attrs(("lines", *_CYCLE, *_DATA, "missing_days", "gst_percent")),
+        attrs_fn=_bill_attrs(
+            (
+                "lines",
+                *_CYCLE,
+                *_DATA,
+                "missing_days",
+                "gst_percent",
+                "including_today_estimated",
+                "including_today_leaves_out",
+            )
+        ),
     ),
     AmberSensorDescription(
         key="projected_bill",
@@ -185,6 +196,54 @@ ALLOWANCE_SENSORS = (
         attrs_fn=_allowance_attrs,
     ),
 )
+
+
+def _today(role: str) -> Callable[[dict[str, Any]], Any]:
+    def value(data: dict[str, Any]) -> Any:
+        side = (data.get("today") or {}).get(role)
+        return None if side is None else side["amount"]
+
+    return value
+
+
+def _today_attrs(role: str) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    def attrs(data: dict[str, Any]) -> dict[str, Any] | None:
+        today = data.get("today") or {}
+        side = today.get(role)
+        if side is None:
+            return None
+        common = ("date", "expected_intervals", "last_interval_end", "meter")
+        return {
+            **{k: today[k] for k in common},
+            "energy_kwh": side["kwh"],
+            **{k: v for k, v in side.items() if k not in ("amount", "kwh")},
+        }
+
+    return attrs
+
+
+TODAY_SENSORS = {
+    ROLE_IMPORT: AmberSensorDescription(
+        key="today_cost",
+        translation_key="today_cost",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY,
+        suggested_display_precision=2,
+        value_fn=_today(ROLE_IMPORT),
+        attrs_fn=_today_attrs(ROLE_IMPORT),
+    ),
+    ROLE_EXPORT: AmberSensorDescription(
+        key="today_feed_in",
+        translation_key="today_feed_in",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement=CURRENCY,
+        suggested_display_precision=2,
+        value_fn=_today(ROLE_EXPORT),
+        attrs_fn=_today_attrs(ROLE_EXPORT),
+    ),
+}
+_TODAY_IDS = {"today_cost": "today_cost_estimated", "today_feed_in": "today_feed_in_estimated"}
+"""Entity IDs for Today so far, after the site's prefix (the names are long)."""
 
 
 def _remove(hass: HomeAssistant, site: str, descriptions: tuple[Any, ...]) -> None:
@@ -337,6 +396,9 @@ async def _async_add_site_sensors(
             descriptions.extend(group)
         else:
             _remove(hass, site, group)
+    today_roles = set(manager.today.sides) if manager.today is not None else set()
+    descriptions.extend(d for role, d in TODAY_SENSORS.items() if role in today_roles)
+    _remove(hass, site, tuple(d for role, d in TODAY_SENSORS.items() if role not in today_roles))
     for spec in manager.ctx.specs:
         if spec.channel is None:
             continue
@@ -372,6 +434,9 @@ async def _async_add_site_sensors(
             )
         )
     entity_ids = await async_site_entity_ids(hass, "sensor", descriptions) if pinned_ids else {}
+    device = dr.async_get(hass).async_get(site_runtime.device_id)
+    prefix = slugify(ENTITY_ID_PREFIX if pinned_ids or device is None else device.name)
+    entity_ids.update({key: f"sensor.{prefix}_{name}" for key, name in _TODAY_IDS.items()})
     async_add_entities(
         (
             AmberSensor(

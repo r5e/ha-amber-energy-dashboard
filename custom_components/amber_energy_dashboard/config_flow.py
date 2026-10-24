@@ -119,6 +119,21 @@ from .migration import (
 )
 from .schedule import format_times, parse_times
 from .sites import site_key, site_options, site_subentries, site_title
+from .sources import (
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_DISCHARGE,
+    CONF_PRICE_FEED_IN,
+    CONF_PRICE_GENERAL,
+    CONF_SOLAR_ENERGY,
+    CONF_SOLAR_POWER,
+    CONF_TODAY_METER,
+    PRICE_KEYS,
+    SOURCE_KEYS,
+    SOURCE_NAMES,
+    detect_prices,
+    price_factor,
+    today_meters,
+)
 from .statistics import CHANNEL_LABELS, ChannelConfig
 from .storage import AmberStore
 
@@ -566,12 +581,80 @@ class _SiteSettings:
     def _settings_menu(self, step_id: str) -> Any:
         """Settings, bill estimate, allowance, renaming, channels, migration, and undo
         once a migration has started."""
-        options = ["settings", "bill", "allowance", "rename", "channels", "migrate"]
+        options = ["settings", "sources", "bill", "allowance", "rename", "channels", "migrate"]
         manager = self._manager()
         record = manager.store.migration if manager is not None else None
         if record is not None and record["status"] in (STATUS_IN_PROGRESS, STATUS_COMPLETED):
             options.append("undo_migration")
         return self.async_show_menu(step_id=step_id, menu_options=options)  # type: ignore[attr-defined]
+
+    async def async_step_sources(self, user_input: dict[str, Any] | None = None) -> Any:
+        """The site-wide sources (section 22): live prices (auto-detected until set; none
+        is valid), the grid meter Today so far reads (with several), solar production
+        and the battery's charge and discharge."""
+        entry, sub = self._settings_entry(), self._site()
+        current = self._current()
+        types = {c["type"] for c in sub.data[CONF_CHANNELS]}
+        prices = [key for channel, key in PRICE_KEYS.items() if channel in types]
+        meters = today_meters(entry, sub.data)
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = _check_sources(self.hass, user_input)
+            if not errors:
+                options = {k: v for k, v in current.items() if k not in SOURCE_KEYS}
+                options.update({key: user_input.get(key) or None for key in prices})
+                for key in _OPTIONAL_SOURCES:
+                    if user_input.get(key):
+                        options[key] = user_input[key]
+                if len(meters) > 1 and user_input.get(CONF_TODAY_METER):
+                    options[CONF_TODAY_METER] = user_input[CONF_TODAY_METER]
+                return self._save_options(options)
+        detected = detect_prices(self.hass, sub.data[CONF_SITE_ID])
+        fields: dict[Any, Any] = {vol.Optional(key): _price_selector() for key in prices}
+        if len(meters) > 1:
+            fields[vol.Optional(CONF_TODAY_METER)] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[SelectOptionDict(value=m.subentry_id, label=m.title) for m in meters],
+                    mode=SelectSelectorMode.LIST,
+                )
+            )
+        fields[vol.Optional(CONF_SOLAR_POWER)] = EntitySelector(
+            EntitySelectorConfig(domain="sensor", device_class="power")
+        )
+        for key in (CONF_SOLAR_ENERGY, CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE):
+            fields[vol.Optional(key)] = _energy_selector()
+        suggested = {
+            **{
+                key: current[key]
+                if key in current
+                else getattr(detected.get(channel), "entity_id", None)
+                for channel, key in PRICE_KEYS.items()
+                if key in prices
+            },
+            **{k: v for k, v in current.items() if k in SOURCE_KEYS - set(PRICE_KEYS.values())},
+            **(user_input or {}),
+        }
+        if len(meters) > 1:
+            suggested.setdefault(CONF_TODAY_METER, meters[0].subentry_id)
+        found = [
+            f"- {label}: {detected[channel].entity_id} ({SOURCE_NAMES[detected[channel].origin]})"
+            for channel, label in ((CHANNEL_GENERAL, "General"), (CHANNEL_FEED_IN, "Feed-in"))
+            if channel in detected and channel in types
+        ]
+        return self.async_show_form(  # type: ignore[attr-defined]
+            step_id="sources",
+            data_schema=self.add_suggested_values_to_schema(  # type: ignore[attr-defined]
+                vol.Schema(fields), suggested
+            ),
+            errors=errors,
+            description_placeholders={
+                "detected": "\n".join(found)
+                or "- none (neither Amber Express nor Amber Electric is set up for this site)",
+                "meter": meters[0].title
+                if len(meters) == 1
+                else ("choose one below" if meters else "none: add a grid meter"),
+            },
+        )
 
     async def async_step_rename(self, user_input: dict[str, Any] | None = None) -> Any:
         """Rename the site (2.2.0-dev3): its sub-entry's title and its device's name. A
@@ -670,9 +753,13 @@ class _SiteSettings:
                 options[CONF_OWN_FALLBACK] = bool(
                     user_input.get(CONF_OWN_FALLBACK, current.get(CONF_OWN_FALLBACK, True))
                 )
-                # The bill estimate and the allowance have their own steps; keep theirs.
+                # The bill estimate, the allowance and the sources have their own steps.
                 options.update(
-                    {k: v for k, v in current.items() if k in _BILL_KEYS | _ALLOWANCE_KEYS}
+                    {
+                        k: v
+                        for k, v in current.items()
+                        if k in _BILL_KEYS | _ALLOWANCE_KEYS | SOURCE_KEYS
+                    }
                 )
                 return self._save_options(options)
         current = self._current()
@@ -1145,6 +1232,44 @@ def _check_sensors(
             errors[key] = "sensor_in_use"
         elif entity_id in seen:
             errors[key] = "same_sensor"
+        elif error := _energy_sensor_error(hass, entity_id):
+            errors[key] = error
+        seen.add(entity_id)
+    return errors
+
+
+_OPTIONAL_SOURCES = (
+    CONF_SOLAR_POWER,
+    CONF_SOLAR_ENERGY,
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_DISCHARGE,
+)
+
+
+def _price_selector() -> EntitySelector:
+    return EntitySelector(EntitySelectorConfig(domain="sensor"))
+
+
+def _check_sources(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, str]:
+    """Errors by field: a price must be in $/kWh, c/kWh or $/MWh; solar power a power
+    sensor; the energy sensors cumulative; and no sensor used twice."""
+    errors: dict[str, str] = {}
+    seen: set[str] = set()
+    for key in (CONF_PRICE_GENERAL, CONF_PRICE_FEED_IN, *_OPTIONAL_SOURCES):
+        entity_id = user_input.get(key)
+        if not entity_id:
+            continue
+        state = hass.states.get(entity_id)
+        if entity_id in seen:
+            errors[key] = "same_sensor"
+        elif state is None:
+            errors[key] = "sensor_not_found"
+        elif key in (CONF_PRICE_GENERAL, CONF_PRICE_FEED_IN):
+            if price_factor(state.attributes.get("unit_of_measurement")) is None:
+                errors[key] = "price_unit"
+        elif key == CONF_SOLAR_POWER:
+            if state.attributes.get("device_class") != "power":
+                errors[key] = "not_power"
         elif error := _energy_sensor_error(hass, entity_id):
             errors[key] = error
         seen.add(entity_id)

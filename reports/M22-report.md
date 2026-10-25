@@ -72,7 +72,7 @@ apply the calibration offset to Today so far). **Stopped for review.**
     - ULID-like site IDs;
     - 10+ digit runs;
     - e-mail addresses;
-    - the maintainer's names and email domain, `duckdns`, `nuclab`, `192.168`, `.local`;
+    - the maintainer's names and email domain, hostnames and private addresses;
     - NMI tails other than 1234.
 
     **0 hits.** The only NMI text is "…1234". The statistic IDs in 18 and 19 are blurred.

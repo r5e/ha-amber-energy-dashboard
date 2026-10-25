@@ -7,6 +7,7 @@ window with daily lumps before it, the v1 kit daily lumps throughout.
 
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -991,11 +992,14 @@ async def test_energy_fallbacks(
     assert report["energy"]["safe"] is False
     assert report["energy"]["other_uses"] == [ADV[ROLE_IMPORT_ENERGY]]
     assert "do not validate" in report["energy"]["reason"]
-    assert report["energy"]["instructions"][1].startswith(
-        f"Grid consumption: replace {ADV[ROLE_IMPORT_ENERGY]} with {E1}"
-    )
+    assert report["energy"]["instructions"][1] == (
+        f'Grid consumption: replace {ADV[ROLE_IMPORT_ENERGY]} with "Amber general E1 energy", '
+        "and for cost choose 'Use an entity tracking the total costs' with \"Amber general E1 "
+        'cost".'
+    )  # by the names the Energy dashboard's pickers show, not the IDs (M22)
     text = migration.format_report(report)
     assert "Cannot be changed automatically" in text
+    assert "01fakesite" not in text.lower()
 
     with patch.object(energy_mod, "ENERGY_SOURCE_SCHEMA", side_effect=vol.Invalid("bad")):
         report = await _migrate(hass, dry_run=False, confirm_backup=True)
@@ -1145,6 +1149,21 @@ async def test_options_flow_migrate_and_undo(
     assert "Parity (hourly rules)" in text
     assert "Energy dashboard, before:" in text
     assert f"Automation {ADV_AUTOMATION} (on): will be turned off." in text
+    # Friendly names, not statistic IDs (they hold the site ID); no raw JSON (M22).
+    site = "Site …I000"
+    assert f"- import cost: {ADV[ROLE_IMPORT_COST]} -> Grid import cost ({site})" in text
+    assert f"Copy 6 rows into Net cost ({site}) (2026-09-16 to 2026-09-21)" in text
+    assert (
+        "Energy dashboard, before:\n"
+        f"- Grid consumption: {ADV[ROLE_IMPORT_ENERGY]}, no cost\n"
+        f"- Return to grid: {ADV[ROLE_EXPORT_ENERGY]}, no compensation\n"
+        "After:\n"
+        f"- Grid consumption: Grid import energy ({site}), cost from Grid import cost ({site})\n"
+        f"- Return to grid: Grid export energy ({site}), compensation from Grid export "
+        f"compensation ({site})\n"
+    ) in text
+    assert "01fakesite" not in text.lower()
+    assert "{" not in text
     flow = await hass.config_entries.options.async_configure(
         flow["flow_id"], {"confirm_backup": False}
     )
@@ -1153,6 +1172,11 @@ async def test_options_flow_migrate_and_undo(
         flow["flow_id"], {"confirm_backup": True}
     )
     assert flow["step_id"] == "migrate_result"
+    result = flow["description_placeholders"]["result"]
+    assert "Copied 6 rows into Grid import energy (Site …I000) (baseline 1060.0)." in result
+    assert "Re-based 4 days from stored hourly amounts, with no API calls." in result
+    assert "01fakesite" not in result.lower()
+    assert "{" not in result
     assert "Migration status: completed." in flow["description_placeholders"]["result"]
     assert "Energy dashboard switched" in flow["description_placeholders"]["result"]
     flow = await hass.config_entries.options.async_configure(flow["flow_id"], {})
@@ -2364,3 +2388,45 @@ async def test_one_compared_day_before_a_stop_is_unverified(
         "Only 1 day has data in both the YAML kit and the integration (at least 3 are "
         "needed), so the old history can't be checked against Amber's data."
     )
+
+
+def test_report_text_without_ids() -> None:
+    """The report's text names statistics by label, prices in words, and the re-base as
+    a sentence; statistic IDs stay in the report data (M22)."""
+    ours = f"{DOMAIN}:01fakesite0000000000000000_e1_energy"
+    report = {"labels": {ours: {"label": "Grid import energy (Home)", "name": "x"}}}
+    assert migration._stat_text(report, ours) == "Grid import energy (Home)"
+    assert migration._stat_text(report, None) == "none"
+    assert migration._stat_text(report, f"{DOMAIN}:other") == (
+        "another statistic of this integration"
+    )
+    assert migration._stat_text({}, "sensor.kit") == "sensor.kit"
+    sources = [
+        {"stat_energy_from": ours, "entity_energy_price": "sensor.price"},
+        {"stat_energy_from": "sensor.cl", "number_energy_price": 0.2, "stat_energy_to": None},
+        {"stat_energy_to": "sensor.out", "entity_energy_price_export": "sensor.fit"},
+    ]
+    assert migration._energy_lines(report, sources) == [
+        "- Grid connection 1: Grid consumption: Grid import energy (Home), cost at the price "
+        "in sensor.price",
+        "- Grid connection 2: Grid consumption: sensor.cl, cost at a fixed price of 0.2 per kWh",
+        "- Grid connection 3: Return to grid: sensor.out, compensation at the price in sensor.fit",
+    ]
+    assert migration._rebase_text({"skipped": "already continuous"}) == (
+        "Re-base not needed (already continuous)."
+    )
+    assert migration._rebase_text(
+        {"source": "Amber", "calls": {"usage": 1}, "rewritten_days": 1}
+    ) == ("Re-based 1 day from Amber, with 1 API call.")
+    assert migration._rebase_text(
+        {"source": "Amber", "calls": {"a": 2, "b": 1}, "rewritten_days": 3}
+    ) == ("Re-based 3 days from Amber, with 3 API calls.")
+
+
+def test_site_name_falls_back_to_the_entry_title() -> None:
+    """Without the site's sub-entry, the labels use the entry's title."""
+    manager = SimpleNamespace(
+        ctx=SimpleNamespace(site_id="01FAKESITE0000000000000000"),
+        entry=SimpleNamespace(subentries={}, title="Amber Energy Dashboard"),
+    )
+    assert migration._site_name(manager) == "Amber Energy Dashboard"

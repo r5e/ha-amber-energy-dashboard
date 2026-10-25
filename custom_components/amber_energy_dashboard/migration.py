@@ -11,7 +11,7 @@ recorded in the Store, so the migration resumes after an interruption and can be
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 import itertools
 import json
@@ -39,6 +39,7 @@ from . import importer
 from .const import (
     CHANNEL_FEED_IN,
     CHANNEL_GENERAL,
+    CONF_SITE_ID,
     DOMAIN,
     MODE_PRICING,
     ROLE_EXPORT_COST,
@@ -46,6 +47,7 @@ from .const import (
     ROLE_IMPORT_COST,
     ROLE_IMPORT_ENERGY,
     ROLES,
+    SUBENTRY_SITE,
 )
 from .energy import async_save_sources, validate_sources
 from .importer import HOUR, ImportDayError, ImportRefusedError, nem_date, nem_day_start
@@ -95,6 +97,13 @@ _ROLE_LABELS: Final = {
     ROLE_IMPORT_COST: "import cost",
     ROLE_EXPORT_COST: "export cost",
     ROLE_NET: "net cost",
+}
+_TARGET_LABELS: Final = {
+    ROLE_IMPORT_ENERGY: "Grid import energy",
+    ROLE_EXPORT_ENERGY: "Grid export energy",
+    ROLE_IMPORT_COST: "Grid import cost",
+    ROLE_EXPORT_COST: "Grid export compensation",
+    ROLE_NET: "Net cost",
 }
 
 BACKUP_WARNING: Final = (
@@ -435,6 +444,27 @@ def _targets(manager: AmberManager) -> tuple[dict[str, str], list[str]]:
         targets[ROLE_EXPORT_ENERGY] = specs[(feed_in[0].identifier, Metric.ENERGY)]
         targets[ROLE_EXPORT_COST] = specs[(feed_in[0].identifier, Metric.COMPENSATION)]
     return targets, problems
+
+
+def _site_name(manager: AmberManager) -> str:
+    """The site's name (its sub-entry's title), else the entry's title."""
+    site_id = manager.ctx.site_id.lower()
+    for sub in manager.entry.subentries.values():
+        if sub.subentry_type == SUBENTRY_SITE and sub.data[CONF_SITE_ID].lower() == site_id:
+            return sub.title
+    return manager.entry.title
+
+
+def _labels(manager: AmberManager, targets: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    """How each target statistic is shown to the user: ``label``, for example "Grid
+    import energy (Home)", and ``name``, its name in the Energy dashboard's pickers. Its
+    ID holds the site ID, so it appears only in the report data (diagnostics, the log)."""
+    names = {spec.statistic_id: spec.name for spec in manager.ctx.specs}
+    site = _site_name(manager)
+    return {
+        sid: {"label": f"{_TARGET_LABELS[role]} ({site})", "name": names[sid]}
+        for role, sid in targets.items()
+    }
 
 
 def _legacy_ends(rows: Sequence[Mapping[str, Any]], rules: str, tz: Any) -> dict[date, float]:
@@ -844,11 +874,14 @@ def _find_automations(
 
 
 async def _energy_plan(
-    hass: HomeAssistant, sources: Mapping[str, Any], targets: Mapping[str, str]
+    hass: HomeAssistant,
+    sources: Mapping[str, Any],
+    targets: Mapping[str, str],
+    labels: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
     """The Energy dashboard change: before and after of each grid source that uses the
     legacy statistics, validated against HA's schema."""
-    instructions = _energy_instructions(sources, targets)
+    instructions = _energy_instructions(sources, targets, labels)
     try:
         manager = await async_get_manager(hass)
     except Exception as err:  # any failure means "not safely updatable"
@@ -908,18 +941,25 @@ async def _energy_plan(
     return plan
 
 
-def _energy_instructions(sources: Mapping[str, Any], targets: Mapping[str, str]) -> list[str]:
+def _energy_instructions(
+    sources: Mapping[str, Any],
+    targets: Mapping[str, str],
+    labels: Mapping[str, Mapping[str, str]],
+) -> list[str]:
+    def picked(role: str) -> str:
+        return f'"{labels[targets[role]]["name"]}"' if role in targets else "(none)"
+
     lines = [
         "Settings > Dashboards > Energy > Electricity grid: edit the grid connection.",
         f"Grid consumption: replace {sources[ROLE_IMPORT_ENERGY]} with "
-        f"{targets.get(ROLE_IMPORT_ENERGY)}, and for cost choose 'Use an entity tracking the "
-        f"total costs' with {targets.get(ROLE_IMPORT_COST)}.",
+        f"{picked(ROLE_IMPORT_ENERGY)}, and for cost choose 'Use an entity tracking the total "
+        f"costs' with {picked(ROLE_IMPORT_COST)}.",
     ]
     if sources.get(ROLE_EXPORT_ENERGY) and ROLE_EXPORT_ENERGY in targets:
         lines.append(
             f"Return to grid: replace {sources[ROLE_EXPORT_ENERGY]} with "
-            f"{targets[ROLE_EXPORT_ENERGY]}, and for compensation choose 'Use an entity "
-            f"tracking the total received' with {targets[ROLE_EXPORT_COST]}."
+            f"{picked(ROLE_EXPORT_ENERGY)}, and for compensation choose 'Use an entity "
+            f"tracking the total received' with {picked(ROLE_EXPORT_COST)}."
         )
     return lines
 
@@ -938,6 +978,8 @@ class _Plan:
     problems: list[str]
     notes: list[str]
     flagged: list[dict[str, Any]] | None = None
+    labels: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Target statistic ID -> how it is shown (``_labels``)."""
 
 
 # --- implausible legacy rows (DESIGN section 14) -----------------------------------------
@@ -1136,6 +1178,7 @@ async def _async_plan(
     targets, problems = _targets(manager)
     problems += _preconditions(manager, sources, targets)
     plan = _Plan(sources, layout, targets, None, {}, None, None, [], [], problems, [])
+    plan.labels = _labels(manager, targets)
     if problems:
         return plan
     legacy_ids = {role: sources[role] for role in ROLES if sources.get(role)}
@@ -1185,7 +1228,7 @@ async def _async_plan(
             "The copied history is approximate: daily totals"
             + (", approximate cost." if cost_copied else " (no cost history copied).")
         )
-    plan.energy = await _energy_plan(hass, sources, targets)
+    plan.energy = await _energy_plan(hass, sources, targets, plan.labels)
     plan.automations = _find_automations(hass, layout, sources)
     listed = [item.render() for item in layout.cleanup] if layout else list(_MANUAL_CLEANUP)
     plan.cleanup = listed + list(_COMMON_CLEANUP)
@@ -1213,6 +1256,7 @@ def _report(
             "layout": plan.sources["layout"],
             "sources": plan.sources,
             "targets": plan.targets,
+            "labels": plan.labels,
             "boundary": plan.boundary.isoformat() if plan.boundary else None,
             "copy": {
                 sid: {
@@ -1834,6 +1878,70 @@ def _parity_lines(parity: Mapping[str, Any] | None) -> list[str]:
     return lines
 
 
+def _stat_text(report: Mapping[str, Any], sid: str | None) -> str:
+    """A statistic as the user sees it: a target by its label (its ID holds the site ID),
+    a legacy statistic (an entity of the kit) by its ID."""
+    if sid is None:
+        return "none"
+    label = (report.get("labels") or {}).get(sid, {}).get("label")
+    if label:
+        return label
+    return "another statistic of this integration" if sid.startswith(f"{DOMAIN}:") else sid
+
+
+def _price_text(
+    report: Mapping[str, Any], source: Mapping[str, Any], keys: tuple[str, str, str], what: str
+) -> str:
+    stat, entity, number = (source.get(key) for key in keys)
+    if stat:
+        return f"{what} from {_stat_text(report, stat)}"
+    if entity:
+        return f"{what} at the price in {entity}"
+    if number is not None:
+        return f"{what} at a fixed price of {number} per kWh"
+    return f"no {what}"
+
+
+def _energy_lines(report: Mapping[str, Any], sources: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Grid connections of the Energy dashboard as a short list."""
+    lines = []
+    for index, source in enumerate(sources, 1):
+        prefix = f"Grid connection {index}: " if len(sources) > 1 else ""
+        if source.get("stat_energy_from"):
+            price = ("stat_cost", "entity_energy_price", "number_energy_price")
+            lines.append(
+                f"- {prefix}Grid consumption: {_stat_text(report, source['stat_energy_from'])}, "
+                + _price_text(report, source, price, "cost")
+            )
+        if source.get("stat_energy_to"):
+            price = (
+                "stat_compensation",
+                "entity_energy_price_export",
+                "number_energy_price_export",
+            )
+            lines.append(
+                f"- {prefix}Return to grid: {_stat_text(report, source['stat_energy_to'])}, "
+                + _price_text(report, source, price, "compensation")
+            )
+    return lines
+
+
+def _rebase_text(rebase: Mapping[str, Any]) -> str:
+    """The re-base step as a sentence."""
+    if "skipped" in rebase:
+        return f"Re-base not needed ({rebase['skipped']})."
+    days = rebase.get("rewritten_days", 0)
+    calls = sum((rebase.get("calls") or {}).values())
+    return (
+        f"Re-based {days} day{'' if days == 1 else 's'} from {rebase.get('source', 'Amber')}, "
+        + (
+            "with no API calls."
+            if not calls
+            else f"with {calls} API call{'' if calls == 1 else 's'}."
+        )
+    )
+
+
 def format_report(report: Mapping[str, Any]) -> str:
     """A readable summary of a dry-run or run report (markdown)."""
     lines: list[str] = [f"**{report['warning']}**", ""]
@@ -1847,22 +1955,26 @@ def format_report(report: Mapping[str, Any]) -> str:
     sources, targets = report["sources"], report["targets"]
     for role in ROLES:
         if sources.get(role):
-            lines.append(f"- {_ROLE_LABELS[role]}: {sources[role]} -> {targets.get(role)}")
+            lines.append(
+                f"- {_ROLE_LABELS[role]}: {sources[role]} -> "
+                f"{_stat_text(report, targets.get(role))}"
+            )
     for problem in report.get("problems", []):
         lines.append(f"Problem: {problem}")
     lines.extend(_flagged_lines(report.get("flagged") or {}))
     lines.extend(_parity_lines(report.get("parity")))
     for sid, info in report.get("copy", {}).items():
         lines.append(
-            f"Copy {info['rows']} rows into {sid} ({info['from'][:10]} to {info['to'][:10]}), "
+            f"Copy {info['rows']} rows into {_stat_text(report, sid)} "
+            f"({info['from'][:10]} to {info['to'][:10]}), "
             f"baseline {info['baseline']}."
         )
     energy = report.get("energy") or {}
     if energy.get("changed"):
         lines.append("Energy dashboard, before:")
-        lines.append(f"`{json.dumps(energy['before'])}`")
-        lines.append("after:")
-        lines.append(f"`{json.dumps(energy['after'])}`")
+        lines.extend(_energy_lines(report, energy["before"]))
+        lines.append("After:")
+        lines.extend(_energy_lines(report, energy["after"]))
         if not energy.get("safe"):
             lines.append(f"Cannot be changed automatically ({energy['reason']}); instructions:")
             lines.extend(f"- {line}" for line in energy["instructions"])
@@ -1886,10 +1998,13 @@ def format_result(report: Mapping[str, Any]) -> str:
     for gap in (report.get("parity") or {}).get("gaps", []):
         lines.append(gap["text"])
     for sid, info in (result.get("copy") or {}).items():
-        lines.append(f"Copied {info['rows']} rows into {sid} (baseline {info['baseline']}).")
+        lines.append(
+            f"Copied {info['rows']} rows into {_stat_text(report, sid)} "
+            f"(baseline {info['baseline']})."
+        )
     rebase = result.get("rebase")
     if rebase:
-        lines.append(f"Re-base: {rebase}.")
+        lines.append(_rebase_text(rebase))
     energy = result.get("energy") or {}
     if energy.get("changed"):
         lines.append("Energy dashboard switched to the new statistics.")

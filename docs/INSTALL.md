@@ -140,7 +140,7 @@ Open the site's device (named after your site, for example **Home**) to see its 
 Its model line shows the network and the NMI's last four digits, for example
 "Endeavour Energy · NMI …1234":
 
-<img src="images/device-page.png" alt="The device page after setup" width="627">
+<img src="images/device-page.png" alt="The device page after setup" width="626">
 
 - **Import status** reads **Up to date** when everything is imported.
 - **Last imported date** is normally yesterday, because Amber publishes each day's usage
@@ -156,7 +156,7 @@ Its model line shows the network and the NMI's last four digits, for example
 - With the **bill estimate** or the **export allowance** turned on (section 5), their
   sensors appear here too:
 
-  <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="234">
+  <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="236">
 
 - With a **grid meter** and a **live price**, **Today's cost so far (estimated)** and
   **Today's feed-in so far (estimated)** appear here too ([Today so far](#today-so-far)).

@@ -741,8 +741,28 @@ Each milestone ends with a written report and the maintainer's sign-off before t
     section, a consolidated CHANGELOG entry, a review pass (strings, diagnostics
     redaction, log levels) and HACS default-list readiness.
 
-The battery cost basis for solar-aware appliance cost moves to 2.3, after the 2.2 release
-(decided at the M20 review).
+    **2.2.0b4:** solar sensors that go offline at night (section 22).
+22. **2.2.0rc1:** the screenshots; what the user sees never shows a full NMI or the
+    site ID (the site picker, the migration's dry run and result, error messages in
+    Repairs and services; the IDs stay in the report data, diagnostics and the log);
+    monetary sensors never read −0.00; the bill card's money format.
+
+### Roadmap: 2.3
+
+Planned after the 2.2 release (decided at the M20 and M22 reviews):
+
+1. **The battery cost basis** for solar-aware appliance cost (section 22). Until then
+   battery energy is valued at the import price, a documented limitation.
+2. **A built-in dashboard card** shipped with the integration:
+   - registered as a frontend resource by the integration, so it appears in the card
+     picker as **"Amber bill"** without a manual resource entry;
+   - a visual editor, with a site picker;
+   - no dependency on button-card;
+   - shows the bill: the current cycle (including today), the projection and the
+     previous bill with its lines; **Today so far**; and the export allowance.
+
+   The example YAML card (`docs/cards/bill-card.yaml`, which needs button-card) stays
+   until the built-in card is released.
 
 ## 17. Carried-forward lessons (do not rediscover)
 

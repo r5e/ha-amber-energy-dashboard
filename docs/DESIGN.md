@@ -1204,20 +1204,25 @@ a general-channel import and a general live price):
   before today whose billed record is imported, with estimated and billed amount and kWh,
   the error (estimate minus billed), its percentage, and `complete` (all 288 intervals
   priced).
-- The mapped sensors are used as they are (raw, as section 21 requires); the calibration
-  offset is not applied, so the estimate is expected to differ from the bill by about the
-  offset × hours.
-- **Offset-corrected value** (2.2.0-dev4, for comparison while the M19 decision is
-  open): each side also accumulates its energy and amount with the grid meter's current
-  calibration offset applied (`today.offset_corrected`: offset × the time since the
-  previous boundary, added to the import when the interval's import is at least its
-  export, else taken from the export; a side driven below zero passes the rest to the
-  other, so the net changes by exactly the correction). Attributes `offset_w`,
-  `offset_corrected`, `offset_corrected_kwh`, `offset_corrected_intervals`; the
-  comparison adds `estimated_offset_corrected` and `error_offset_corrected`.
+- The mapped sensors are the raw meter sensors (as section 21 requires). **The estimate
+  applies the grid meter's calibration offset** (decided for 2.2.0 from production data:
+  on the first full day, 285 of 288 intervals, the raw estimate was 1.8 % under the
+  billed cost and the corrected one 1.0 %). Each interval adds offset × the time since
+  the previous boundary (`today.offset_corrected`) to the import when the interval's
+  import is at least its export, else takes it from the export; a side driven below zero
+  passes the rest to the other, so the net changes by exactly the correction. An
+  interval without a known offset counts as measured.
+- Each side keeps the raw totals (`kwh`, `amount`) and the estimate (`estimate_kwh`,
+  `estimate_amount`), with `corrected_intervals`. A state saved by 2.2.0rc1 or earlier
+  (offset-corrected totals of only the intervals with an offset) is upgraded on load:
+  the other intervals are added at the raw rate, in proportion. Attributes `offset_w`,
+  `raw_estimate`, `raw_energy_kwh`, `offset_corrected_intervals`; the comparison gives
+  `estimated_corrected`, `error_corrected`, `error_corrected_percent`,
+  `estimated_corrected_kwh` and the same with `raw`.
 - **Bill to date** gets `including_today_estimated`: bill to date + today's cost − today's
   feed-in + one day of fixed charges (incl. GST), when the bill's data runs through
   yesterday (or today is the cycle's first day); otherwise None.
+  `including_today_estimated_raw` is the same with the raw estimates.
   `including_today_leaves_out` lists what the estimate can't see: "controlled load" (the
   site has one) and "feed-in" (a feed-in channel but no export side).
 

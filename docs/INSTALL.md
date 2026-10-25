@@ -504,25 +504,29 @@ Every 5 minutes the energy since the last 5-minute mark is priced at the price s
 the end of that interval. "Today" is the NEM day Amber bills (midnight to midnight AEST;
 during daylight saving, 01:00 to 01:00 local time).
 
-- **Which sensors:** the grid meter's mapped sensors, as they are. Map the raw meter
-  sensors (as the calibration offset needs); Today so far doesn't apply the offset, so it
-  differs from the bill by about the offset times the hours elapsed (for 10 W, about
-  0.24 kWh a day).
-- **Offset-corrected value** (for comparison): `offset_corrected` and
-  `offset_corrected_kwh` show the estimate with the grid meter's calibration offset
-  (`offset_w`) applied: added to the import while the interval imports, taken from the
-  export while it exports. `yesterday_estimate_vs_billed` compares both with the bill
-  (`estimated_offset_corrected`, `error_offset_corrected`). The sensor's value is still
-  the uncorrected estimate.
-- **Attributes:** the energy (`energy_kwh`), the intervals priced so far against those
+- **Which sensors:** the grid meter's mapped sensors. Map the raw meter sensors (as the
+  calibration offset needs).
+- **Calibration offset:** the estimate applies the grid meter's calibration offset
+  (`offset_w`), as the bill sees the meter's error: every 5 minutes the offset times the
+  interval is added to the import while the interval imports, or taken from the export
+  while it exports. Until the meter has an offset (a new grid meter needs a day of billed
+  data), the energy counts as measured. `offset_corrected_intervals` shows how many of
+  today's intervals had the offset. In the maintainer's first full-day comparison the
+  corrected estimate was 1.0 % under the bill, against 1.8 % without the offset.
+- **Attributes:** the energy (`energy_kwh`), the estimate without the offset
+  (`raw_estimate`, with `raw_energy_kwh`), the intervals priced so far against those
   elapsed, any energy without a usable price (`unpriced_kwh`), the sensors used, and
   **`yesterday_estimate_vs_billed`**: once Amber's data for a day arrives (normally the
-  next morning), the day's estimate against the billed amount and kWh, with the error.
-  `complete` is true when every interval of that day was priced.
+  next morning), the day's estimate against the billed amount and kWh, with the error
+  (estimate minus billed) for both estimates: `estimated_corrected`, `error_corrected`
+  and `error_corrected_percent` for the sensor's value, and `estimated_raw`, `error_raw`
+  and `error_raw_percent` without the offset. `complete` is true when every interval of
+  that day was priced.
 - **Bill to date** (with the bill estimate on) gets **`including_today_estimated`**: the
-  bill to date plus today's cost, minus today's feed-in, plus a day of fixed charges. It
-  is shown once yesterday has been imported. `including_today_leaves_out` lists what the
-  estimate can't see (for example the controlled load).
+  bill to date plus today's cost, minus today's feed-in, plus a day of fixed charges
+  (`including_today_estimated_raw` is the same without the offset). It is shown once
+  yesterday has been imported. `including_today_leaves_out` lists what the estimate can't
+  see (for example the controlled load).
 - After a restart, energy used while Home Assistant was down is priced at the first price
   seen afterwards (or dropped if the downtime spans midnight). A meter reset drops that
   interval.

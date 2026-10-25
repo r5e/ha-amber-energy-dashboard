@@ -300,8 +300,8 @@ With a grid meter and a general live price, the site gets **Today's cost so far
 the live price. They are display estimates, never written into statistics. Once Amber
 publishes a day, the attribute `yesterday_estimate_vs_billed` shows that day's estimate
 against the bill, and the bill estimate's **Bill to date** gains
-`including_today_estimated`. The attribute `offset_corrected` shows the estimate with the
-grid meter's calibration offset applied, for comparison. See the
+`including_today_estimated`. The estimates apply the grid meter's calibration offset
+(`raw_estimate` shows them without it). See the
 [guide](docs/INSTALL.md#today-so-far).
 
 ## Bill estimate (optional)

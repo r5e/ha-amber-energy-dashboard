@@ -2334,10 +2334,14 @@ class AmberManager:
     ) -> dict[str, Any]:
         """The bill to date with today's estimate (cost, minus feed-in, plus a day of fixed
         charges) once yesterday is imported; None while a day in between is missing.
-        What the estimate can't see (controlled load; feed-in without an export) is
-        listed."""
+        Also with the raw estimate (without the calibration offset). What the estimate
+        can't see (controlled load; feed-in without an export) is listed."""
         if today is None or self.bill is None:
-            return {"including_today_estimated": None, "including_today_leaves_out": []}
+            return {
+                "including_today_estimated": None,
+                "including_today_estimated_raw": None,
+                "including_today_leaves_out": [],
+            }
         types = {c.type for c in self.ctx.channels}
         leaves_out = []
         if CHANNEL_CONTROLLED_LOAD in types:
@@ -2345,18 +2349,29 @@ class AmberManager:
         if CHANNEL_FEED_IN in types and ROLE_EXPORT not in today:
             leaves_out.append("feed-in")
         day = date.fromisoformat(today["date"])
-        net = (
-            today[ROLE_IMPORT]["amount"]
-            - (today[ROLE_EXPORT]["amount"] if ROLE_EXPORT in today else 0.0)
-            + self.bill.daily_fixed_incl_gst
-        )
         start, _ = cycle_for(day, self.bill.billing_day)
-        value = None
         if bill["data_through"] == (day - timedelta(days=1)).isoformat():
-            value = round(bill["bill_to_date"] + net, 2)
+            base = bill["bill_to_date"]
         elif bill["data_through"] is None and day == start:
-            value = round(net, 2)
-        return {"including_today_estimated": value, "including_today_leaves_out": leaves_out}
+            base = 0.0
+        else:
+            base = None
+
+        def including(key: str) -> float | None:
+            if base is None:
+                return None
+            net = (
+                today[ROLE_IMPORT][key]
+                - (today[ROLE_EXPORT][key] if ROLE_EXPORT in today else 0.0)
+                + self.bill.daily_fixed_incl_gst
+            )
+            return round(base + net, 2)
+
+        return {
+            "including_today_estimated": including("amount"),
+            "including_today_estimated_raw": including("raw_estimate"),
+            "including_today_leaves_out": leaves_out,
+        }
 
     def _energy_sid(self, channel: ChannelConfig) -> str:
         return next(

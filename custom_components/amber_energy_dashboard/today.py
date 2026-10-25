@@ -16,11 +16,11 @@ has one) and priced at the live price that was in effect at the end of the inter
   priced at the first interval's price. Across midnight it is dropped (which day it
   belongs to is unknown).
 
-**Offset-corrected value** (2.2.0-dev4, for comparison only): alongside the estimate,
-each side also keeps the amount with the grid meter's calibration offset applied (the
-offset, in W, times the interval's length, added to the import while the interval
-imports more than it exports, else taken from the export). The estimate itself is
-unchanged; production data will show which is closer to the bill.
+**Calibration offset** (2.2.0): the estimate applies the grid meter's calibration offset
+(the offset, in W, times the interval's length, added to the import while the interval
+imports more than it exports, else taken from the export). An interval without a known
+offset counts as measured. Each side also keeps the raw estimate (the meter's energy as
+measured), for comparison: in production the corrected estimate was the closer one.
 
 The state is kept in a small Store of its own (saved at most every 30 s, and when Home
 Assistant stops), with each finished day's estimate for 14 days, so it can be compared
@@ -84,10 +84,13 @@ _TOTALS: Final = (
     "amount",
     "unpriced_kwh",
     "intervals",
-    "corrected_kwh",
-    "corrected_amount",
+    "estimate_kwh",
+    "estimate_amount",
     "corrected_intervals",
 )
+"""Each side's day totals. kwh and amount are raw (as measured); estimate_kwh and
+estimate_amount have the calibration offset applied in the corrected_intervals that had
+one (raw in the others)."""
 
 
 def _empty_side(entity_id: str | None = None) -> dict[str, Any]:
@@ -96,12 +99,29 @@ def _empty_side(entity_id: str | None = None) -> dict[str, Any]:
         "amount": 0.0,
         "unpriced_kwh": 0.0,
         "intervals": 0,
-        "corrected_kwh": 0.0,
-        "corrected_amount": 0.0,
+        "estimate_kwh": 0.0,
+        "estimate_amount": 0.0,
         "corrected_intervals": 0,
         "reading": None,
         "entity_id": entity_id,
     }
+
+
+def upgraded(record: Mapping[str, Any]) -> dict[str, Any]:
+    """A side's totals as saved by 2.2.0rc1 or earlier, with the estimate. Those kept the
+    offset-corrected totals of only the intervals that had an offset (none before
+    2.2.0b3): the other intervals are added at the raw rate, in proportion."""
+    result = {k: v for k, v in record.items() if k not in ("corrected_kwh", "corrected_amount")}
+    if "estimate_amount" in record:
+        return result
+    intervals = record.get("intervals", 0)
+    corrected = min(record.get("corrected_intervals", 0), intervals)
+    rest = (intervals - corrected) / intervals if intervals else 1.0
+    for total, raw in (("estimate_kwh", "kwh"), ("estimate_amount", "amount")):
+        part = record.get(f"corrected_{raw}", 0.0) if corrected else 0.0
+        result[total] = part + record.get(raw, 0.0) * rest
+    result["corrected_intervals"] = corrected
+    return result
 
 
 def offset_corrected(deltas: Mapping[str, float], correction: float) -> dict[str, float]:
@@ -170,12 +190,13 @@ class TodayTracker:
         }
         for role, side in self.sides.items():
             saved = self._data["sides"].get(role)
+            saved = None if saved is None else upgraded(saved)
             if saved is None or saved.get("entity_id") != side.energy_entity:
                 fresh = _empty_side(side.energy_entity)
                 if saved is not None:  # keep the day's totals, but don't diff readings
                     fresh.update({k: v for k, v in saved.items() if k in _TOTALS})
                 self._data["sides"][role] = fresh
-            else:  # saved by 2.2.0b2 or earlier: no offset-corrected totals yet
+            else:
                 self._data["sides"][role] = {**_empty_side(side.energy_entity), **saved}
 
     @callback
@@ -285,17 +306,17 @@ class TodayTracker:
         for role, delta in deltas.items():
             record = self._data["sides"][role]
             price = self._price_for(role, end)
+            estimate = corrected.get(role, delta)
             record["kwh"] += delta
+            record["estimate_kwh"] += estimate
             record["intervals"] += 1
+            if role in corrected:
+                record["corrected_intervals"] += 1
             if price is None:
                 record["unpriced_kwh"] += delta
             else:
                 record["amount"] += delta * price
-            if role in corrected:
-                record["corrected_kwh"] += corrected[role]
-                record["corrected_intervals"] += 1
-                if price is not None:
-                    record["corrected_amount"] += corrected[role] * price
+                record["estimate_amount"] += estimate * price
         self._data["last_tick"] = end.isoformat()
         self._store.async_delay_save(lambda: self._data, SAVE_DELAY)
         self._on_update()
@@ -329,22 +350,29 @@ class TodayTracker:
         }
         for role, side in self.sides.items():
             record = self._data["sides"][role] if current else _empty_side()
-            has_corrected = record["corrected_intervals"] > 0
             result[role] = {
-                "amount": round(record["amount"], 4),
-                "kwh": round(record["kwh"], 3),
+                "amount": round(record["estimate_amount"], 4),
+                "kwh": round(record["estimate_kwh"], 3),
+                "raw_estimate": round(record["amount"], 4),
+                "raw_energy_kwh": round(record["kwh"], 3),
                 "unpriced_kwh": round(record["unpriced_kwh"], 3),
                 "intervals": record["intervals"],
-                "offset_corrected": round(record["corrected_amount"], 4) if has_corrected else None,
-                "offset_corrected_kwh": round(record["corrected_kwh"], 3)
-                if has_corrected
-                else None,
                 "offset_corrected_intervals": record["corrected_intervals"],
                 "energy_entity": side.energy_entity,
                 "price_entity": side.price_entity,
                 "channel": side.channel,
             }
         return result
+
+
+def _versus(estimated: float, billed: float, suffix: str) -> dict[str, Any]:
+    """An estimate against the billed amount: the error (estimate minus billed)."""
+    error = estimated - billed
+    return {
+        f"estimated_{suffix}": round(estimated, 4),
+        f"error_{suffix}": round(error, 4),
+        f"error_{suffix}_percent": round(100 * error / billed, 1) if billed else None,
+    }
 
 
 def compare(
@@ -358,32 +386,30 @@ def compare(
 ) -> dict[str, Any] | None:
     """The latest estimated day before ``before`` whose billed data has arrived, against
     the bill: the amount (cost, or feed-in credit) and the energy, with the error
-    (estimate minus billed)."""
+    (estimate minus billed), for the offset-corrected estimate (the sensor's value) and
+    the raw one."""
     for day in sorted(history, reverse=True):
-        estimate = history[day].get(role)
-        if estimate is None or date.fromisoformat(day) >= before:
+        saved = history[day].get(role)
+        if saved is None or date.fromisoformat(day) >= before:
             continue
+        estimate = upgraded(saved)
         record = billed(date.fromisoformat(day)) or {}
         totals = record.get("totals") or {}
         if record.get("status") != "imported" or amount_sid not in totals:
             continue
         amount, kwh = totals[amount_sid], totals.get(energy_sid)
-        error = estimate["amount"] - amount
-        corrected = estimate["corrected_amount"] if estimate.get("corrected_intervals") else None
         return {
             "date": day,
-            "estimated": round(estimate["amount"], 4),
             "billed": round(amount, 4),
-            "error": round(error, 4),
-            "error_percent": round(100 * error / amount, 1) if amount else None,
-            "estimated_kwh": round(estimate["kwh"], 3),
             "billed_kwh": None if kwh is None else round(kwh, 3),
+            **_versus(estimate["estimate_amount"], amount, "corrected"),
+            "estimated_corrected_kwh": round(estimate["estimate_kwh"], 3),
+            **_versus(estimate["amount"], amount, "raw"),
+            "estimated_raw_kwh": round(estimate["kwh"], 3),
             "unpriced_kwh": round(estimate["unpriced_kwh"], 3),
             "intervals": estimate["intervals"],
+            "offset_corrected_intervals": estimate["corrected_intervals"],
             "complete": estimate["intervals"] >= INTERVALS_PER_DAY
             and math.isclose(estimate["unpriced_kwh"], 0.0),
-            "estimated_offset_corrected": None if corrected is None else round(corrected, 4),
-            "error_offset_corrected": None if corrected is None else round(corrected - amount, 4),
-            "offset_corrected_intervals": estimate.get("corrected_intervals", 0),
         }
     return None

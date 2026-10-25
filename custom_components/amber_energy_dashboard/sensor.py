@@ -119,6 +119,7 @@ BILL_SENSORS = (
                 "missing_days",
                 "gst_percent",
                 "including_today_estimated",
+                "including_today_estimated_raw",
                 "including_today_leaves_out",
             )
         ),

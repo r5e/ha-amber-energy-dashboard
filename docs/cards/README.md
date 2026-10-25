@@ -8,9 +8,7 @@ Example cards for the integration's sensors. They are optional: copy one into a 
 [`bill-card.yaml`](bill-card.yaml): the current billing cycle and the previous bill, from
 the bill estimate's sensors.
 
-<!-- TODO(screenshot): the bill card on a dashboard, both parts. The maintainer to supply
-     as ../images/bill-card.png. -->
-*(Screenshot to follow.)*
+<img src="../images/bill-card.png" alt="The bill card" width="248">
 
 **Needs:**
 - [button-card](https://github.com/custom-cards/button-card), installed through HACS
@@ -28,9 +26,7 @@ the bill estimate's sensors.
   with the export allowance, and each daily charge, GST included), and whether every day
   of that cycle was imported (`complete`). Until then it says how many days it covers.
 
-  <!-- TODO(screenshot): the previous bill part close up, with its lines. The maintainer
-       to supply as ../images/bill-card-previous.png. -->
-  *(Screenshot to follow.)*
+  <img src="../images/bill-card-previous.png" alt="The previous bill part of the card, with its lines" width="248">
 
 Tapping either part opens the sensor, with all its attributes.
 

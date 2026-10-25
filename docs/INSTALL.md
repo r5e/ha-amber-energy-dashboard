@@ -38,12 +38,12 @@ You need:
 2. Click **Generate a new Token**, give it a recognisable name (for example
    "HomeAssistantAmberEnergyDash"), and click **Generate**.
 
-   <img src="images/01-amber-generate-token.png" alt="Naming a new Amber token" width="637">
+   <img src="images/01-amber-generate-token.png" alt="Naming a new Amber token" width="796">
 
 3. **Copy the token straight away** and store it in your password manager. Amber only shows
    it once; it disappears when you refresh the page. It starts with `psk_`.
 
-   <img src="images/02-amber-token-created.png" alt="The new token, shown once" width="545">
+   <img src="images/02-amber-token-created.png" alt="The new token, shown once" width="681">
 
    *(The token in this screenshot was deleted straight after it was taken. Never share a
    working token.)*
@@ -55,21 +55,21 @@ which provides live prices. You can keep both.
 
 1. In HACS, open the **three-dot menu** (top right) and choose **Custom repositories**.
 
-   <img src="images/03-hacs-custom-repositories.png" alt="The HACS menu" width="699">
+   <img src="images/03-hacs-custom-repositories.png" alt="The HACS menu" width="874">
 
 2. Enter `https://github.com/r5e/ha-amber-energy-dashboard`, choose the type
    **Integration**, and click **Add**. Then close the dialog.
 
-   <img src="images/04-hacs-add-repository.png" alt="Adding the custom repository" width="215">
+   <img src="images/04-hacs-add-repository.png" alt="Adding the custom repository" width="268">
 
 3. Search HACS for **amber**, and open **Amber Energy Dashboard (unofficial)**. (Other
    Amber-related entries in the list are separate projects.)
 
-   <img src="images/05-hacs-search.png" alt="Finding the repository" width="435">
+   <img src="images/05-hacs-search.png" alt="Finding the repository" width="544">
 
 4. Click **Download** (bottom right).
 
-   <img src="images/06-hacs-download.png" alt="The repository page" width="694">
+   <img src="images/06-hacs-download.png" alt="The repository page" width="868">
 
 5. Click **Download**, then **restart Home Assistant** when prompted.
 
@@ -84,21 +84,18 @@ open **Need a different version?** in the download dialog and pick it from the l
    Choose **Amber Energy Dashboard (unofficial)**, not the built-in Amber Electric
    integration.
 
-   <img src="images/08-add-integration.png" alt="Choosing the integration" width="523">
+   <img src="images/08-add-integration.png" alt="Choosing the integration" width="654">
 
 2. **Connect to Amber:** paste your API key and click **Submit**.
 
-   <img src="images/09-api-key.png" alt="Entering the API key" width="329">
+   <img src="images/09-api-key.png" alt="Entering the API key" width="411">
 
 3. **Choose a site:** if your Amber account has more than one site, pick the first one to
    set up. The entry is your Amber account; you add its other sites afterwards with
    **Add site** (see "More than one site" in section 4). Each site is shown with the last
    four digits of its NMI and its network.
 
-   <img src="images/10-choose-site.png" alt="Choosing the site" width="331">
-
-   <!-- TODO(screenshot): retake images/10-choose-site.png on 2.2: its text still says
-        "Each site is set up as its own entry". -->
+   <img src="images/10-choose-site.png" alt="Choosing the site" width="344">
 
 4. **Name the site:** the integration shows the site's details (its network, the last
    four digits of its NMI, and the date it became active with Amber) and asks for a
@@ -107,15 +104,13 @@ open **Need a different version?** in the download dialog and pick it from the l
    the site the same name there makes the two sets of devices easy to match. To rename
    the site later, see "Renaming the site" in section 4.
 
-   <!-- TODO(screenshot): the "Name this site" step. The maintainer to supply as
-        images/site-name-step.png. -->
-   *(Screenshot to follow.)*
+   <img src="images/site-name-step.png" alt="The Name this site step" width="344">
 
 5. **Confirm channels:** the integration lists the metering channels it found, for
    example a general (import) channel and a feed-in (export) channel, each with its
    tariff code. Usage, cost and feed-in compensation are imported for each one.
 
-   <img src="images/11-confirm-channels.png" alt="Confirming channels" width="336">
+   <img src="images/11-confirm-channels.png" alt="Confirming channels" width="420">
 
 6. **Import schedule:** keep **Automatic** unless you have a reason not to. It picks a
    stable time for your installation each morning (between 06:30 and 08:30), with retries
@@ -129,18 +124,12 @@ open **Need a different version?** in the download dialog and pick it from the l
    controlled load gets a second grid connection), so you can skip section 6. An existing
    grid connection is never changed, and the option isn't shown then.
 
-   <img src="images/12-import-schedule.png" alt="Import schedule" width="332">
-
-   <!-- TODO(screenshot): retake images/12-import-schedule.png on 2.2 with an empty Energy
-        dashboard, so it shows "Add to the Energy dashboard" and the evening retries. -->
+   <img src="images/12-import-schedule.png" alt="Import schedule" width="345">
 
 7. **Name and assign:** optionally assign the site's device to an area, then click
    **Finish**. The device already has the site's name.
 
-   <img src="images/13-name-and-assign.png" alt="Name and assign" width="333">
-
-   <!-- TODO(screenshot): retake images/13-name-and-assign.png on 2.2: the device is now
-        named after the site (for example "Home"). -->
+   <img src="images/13-name-and-assign.png" alt="Name and assign" width="344">
 
 The integration then imports your available history straight away (Amber keeps about 90
 days). That takes a minute or two and about 15 API calls.
@@ -151,10 +140,7 @@ Open the site's device (named after your site, for example **Home**) to see its 
 Its model line shows the network and the NMI's last four digits, for example
 "Endeavour Energy · NMI …1234":
 
-<img src="images/device-page.png" alt="The device page after setup" width="716">
-
-<!-- TODO(screenshot): retake images/device-page.png on 2.2: the device is named after the
-     site, with the model line "<network> · NMI …1234". -->
+<img src="images/device-page.png" alt="The device page after setup" width="627">
 
 - **Import status** reads **Up to date** when everything is imported.
 - **Last imported date** is normally yesterday, because Amber publishes each day's usage
@@ -170,10 +156,8 @@ Its model line shows the network and the NMI's last four digits, for example
 - With the **bill estimate** or the **export allowance** turned on (section 5), their
   sensors appear here too:
 
-  <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="291">
+  <img src="images/new-sensors.png" alt="The sensors with the bill estimate and the export allowance on" width="234">
 
-  <!-- TODO(screenshot): retake images/new-sensors.png on 2.2: it lacks Previous bill
-       estimate (and, with a grid meter and a live price, the two Today so far sensors). -->
 - With a **grid meter** and a **live price**, **Today's cost so far (estimated)** and
   **Today's feed-in so far (estimated)** appear here too ([Today so far](#today-so-far)).
 - **Download diagnostics** produces a file for bug reports. Your API key, your NMI and
@@ -201,10 +185,7 @@ The buttons at the top add a **site**, a **grid meter** or an **appliance**. An 
 upgraded from version 2.1 may also show **Own energy sensor (2.1)** rows until they are
 converted (see [section 9](#9-upgrading-from-version-21)).
 
-<!-- TODO(screenshot): the integration page with a site, a grid meter and an appliance.
-     The maintainer to supply as images/integration-layout.png. (It replaces
-     images/15-integration-page.png, which showed 2.0's "Add own energy sensor".) -->
-*(Screenshot to follow.)*
+<img src="images/integration-layout.png" alt="The integration page with a site, a grid meter and an appliance" width="504">
 
 ### More than one site
 
@@ -214,9 +195,7 @@ set up yet; choose one, give it a name, and confirm its channels. Each site impo
 own schedule, but the sites of one account take turns, so together they stay within
 Amber's rate limit (which belongs to the account).
 
-<!-- TODO(screenshot): the "Add a site" step. The maintainer to supply as
-     images/add-site.png. -->
-*(Screenshot to follow.)*
+<img src="images/add-site.png" alt="The Add site step on an account whose sites are all set up" width="274">
 
 The site's entity IDs: the first site keeps `sensor.amber_energy_dashboard_…`; a further
 site's follow its name, for example `sensor.beach_house_import_status`. Services and
@@ -233,6 +212,8 @@ To rename a site, open its settings (below) and choose **Rename site**. It renam
 the site's row on the integration page and its device. Entity IDs never change with the
 name.
 
+<img src="images/rename-site.png" alt="The Rename site step" width="348">
+
 Areas and labels are set on Home Assistant's own device page (the site's device, then the
 **pencil** icon). A name you give the device there is also used as the site's name (for
 example, with several entries, in the entry's title, unless you renamed the entry
@@ -243,10 +224,7 @@ yourself); **Rename site** replaces it.
 A site's settings open from the **cog** next to the entry (with several sites, it asks
 which one first) or from the **pencil** on the site's row. Both show the same menu:
 
-<!-- TODO(screenshot): the site settings menu (Import settings, Sources, Bill estimate,
-     Export allowance, Rename site, Refresh channels, Migrate from the YAML kit). The
-     maintainer to retake images/options-menu.png; the current one shows 2.1's menu. -->
-<img src="images/options-menu.png" alt="The site settings menu" width="681">
+<img src="images/options-menu.png" alt="The site settings menu" width="274">
 
 The menu has **Import settings**, **Sources**, **Bill estimate**, **Export allowance**,
 **Rename site**, **Refresh channels** and **Migrate from the YAML kit** (and **Undo
@@ -254,11 +232,7 @@ migration** after a migration).
 
 **Import settings** contains:
 
-<img src="images/17-import-settings.png" alt="Import settings" width="333">
-
-<!-- TODO(screenshot): retake images/17-import-settings.png on 2.2: the step is now titled
-     "Import settings", and the fallback is "Hourly fallback for grid meters and
-     appliances". -->
+<img src="images/17-import-settings.png" alt="Import settings" width="329">
 
 - **Schedule:** Automatic or Fixed times, as during setup.
 - **Usage mode:**
@@ -364,9 +338,7 @@ account has several sites, it first asks which site the meter belongs to):
 - **Export energy sensor** (optional, shown when your site has a feed-in channel): the
   energy sent to the grid, priced at the feed-in rate.
 
-<!-- TODO(screenshot): the "Add a grid meter" form. The maintainer to supply as
-     images/add-grid-meter.png. -->
-*(Screenshot to follow.)*
+<img src="images/add-grid-meter.png" alt="The Add a grid meter form" width="275">
 
 The integration then prices the meter's readings at Amber's billed rate for each 5-minute
 interval, from the later of the sensor's history start and Amber's retention boundary:
@@ -410,9 +382,7 @@ Tick **Solar-aware cost** for a second cost that values the part covered by your
 at the feed-in price ([below](#solar-aware-cost)); on an existing appliance, use its
 **Reconfigure** (the pencil on the appliance's row).
 
-<!-- TODO(screenshot): the "Add an appliance" form. The maintainer to supply as
-     images/add-appliance.png. -->
-*(Screenshot to follow.)*
+<img src="images/add-appliance.png" alt="The Add an appliance form" width="276">
 
 The appliance's cost is recorded as a statistic in the same way, and its device shows
 **Yesterday energy** and **Yesterday cost**. An appliance is not compared with Amber's
@@ -435,9 +405,7 @@ import, but you gave up the feed-in price you would have earned by exporting it.
   `solar_kwh`, `battery_kwh`, `grid_kwh`, `solar_share`, and `allowance_adjusted` (with
   the export allowance: whether that day's feed-in value includes the refund).
 
-<!-- TODO(screenshot): an appliance's device with Yesterday cost and Yesterday solar-aware
-     cost. The maintainer to supply as images/solar-aware-cost.png. -->
-*(Screenshot to follow.)*
+<img src="images/solar-aware-cost.png" alt="An appliance's device with Yesterday cost and Yesterday solar-aware cost" width="628">
 
 **It needs:**
 - a **solar sensor** in the site's [Sources](#sources): the solar energy produced (best),
@@ -497,9 +465,7 @@ would really have earned.
 **Sources** in a site's settings lists the sensors the site's live estimates can use.
 Billed figures always come from Amber's usage data; nothing here changes them.
 
-<!-- TODO(screenshot): the Sources step. The maintainer to supply as
-     images/sources-step.png. -->
-*(Screenshot to follow.)*
+<img src="images/sources-step.png" alt="The Sources step" width="328">
 
 - **General live price** and **Feed-in live price:** the current price, used by **Today
   so far** (below). The integration looks for them itself: first
@@ -531,9 +497,7 @@ live price**, its device gets:
 - **Today's feed-in so far (estimated)** (when the meter has an export sensor and the
   site has a feed-in live price): the meter's export, priced at the live feed-in price.
 
-<!-- TODO(screenshot): the site device with the two Today so far sensors. The maintainer
-     to supply as images/today-so-far.png. -->
-*(Screenshot to follow.)*
+<img src="images/today-so-far.png" alt="The two Today so far sensors" width="198">
 
 They are estimates, for display only, and are never written into long-term statistics.
 Every 5 minutes the energy since the last 5-minute mark is priced at the price shown at
@@ -687,9 +651,7 @@ IDs, so your dashboards keep working. The grid meter also gets a **Calibration o
 place of reconciliation. You can also ignore the Repairs item and keep the old sensors;
 they just don't get the new features (solar-aware cost, Today so far).
 
-<!-- TODO(screenshot): the conversion's plan step in Repairs. The maintainer to supply as
-     images/convert-own-sensors.png. -->
-*(Screenshot to follow.)*
+<img src="images/convert-own-sensors.png" alt="The conversion's plan step in Repairs" width="414">
 
 ### New things to set up
 

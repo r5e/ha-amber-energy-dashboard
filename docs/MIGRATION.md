@@ -10,10 +10,7 @@ continuous series. **Take a full backup first.**
    **pencil** on the site's row) and choose **Migrate from the YAML kit**. The first screen
    is a **dry run**: it changes nothing, and reports what it found and what it would do.
 
-   <img src="images/18-migration-dry-run.png" alt="The migration dry run" width="335">
-
-   <!-- TODO(screenshot): check images/18-, 19- and 20- against 2.2; the menu they come
-        from is now the site's settings. -->
+   <img src="images/18-migration-dry-run.png" alt="The migration dry run" width="416">
 
    Check that:
    - **Source** shows your kit's layout (v1 or advanced);
@@ -36,7 +33,7 @@ continuous series. **Take a full backup first.**
    also tick **I understand the old history can't be checked against Amber's data**.
 3. Turn on **I have a current Home Assistant backup** and click **Submit** to run it.
 
-   <img src="images/19-migration-complete.png" alt="The migration result" width="330">
+   <img src="images/19-migration-complete.png" alt="The migration result" width="413">
 
    The migration:
    - copies your older history into the integration's statistics, so they continue
@@ -51,7 +48,7 @@ continuous series. **Take a full backup first.**
 5. **If anything looks wrong,** choose **Undo migration** from the same settings menu. It
    restores your previous Energy dashboard settings and turns the old automation back on.
 
-   <img src="images/20-undo-migration.png" alt="Undo migration" width="333">
+   <img src="images/20-undo-migration.png" alt="Undo migration" width="410">
 
 ## Cleaning up afterwards
 

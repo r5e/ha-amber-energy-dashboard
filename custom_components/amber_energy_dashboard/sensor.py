@@ -579,8 +579,16 @@ class AmberSensor(CoordinatorEntity[DataUpdateCoordinator[dict[str, Any]]], Sens
 
     @property
     def native_value(self) -> str | int | float | date | datetime | None:
-        """The current value."""
-        return self.entity_description.value_fn(self.coordinator.data)
+        """The current value (an amount that shows as zero is 0.0, never "-A$0.00")."""
+        value = self.entity_description.value_fn(self.coordinator.data)
+        description = self.entity_description
+        if (
+            description.device_class == SensorDeviceClass.MONETARY
+            and isinstance(value, float)
+            and abs(value) < 0.5 * 10 ** -(description.suggested_display_precision or 0)
+        ):
+            return 0.0
+        return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:

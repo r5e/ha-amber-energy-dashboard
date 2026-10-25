@@ -327,7 +327,7 @@ async def test_allowance_end_to_end(
     assert used.attributes["unadjusted_days"] == []
     remaining = hass.states.get(f"{SENSOR}export_allowance_remaining")
     assert float(remaining.state) == pytest.approx(240.0 - window, abs=1e-3)
-    assert float(hass.states.get(f"{SENSOR}export_charge_after_allowance").state) == 0.0
+    assert hass.states.get(f"{SENSOR}export_charge_after_allowance").state == "0.0"  # not -0.0
 
     # The bill estimate: the credit before the export charge, and a 0 charge line.
     lines = hass.states.get(f"{SENSOR}bill_to_date").attributes["lines"]

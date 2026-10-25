@@ -97,8 +97,13 @@ class EnergyNotUsedFlow(RepairsFlow):
         return self.async_show_form(
             step_id="add",
             data_schema=vol.Schema({}),
-            description_placeholders={"sources": describe_sources(grid_sources(self._manager))},
+            description_placeholders={"sources": self._sources()},
         )
+
+    def _sources(self) -> str:
+        assert self._manager is not None
+        names = {spec.statistic_id: spec.name for spec in self._manager.ctx.specs}
+        return describe_sources(grid_sources(self._manager), names)
 
     async def async_step_migrate(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """A YAML kit is detected: the migration switches the Energy dashboard."""
@@ -115,7 +120,7 @@ class EnergyNotUsedFlow(RepairsFlow):
         return self.async_show_form(
             step_id="other",
             data_schema=vol.Schema({}),
-            description_placeholders={"sources": describe_sources(grid_sources(self._manager))},
+            description_placeholders={"sources": self._sources()},
         )
 
 

@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 import logging
+import re
 import time
 from typing import Any, Final
 
@@ -373,14 +374,19 @@ class AmberClient:
                     try:
                         return await resp.json(content_type=None)
                     except ValueError as err:
-                        raise AmberResponseError(f"{path}: response is not JSON") from err
+                        raise AmberResponseError(f"{_shown(path)}: response is not JSON") from err
                 body = await _safe_text(resp)
                 _raise_for_status(path, resp.status, body, resp.headers, rate_limit)
         except TimeoutError as err:
-            raise AmberTimeoutError(f"{path}: request timed out") from err
+            raise AmberTimeoutError(f"{_shown(path)}: request timed out") from err
         except aiohttp.ClientError as err:
-            raise AmberConnectionError(f"{path}: {type(err).__name__}") from err
+            raise AmberConnectionError(f"{_shown(path)}: {type(err).__name__}") from err
         raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _shown(path: str) -> str:
+    """A request path for a message the user may see: without the site ID."""
+    return re.sub(r"^/sites/[^/]+", "/sites/…", path)
 
 
 def _counter_for(path: str) -> str:
@@ -395,7 +401,7 @@ def _raise_for_status(
     headers: Mapping[str, str],
     rate_limit: RateLimit | None,
 ) -> None:
-    detail = f"{path}: HTTP {status}"
+    detail = f"{_shown(path)}: HTTP {status}"
     if body:
         detail = f"{detail}: {body}"
     if status in (401, 403):

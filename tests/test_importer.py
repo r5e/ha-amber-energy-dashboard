@@ -863,4 +863,5 @@ async def test_nothing_after_check(
 
     problem = await importer._async_check_nothing_after(hass, want)
 
-    assert "latest row is not the last hour" in problem
+    assert problem.startswith("statistic e1_energy: latest row is not the last hour")
+    assert "fakesite" not in problem.lower()  # messages never show the site ID (M22)

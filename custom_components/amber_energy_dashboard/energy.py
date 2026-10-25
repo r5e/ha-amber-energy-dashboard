@@ -6,6 +6,7 @@ Every change validates the new sources against Home Assistant's energy schema, g
 through the energy manager, is read back, and restores the saved sources on a mismatch.
 """
 
+from collections.abc import Mapping
 import copy
 from datetime import datetime, timedelta
 import json
@@ -137,12 +138,13 @@ def grid_sources(manager: AmberManager) -> list[dict[str, Any]]:
     return sources
 
 
-def describe_sources(sources: list[dict[str, Any]]) -> str:
-    """One line per grid source, for the setup step and the fix flow."""
+def describe_sources(sources: list[dict[str, Any]], names: Mapping[str, str]) -> str:
+    """One line per grid source, for the fix flow: each statistic by its name in the
+    Energy dashboard's pickers (its ID holds the site ID)."""
     lines = []
     for source in sources:
         parts = [
-            f"{label} {source[key]}"
+            f'{label} "{names.get(source[key], source[key])}"'
             for key, label in (
                 ("stat_energy_from", "consumption"),
                 ("stat_cost", "cost"),

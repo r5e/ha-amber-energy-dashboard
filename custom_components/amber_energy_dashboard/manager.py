@@ -102,6 +102,7 @@ from .statistics import (
     adjusted_compensation_spec,
     fixed_cost_spec,
     price_specs,
+    statistic_text,
 )
 from .storage import (
     SKIPPED_STATUSES,
@@ -627,7 +628,8 @@ class AmberManager:
                 else:
                     raise ImportRefusedError(
                         "partial_history",
-                        f"{sid} has no row at the end of {prev}; cannot continue the sums.",
+                        f"{statistic_text(sid)} has no row at the end of {prev}; "
+                        "cannot continue the sums.",
                     )
             baselines[sid] = value
         return baselines
@@ -2043,7 +2045,7 @@ class AmberManager:
             sums = await importer.async_sums_at(self.hass, [sid], _day_last_hour(prev))
             if sums[sid] is None:
                 raise ImportRefusedError(
-                    "partial_history", f"{sid} has no row at the end of {prev}"
+                    "partial_history", f"{statistic_text(sid)} has no row at the end of {prev}"
                 )
             baseline = sums[sid]
         if not tail:

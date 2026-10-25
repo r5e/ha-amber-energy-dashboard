@@ -338,8 +338,8 @@ async def test_undecodable_error_body(
     """An error body that cannot be decoded still maps the status correctly."""
     aioclient_mock.get(USAGE_URL, status=503, content=b"\xff\xfe\xfa")
 
-    with pytest.raises(AmberServerError, match=r"HTTP 503$"):
-        await client.async_get_usage(SITE_ID, DAY, DAY)
+    with pytest.raises(AmberServerError, match=r"^/sites/…/usage: HTTP 503$"):
+        await client.async_get_usage(SITE_ID, DAY, DAY)  # no site ID in the message (M22)
 
 
 # --- transport errors ----------------------------------------------------------------
@@ -399,7 +399,7 @@ async def test_non_json_body(client: AmberClient, aioclient_mock: AiohttpClientM
     """A 200 with a non-JSON body is an error, never an empty result."""
     aioclient_mock.get(USAGE_URL, text="<html>maintenance</html>")
 
-    with pytest.raises(AmberResponseError, match="not JSON"):
+    with pytest.raises(AmberResponseError, match="^/sites/…/usage: response is not JSON"):
         await client.async_get_usage(SITE_ID, DAY, DAY)
 
 

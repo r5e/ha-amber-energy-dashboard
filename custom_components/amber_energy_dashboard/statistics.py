@@ -90,6 +90,16 @@ def statistic_id(site_id: str, suffix: str) -> str:
     return value
 
 
+def statistic_text(value: str) -> str:
+    """A statistic ID as a message shows it, without the site ID it holds
+    (``amber_energy_dashboard:<site>_e1_energy`` becomes "statistic e1_energy")."""
+    prefix = f"{DOMAIN}:"
+    object_id = value.removeprefix(prefix)
+    if object_id == value or "_" not in object_id:
+        return value
+    return f"statistic {object_id.split('_', 1)[1]}"
+
+
 def build_specs(site_id: str, channels: Iterable[ChannelConfig]) -> list[StatisticSpec]:
     """Return every statistic for a site, in a stable order."""
     specs: list[StatisticSpec] = []

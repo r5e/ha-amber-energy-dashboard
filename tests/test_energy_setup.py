@@ -198,9 +198,10 @@ def test_grid_sources_without_a_general_channel() -> None:
     ]
     ENERGY_SOURCE_SCHEMA(both)
     ENERGY_SOURCE_SCHEMA(only)
-    assert energy_mod.describe_sources(only) == (
-        f"- return to grid {DOMAIN}:site_b1_energy, compensation {DOMAIN}:site_b1_compensation"
-    )
+    names = {f"{DOMAIN}:site_b1_energy": "Amber feed-in B1 energy"}
+    assert energy_mod.describe_sources(only, names) == (
+        f'- return to grid "Amber feed-in B1 energy", compensation "{DOMAIN}:site_b1_compensation"'
+    )  # by name; an ID only when the name is unknown
 
 
 @pytest.mark.parametrize("failure", ["read_back", "backup", "invalid", "unavailable"])
@@ -379,7 +380,11 @@ async def test_fix_flow_adds_the_grid_source(
 
     flow = await _fix_flow(hass)
     assert flow["step_id"] == "add"
-    assert f"consumption {E1}, cost {E1_COST}" in flow["description_placeholders"]["sources"]
+    assert (
+        'consumption "Amber general E1 energy", cost "Amber general E1 cost"'
+        in flow["description_placeholders"]["sources"]
+    )
+    assert "fakesite" not in flow["description_placeholders"]["sources"].lower()
     result = await _submit(hass, flow)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
@@ -437,7 +442,10 @@ async def test_fix_flow_other_grid_source_dismisses(
 
     flow = await _fix_flow(hass)
     assert flow["step_id"] == "other"
-    assert f"compensation {B1_COMP}" in flow["description_placeholders"]["sources"]
+    assert (
+        'compensation "Amber feed-in B1 compensation"'
+        in flow["description_placeholders"]["sources"]
+    )
     result = await _submit(hass, flow)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY

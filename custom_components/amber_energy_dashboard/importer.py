@@ -31,7 +31,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from .api import AmberClient, UsageRecord
 from .const import NEM_TZ
-from .statistics import ChannelConfig, Metric, StatisticSpec
+from .statistics import ChannelConfig, Metric, StatisticSpec, statistic_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -380,7 +380,8 @@ async def async_baselines_before(
         if not found:
             raise ImportRefusedError(
                 "partial_history",
-                f"{sid} has no row for the hour before {day}; cannot continue the sums.",
+                f"{statistic_text(sid)} has no row for the hour before {day}; "
+                "cannot continue the sums.",
             )
         baselines[sid] = float(found[0]["sum"])
     return baselines
@@ -453,7 +454,8 @@ async def async_plan_day(
         if any(r is None for r in day_rows):
             raise ImportRefusedError(
                 "partial_history",
-                f"{sid} does not have all 24 hours of {day}. Refusing to re-import.",
+                f"{statistic_text(sid)} does not have all 24 hours of {day}. "
+                "Refusing to re-import.",
             )
         first = day_rows[0]
         implied = float(first["sum"]) - float(first["state"])
@@ -462,7 +464,8 @@ async def async_plan_day(
             if abs(float(before["sum"]) - implied) > 1e-6:
                 raise ImportRefusedError(
                     "inconsistent_history",
-                    f"{sid}: the stored first hour of {day} does not continue from the "
+                    f"{statistic_text(sid)}: the stored first hour of {day} does not continue "
+                    "from the "
                     "hour before it. Refusing to re-import.",
                 )
             baselines[sid] = float(before["sum"])
@@ -552,13 +555,18 @@ def _compare(
     for sid, want in expected.items():
         got = actual.get(sid, [])
         if len(got) != len(want):
-            return f"{sid}: {len(got)} rows, expected {len(want)}"
+            return f"{statistic_text(sid)}: {len(got)} rows, expected {len(want)}"
         for w, g in zip(want, got, strict=True):
             if abs(g["start"] - w["start"].timestamp()) > 0.5:
-                return f"{sid}: row at {g['start']} expected {w['start'].isoformat()}"
+                return (
+                    f"{statistic_text(sid)}: row at {g['start']} expected {w['start'].isoformat()}"
+                )
             for key in keys:
                 if g.get(key) is None or abs(float(g[key]) - w[key]) > tolerance:
-                    return f"{sid} {w['start'].isoformat()}: {key} {g.get(key)} != {w[key]}"
+                    return (
+                        f"{statistic_text(sid)} {w['start'].isoformat()}: "
+                        f"{key} {g.get(key)} != {w[key]}"
+                    )
     return None
 
 
@@ -572,5 +580,5 @@ async def _async_check_nothing_after(
         )
         last = result.get(sid, [])
         if not last or abs(last[0]["start"] - want[-1]["start"].timestamp()) > 0.5:
-            return f"{sid}: latest row is not the last hour of the imported day"
+            return f"{statistic_text(sid)}: latest row is not the last hour of the imported day"
     return None

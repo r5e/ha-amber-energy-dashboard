@@ -8,6 +8,7 @@ from custom_components.amber_energy_dashboard.statistics import (
     Metric,
     build_specs,
     statistic_id,
+    statistic_text,
 )
 
 
@@ -57,3 +58,10 @@ def test_unsupported_or_duplicate_channels_rejected() -> None:
         build_specs("01abc", [ChannelConfig("X1", "battery")])
     with pytest.raises(ValueError, match="duplicate channel identifier"):
         build_specs("01abc", [ChannelConfig("E1", "general"), ChannelConfig("e1", "general")])
+
+
+def test_statistic_text_leaves_out_the_site_id() -> None:
+    """Messages name a statistic without its site ID; other IDs are shown as they are."""
+    assert statistic_text(statistic_id("01FAKESITE", "own_pool_cost")) == "statistic own_pool_cost"
+    assert statistic_text("sensor.amber_energy_import") == "sensor.amber_energy_import"
+    assert statistic_text("amber_energy_dashboard:x") == "amber_energy_dashboard:x"

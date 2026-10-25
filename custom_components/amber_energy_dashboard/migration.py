@@ -51,7 +51,7 @@ from .const import (
 )
 from .energy import async_save_sources, validate_sources
 from .importer import HOUR, ImportDayError, ImportRefusedError, nem_date, nem_day_start
-from .statistics import CURRENCY, Metric
+from .statistics import CURRENCY, Metric, statistic_text
 
 if TYPE_CHECKING:
     from .manager import AmberManager
@@ -412,7 +412,9 @@ async def _manual_sources(hass: HomeAssistant, picks: Mapping[str, str | None]) 
         if item is None or latest.get(sid) is None:
             raise MigrationRefused("invalid_pick", f"{sid} has no statistics.")
         if item.get("source") == DOMAIN:
-            raise MigrationRefused("invalid_pick", f"{sid} belongs to this integration.")
+            raise MigrationRefused(
+                "invalid_pick", f"{statistic_text(sid)} belongs to this integration."
+            )
         unit = item.get("statistics_unit_of_measurement")
         if role in _ENERGY_ROLES and unit != UnitOfEnergy.KILO_WATT_HOUR:
             raise MigrationRefused("invalid_pick", f"{sid} is not in kWh ({unit}).")
@@ -1540,7 +1542,8 @@ async def _async_rebase_stored(
             if len(day_rows) != importer.DAY_HOURS:
                 raise ImportRefusedError(
                     "partial_history",
-                    f"{spec.statistic_id} does not have all 24 hours of {day}; cannot re-base.",
+                    f"{statistic_text(spec.statistic_id)} does not have all 24 hours of "
+                    f"{day}; cannot re-base.",
                 )
             amounts[spec.statistic_id] = [float(r["state"] or 0.0) for r in day_rows]
         written = await importer.async_write_amounts(

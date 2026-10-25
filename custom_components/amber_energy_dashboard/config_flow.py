@@ -119,7 +119,14 @@ from .migration import (
     format_result,
 )
 from .schedule import format_times, parse_times
-from .sites import mapping_site_id, site_key, site_options, site_subentries, site_title
+from .sites import (
+    mapping_site_id,
+    site_choice_label,
+    site_key,
+    site_options,
+    site_subentries,
+    site_title,
+)
 from .solar import solar_aware_problem
 from .sources import (
     CONF_BATTERY_CHARGE,
@@ -307,7 +314,7 @@ class AmberEnergyDashboardConfigFlow(ConfigFlow, domain=DOMAIN):
         options = [
             SelectOptionDict(
                 value=site.id,
-                label=f"NMI {site.nmi}" + (f" ({site.network})" if site.network else ""),
+                label=site_choice_label(site.nmi, site.network),
             )
             for site in self._sites.values()
         ]
@@ -1139,7 +1146,7 @@ class SiteSubentryFlow(_SiteSettings, ConfigSubentryFlow):
         options = [
             SelectOptionDict(
                 value=site.id,
-                label=f"NMI …{site.nmi[-4:]}" + (f" ({site.network})" if site.network else ""),
+                label=site_choice_label(site.nmi, site.network),
             )
             for site in self._sites.values()
         ]

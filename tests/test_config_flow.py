@@ -76,7 +76,9 @@ async def test_full_flow(hass: HomeAssistant, aioclient_mock: AiohttpClientMocke
     )
     assert result["step_id"] == "site"
     options = result["data_schema"].schema[CONF_SITE_ID].config["options"]
-    assert options == [{"value": SITE_ID, "label": "NMI FAKENMI000 (Example Network)"}]
+    assert options == [
+        {"value": SITE_ID, "label": "NMI …I000 (Example Network)"}
+    ]  # not the full NMI
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_SITE_ID: SITE_ID}
@@ -198,7 +200,7 @@ async def test_only_active_sites_offered(
     result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_API_KEY: KEY})
     options = result["data_schema"].schema[CONF_SITE_ID].config["options"]
-    assert [o["label"] for o in options] == ["NMI FAKENMI000 (Example Network)", "NMI FAKENMI001"]
+    assert [o["label"] for o in options] == ["NMI …I000 (Example Network)", "NMI …I001"]
 
 
 async def test_already_configured(hass: HomeAssistant, aioclient_mock: AiohttpClientMocker) -> None:

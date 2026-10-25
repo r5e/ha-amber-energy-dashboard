@@ -71,6 +71,11 @@ def site_title(site_name: str | None, nmi: str | None) -> str:
     return site_name or f"Site …{(nmi or '')[-4:]}"
 
 
+def site_choice_label(nmi: str, network: str | None) -> str:
+    """A site in a site picker: the NMI's last 4 digits and the network."""
+    return f"NMI …{nmi[-4:]}" + (f" ({network})" if network else "")
+
+
 def site_subentries(entry: ConfigEntry) -> list[ConfigSubentry]:
     """The entry's sites, the entry's first site (its unique ID) first."""
     sites = [s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_SITE]

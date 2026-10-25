@@ -399,7 +399,7 @@ async def test_non_json_body(client: AmberClient, aioclient_mock: AiohttpClientM
     """A 200 with a non-JSON body is an error, never an empty result."""
     aioclient_mock.get(USAGE_URL, text="<html>maintenance</html>")
 
-    with pytest.raises(AmberResponseError, match="^/sites/…/usage: response is not JSON"):
+    with pytest.raises(AmberResponseError, match=r"^/sites/…/usage: response is not JSON"):
         await client.async_get_usage(SITE_ID, DAY, DAY)
 
 

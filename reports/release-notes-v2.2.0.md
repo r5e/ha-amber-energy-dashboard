@@ -66,8 +66,10 @@ when adding an appliance, or with an existing appliance's **Reconfigure**.
   optional solar and battery sensors.
 - With a grid meter and a live price, the site's device gets **Today's cost so far
   (estimated)** and **Today's feed-in so far (estimated)**, priced every 5 minutes.
-  Display only, never in statistics. Once Amber publishes a day,
-  `yesterday_estimate_vs_billed` compares the estimate with the bill, and **Bill to date**
+  Display only, never in statistics. The estimate applies the grid meter's **calibration
+  offset**, which brought it within about 1 % of the bill in production (about 2 %
+  without it); `raw_estimate` shows the figure without the offset. Once Amber publishes a
+  day, `yesterday_estimate_vs_billed` compares both with the bill, and **Bill to date**
   gains `including_today_estimated`.
 
 ### Previous bill estimate and a bill card
@@ -103,6 +105,15 @@ Then:
 The [installation guide's section 9](https://github.com/r5e/ha-amber-energy-dashboard/blob/v2.2.0/docs/INSTALL.md#9-upgrading-from-version-21)
 has the details and the new features to set up.
 
+## Updating from 2.2.0rc1
+
+Today so far's value is now the offset-corrected estimate (rc1's `offset_corrected`),
+with `energy_kwh` its energy; the uncorrected figures are `raw_estimate` and
+`raw_energy_kwh`. In `yesterday_estimate_vs_billed`, the two estimates are
+`estimated_corrected` and `estimated_raw`, with `error_corrected` and `error_raw` (and
+their percentages). Bill to date adds `including_today_estimated_raw`. Today's totals
+carry over.
+
 ## Known limitations
 
 - **No downgrade** to 2.1.1 without restoring a backup (see above).
@@ -114,9 +125,10 @@ has the details and the new features to set up.
   - your solar and grid meter sensors must agree; the calibration offset is not applied;
   - general-channel appliances only (not unconverted own energy sensors from 2.1);
   - when the feed-in price is negative, the solar part has a negative cost.
-- **Today so far** is an estimate: general import and feed-in only (no controlled load),
-  without the calibration offset (`offset_corrected` shows it with the offset, for
-  comparison).
+- **Today so far** is an estimate: general import and feed-in only (no controlled load).
+  It applies the calibration offset once the grid meter has one (a new meter's first day
+  counts the energy as measured), and the offset is a 14-day mean, so a day with unusual
+  load can still differ from the bill by a little.
 - **Calibration offset** needs at least a day of complete billed hours with the meter's
   statistics, so a new grid meter shows no value at first.
 - **No evening retries in Recovery-only mode.**

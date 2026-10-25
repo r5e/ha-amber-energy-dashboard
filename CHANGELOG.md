@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
-## [2.2.0] - Unreleased
+## [2.2.0] - 2026-10-25
 
 Everything since 2.1.1 (betas b1 to b4 and release candidate rc1 merged). **Take a Home
 Assistant backup before updating from 2.1.1 or earlier:** the entry is migrated to a layout
@@ -44,9 +44,11 @@ from a 2.2 beta or release candidate needs no migration.
 - **Today so far:** with a grid meter and a live price, **Today's cost so far
   (estimated)** and **Today's feed-in so far (estimated)**: the meter's energy since
   midnight (NEM time), priced every 5 minutes at the live price. Display only, never in
-  statistics. `yesterday_estimate_vs_billed` compares each day's estimate with the bill,
-  `offset_corrected` shows the estimate with the calibration offset applied, and **Bill
-  to date** gains `including_today_estimated`.
+  statistics. The estimate applies the grid meter's **calibration offset** (an interval
+  without a known offset counts as measured); `raw_estimate` shows it without the
+  offset. `yesterday_estimate_vs_billed` compares each day's estimate with the bill, with
+  and without the offset (`error_corrected`, `error_raw`), and **Bill to date** gains
+  `including_today_estimated` (and `including_today_estimated_raw`).
 - **Previous bill estimate** (with the bill estimate on): the last billing cycle's total,
   with its lines, dates and a `complete` flag. An example **bill card** (button-card) is
   in `docs/cards/`.
@@ -97,6 +99,15 @@ from a 2.2 beta or release candidate needs no migration.
   sensor and by actions name a statistic as, for example, "statistic e1_energy", and an
   Amber request as "/sites/…/usage". The Energy dashboard's Repairs item lists the
   statistics by the names its pickers show.
+- **Today so far** (since 2.2.0rc1): the sensors' value applies the calibration offset,
+  which production data showed is closer to the bill (on the first full day, 1.0 % under
+  the billed cost against 1.8 % without it). The rc1 attributes are renamed:
+  `offset_corrected` and `offset_corrected_kwh` are now the value and `energy_kwh`, with
+  `raw_estimate` and `raw_energy_kwh` for the uncorrected figures; in
+  `yesterday_estimate_vs_billed`, `estimated`, `error` and `error_percent` become
+  `estimated_raw`, `error_raw` and `error_raw_percent`, and `estimated_offset_corrected`
+  and `error_offset_corrected` become `estimated_corrected` and `error_corrected` (with
+  `error_corrected_percent`). Today's totals saved by rc1 carry over.
 - The guides are rewritten for 2.2, with **Upgrading from version 2.1** in their own
   section, and new screenshots.
 

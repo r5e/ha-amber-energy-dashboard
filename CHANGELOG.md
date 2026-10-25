@@ -6,44 +6,12 @@ All notable changes to this project are recorded here. The format follows
 the [PEP 440](https://peps.python.org/pep-0440/) way (for example `2.2.0b2`), because Home
 Assistant and HACS compare versions that way.
 
-## [2.2.0b4] - 2026-10-25
-
-Fourth beta for 2.2: everything in 2.2.0b3, plus the changes below (the [2.2.0] entry
-further down describes the whole release). **Take a Home Assistant backup before updating
-from 2.1.1 or earlier.** Updating from a 2.2 beta needs no migration.
-
-### Fixed
-
-- **Solar-aware cost skipped every day** ("no complete statistics … from" the solar
-  sensor) when the solar inverter goes offline at night, as most do: Home Assistant then
-  records no statistics for those hours. For the site's solar sensor only, a gap now
-  counts as no production when the solar energy total is unchanged across it, or when it
-  is at night (from an hour before sunset to an hour after sunrise at Home Assistant's
-  home location; it may end up to three hours after sunrise), and for a solar power
-  sensor also when it reads 0 W on both sides. A gap that starts in daylight while the
-  total changes is still refused. Grid meters and appliances still need complete
-  statistics. **Days skipped this way are worked out again** at the first run after
-  updating.
-- **Diagnostics** showed a grid meter's name in the Sources, solar-aware and Today so far
-  sections; it is now redacted like the other names.
-
-### Changed
-
-- A move of Amber's retention boundary is logged as info instead of a warning (on an
-  account whose window rolls, it moved every day).
-- Wording: the settings step is titled **Import settings**; the schedule help mentions
-  the evening retries; texts say "the site's settings" and "grid meters and appliances";
-  the `probe_retention` action is shown as **Re-check retention**, like its button.
-- `hacs.json` declares the country (AU).
-- The guides are rewritten for 2.2, with **Upgrading from version 2.1** in its own
-  section.
-
 ## [2.2.0] - Unreleased
 
-Everything since 2.1.1 (betas b1 to b3 merged). **Take a Home Assistant backup before
-updating from 2.1.1 or earlier:** the entry is migrated to a layout that earlier versions
-can't read, so the only way back is restoring the backup. Updating from a 2.2 beta needs no
-migration.
+Everything since 2.1.1 (betas b1 to b4 and release candidate rc1 merged). **Take a Home
+Assistant backup before updating from 2.1.1 or earlier:** the entry is migrated to a layout
+that earlier versions can't read, so the only way back is restoring the backup. Updating
+from a 2.2 beta or release candidate needs no migration.
 
 ### Added
 
@@ -121,6 +89,23 @@ migration.
   account whose window rolls, it moves every day).
 - With several sites, a new entry's title shows the site's name instead of the NMI's last
   four digits.
+- **The YAML-kit migration's** dry run and result name the statistics in words (for
+  example "Grid import energy (Home)"), show the Energy dashboard's grid connection before
+  and after as a short list instead of raw settings, and describe the re-base in a
+  sentence. The service response and diagnostics keep the statistic IDs.
+- **Messages never show the site ID:** errors shown in Repairs, on the Import status
+  sensor and by actions name a statistic as, for example, "statistic e1_energy", and an
+  Amber request as "/sites/…/usage". The Energy dashboard's Repairs item lists the
+  statistics by the names its pickers show.
+- The guides are rewritten for 2.2, with **Upgrading from version 2.1** in their own
+  section, and new screenshots.
+
+### Fixed
+
+- **Choose a site** (setup) showed the site's full NMI; it shows "NMI …1234 (network)",
+  as everywhere else.
+- A money sensor could show **−A$0.00** (for example Export charge after allowance); an
+  amount below half a cent now reads 0.00.
 
 ## [2.1.1] - 2026-10-23
 
@@ -520,7 +505,6 @@ Assistant custom integration, installed through HACS. Version 2 needs Home Assis
 The v1 YAML kit: a daily automation and a backfill script that wrote daily totals through
 the Import Statistics integration. See `legacy/v1/README.md`.
 
-[2.2.0b4]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.2.0b4
 [2.2.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.2.0
 [2.1.1]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.1
 [2.1.0]: https://github.com/r5e/ha-amber-energy-dashboard/releases/tag/v2.1.0

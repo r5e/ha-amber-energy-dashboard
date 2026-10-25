@@ -4,8 +4,8 @@ Version 2.2 makes the integration entry your **Amber account**, with each site u
 replaces own energy sensors with **grid meters** (with a calibration offset) and
 **appliances** (with an optional **solar-aware cost**); adds **Today so far** estimates from
 your grid meter and a live price, a **Previous bill estimate**, and evening retries when
-Amber publishes a day late. It brings together the three betas (b1 to b3), which ran in
-production before this release.
+Amber publishes a day late. It brings together the four betas (b1 to b4) and the release
+candidate (rc1), which ran in production before this release.
 
 Requires **Home Assistant 2026.9 or later**. Your statistics, settings and entity IDs are
 kept.
@@ -120,6 +120,8 @@ has the details and the new features to set up.
 - **Calibration offset** needs at least a day of complete billed hours with the meter's
   statistics, so a new grid meter shows no value at first.
 - **No evening retries in Recovery-only mode.**
+- The **bill card** is an example YAML card that needs button-card. A built-in card is
+  planned for 2.3.
 - As in 2.1: the bill estimate runs a day behind and leaves out one-off charges; the export
   allowance table has Endeavour Energy N61 only; adjusted compensation starts with Amber's
   interval history (about three months).
